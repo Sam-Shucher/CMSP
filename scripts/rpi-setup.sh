@@ -8,7 +8,7 @@
 # What it does:
 #   1. Installs Node.js 20, MariaDB, and cloudflared
 #   2. Creates the mini_library database + a dedicated DB user
-#   3. Writes backend/.env with generated secrets (PORT=4269)
+#   3. Writes backend/.env with generated secrets (PORT=4233)
 #   4. Installs npm dependencies and builds the frontend + backend
 #   5. Installs a systemd service so the app starts on boot
 #   6. Prints the remaining manual Cloudflare Tunnel steps
@@ -22,7 +22,7 @@ if [ "$(id -u)" -eq 0 ]; then
   exit 1
 fi
 
-APP_PORT=4269
+APP_PORT=4233
 DB_NAME=mini_library
 DB_USER=mini_library_user
 SERVICE_NAME=mini-library
