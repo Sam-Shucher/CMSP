@@ -27,6 +27,12 @@ if [ "${1:-}" != "--no-restart" ]; then
   if systemctl list-unit-files --quiet "${SERVICE_NAME}.service" >/dev/null 2>&1; then
     echo "==> Restarting ${SERVICE_NAME}"
     sudo systemctl restart "${SERVICE_NAME}"
+    sleep 2
+    if ! systemctl is-active --quiet "${SERVICE_NAME}"; then
+      echo "==> ${SERVICE_NAME} failed to start. Recent logs:"
+      sudo journalctl -u "${SERVICE_NAME}" -n 50 --no-pager
+      exit 1
+    fi
   else
     echo "==> Service ${SERVICE_NAME} not installed yet — run scripts/rpi-setup.sh first"
   fi

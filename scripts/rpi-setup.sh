@@ -138,6 +138,16 @@ sudo systemctl enable --now ${SERVICE_NAME}
 sleep 2
 sudo systemctl --no-pager status ${SERVICE_NAME} || true
 
+if ! systemctl is-active --quiet ${SERVICE_NAME}; then
+  echo
+  echo "==> ${SERVICE_NAME} failed to start. Recent logs:"
+  sudo journalctl -u ${SERVICE_NAME} -n 50 --no-pager
+  echo
+  echo "Setup did NOT complete successfully — fix the error above, then run:"
+  echo "  sudo systemctl restart ${SERVICE_NAME}"
+  exit 1
+fi
+
 # --- 6. Cloudflare Tunnel instructions ----------------------------------------
 
 cat <<EOF
