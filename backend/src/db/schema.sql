@@ -20,6 +20,8 @@ CREATE TABLE IF NOT EXISTS users (
   username      VARCHAR(50)  UNIQUE NOT NULL,
   password_hash VARCHAR(255) NOT NULL,
   display_name  VARCHAR(100) NOT NULL,
+  phone         VARCHAR(20)  NULL,
+  neighborhood  VARCHAR(100) NULL,
   role          ENUM('user', 'admin') DEFAULT 'user',
   created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -30,6 +32,7 @@ CREATE TABLE IF NOT EXISTS minis (
   description TEXT,
   owner_id    INT NOT NULL,
   image_path  VARCHAR(500),
+  price       DECIMAL(6,2) NOT NULL DEFAULT 0.00,
   available   BOOLEAN DEFAULT TRUE,
   created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,

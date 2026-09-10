@@ -26,6 +26,8 @@ interface UserAdminRow extends RowDataPacket {
   email: string;
   username: string;
   display_name: string;
+  phone: string | null;
+  neighborhood: string | null;
   role: string;
   created_at: string;
 }
@@ -111,7 +113,7 @@ router.delete('/approved-emails/:id', async (req: AuthRequest, res: Response): P
 router.get('/users', async (_req: AuthRequest, res: Response): Promise<void> => {
   try {
     const [rows] = await pool.execute<UserAdminRow[]>(
-      'SELECT id, email, username, display_name, role, created_at FROM users ORDER BY created_at DESC'
+      'SELECT id, email, username, display_name, phone, neighborhood, role, created_at FROM users ORDER BY created_at DESC'
     );
     res.json(rows);
   } catch (err: unknown) {

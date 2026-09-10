@@ -36,7 +36,7 @@ function setAuthCookie(res: Response, payload: JwtPayload): void {
 // Creates a new user account. The email MUST already exist in the approved_emails
 // table — that's the invite-only gate. Only the admin can add emails there.
 router.post('/register', async (req: Request, res: Response): Promise<void> => {
-  const { email, username, password, displayName } = req.body as Record<string, string>;
+  const { email, username, password, displayName, phone, neighborhood } = req.body as Record<string, string>;
 
   if (!email || !username || !password) {
     res.status(400).json({ error: 'Email, username, and password are required' });
@@ -70,8 +70,8 @@ router.post('/register', async (req: Request, res: Response): Promise<void> => {
 
     // ResultSetHeader is mysql2's type for INSERT/UPDATE/DELETE results — gives us insertId
     const [result] = await pool.execute<ResultSetHeader>(
-      'INSERT INTO users (email, username, password_hash, display_name) VALUES (?, ?, ?, ?)',
-      [email.toLowerCase(), username, passwordHash, displayName || username]
+      'INSERT INTO users (email, username, password_hash, display_name, phone, neighborhood) VALUES (?, ?, ?, ?, ?, ?)',
+      [email.toLowerCase(), username, passwordHash, displayName || username, phone?.trim() || null, neighborhood?.trim() || null]
     );
 
     // Sign a JWT with the new user's info and send it back as a cookie

@@ -11,6 +11,7 @@ export default function UploadMiniPage(): React.ReactElement {
   const [name, setName]               = useState<string>('');
   const [description, setDescription] = useState<string>('');
   const [tags, setTags]               = useState<string>(''); // comma-separated input string
+  const [price, setPrice]             = useState<string>('');
 
   // Image upload state
   const [image, setImage]     = useState<File | null>(null);
@@ -34,6 +35,10 @@ export default function UploadMiniPage(): React.ReactElement {
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>): Promise<void> {
     e.preventDefault();
     if (!name.trim()) { setError('Name is required'); return; }
+    if (price.trim() && (Number.isNaN(Number(price)) || Number(price) < 0)) {
+      setError('Price must be a non-negative number');
+      return;
+    }
     setError('');
     setLoading(true);
 
@@ -44,6 +49,7 @@ export default function UploadMiniPage(): React.ReactElement {
       fd.append('name', name.trim());
       if (description.trim()) fd.append('description', description.trim());
       if (tags.trim())        fd.append('tags', tags.trim());
+      if (price.trim())       fd.append('price', price.trim());
       if (image)              fd.append('image', image);
 
       // Pass body directly (not json:) so the api() helper doesn't set Content-Type to JSON
@@ -117,6 +123,24 @@ export default function UploadMiniPage(): React.ReactElement {
               ))}
             </div>
           )}
+        </div>
+
+        {/* Price — optional, defaults to 0 on the server if left blank */}
+        <div>
+          <label style={labelStyle}>
+            Price{' '}
+            <span style={{ color: '#8a7d6a', textTransform: 'none', fontSize: '11px' }}>
+              (optional)
+            </span>
+          </label>
+          <input
+            type="number"
+            min="0"
+            step="0.01"
+            value={price}
+            onChange={(e: React.ChangeEvent<HTMLInputElement>) => setPrice(e.target.value)}
+            placeholder="0.00"
+          />
         </div>
 
         {/* Image drop zone — clicking it triggers the hidden file input */}

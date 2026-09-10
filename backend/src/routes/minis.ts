@@ -50,6 +50,7 @@ interface MiniRow extends RowDataPacket {
   name: string;
   description: string | null;
   image_path: string | null;
+  price: string; // mysql2 returns DECIMAL columns as strings to avoid float rounding issues
   available: boolean;
   owner_name: string;
   owner_username: string;
@@ -103,7 +104,7 @@ router.get('/', requireAuth, async (req: AuthRequest, res: Response): Promise<vo
     // GROUP_CONCAT aggregates all of a mini's tag names into one comma-separated
     // string per row, so we don't get duplicate mini rows (one per tag)
     const [rows] = await pool.execute<MiniRow[]>(
-      `SELECT m.id, m.name, m.description, m.image_path, m.available,
+      `SELECT m.id, m.name, m.description, m.image_path, m.price, m.available,
               u.display_name AS owner_name, u.username AS owner_username, u.id AS owner_id,
               m.created_at,
               GROUP_CONCAT(t.name ORDER BY t.name SEPARATOR ',') AS tags
@@ -117,10 +118,12 @@ router.get('/', requireAuth, async (req: AuthRequest, res: Response): Promise<vo
       params
     );
 
-    // Convert the comma-separated tags string back into a proper string array
-    // before sending to the frontend
+    // Convert the comma-separated tags string back into a proper string array,
+    // and price from mysql2's string representation into a number, before
+    // sending to the frontend
     const minis = rows.map(m => ({
       ...m,
+      price: Number(m.price),
       tags: m.tags ? m.tags.split(',') : [],
     }));
 
@@ -135,10 +138,18 @@ router.get('/', requireAuth, async (req: AuthRequest, res: Response): Promise<vo
 // Creates a new mini. Expects multipart/form-data (because of the image upload).
 // Fields: name (required), description, tags (comma-separated), image (file).
 router.post('/', requireAuth, upload.single('image'), async (req: AuthRequest, res: Response): Promise<void> => {
-  const { name, description, tags } = req.body as Record<string, string>;
+  const { name, description, tags, price } = req.body as Record<string, string>;
 
   if (!name?.trim()) {
     res.status(400).json({ error: 'Name is required' });
+    return;
+  }
+
+  // price arrives as a string from multipart form-data — default to 0 when omitted,
+  // and reject anything that isn't a non-negative number (NaN, negative, garbage text)
+  const priceValue: number = price?.trim() ? Number(price) : 0;
+  if (Number.isNaN(priceValue) || priceValue < 0) {
+    res.status(400).json({ error: 'Price must be a non-negative number' });
     return;
   }
 
@@ -148,8 +159,8 @@ router.post('/', requireAuth, upload.single('image'), async (req: AuthRequest, r
 
     // Insert the mini itself — req.user! is safe here because requireAuth ran first
     const [result] = await pool.execute<ResultSetHeader>(
-      'INSERT INTO minis (name, description, owner_id, image_path) VALUES (?, ?, ?, ?)',
-      [name.trim(), description?.trim() || null, req.user!.userId, imagePath]
+      'INSERT INTO minis (name, description, owner_id, image_path, price) VALUES (?, ?, ?, ?, ?)',
+      [name.trim(), description?.trim() || null, req.user!.userId, imagePath, priceValue]
     );
     const miniId: number = result.insertId;
 

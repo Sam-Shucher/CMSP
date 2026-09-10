@@ -52,6 +52,7 @@ export type Mini = {
   name: string;
   description: string | null;
   image_path: string | null;  // e.g. "/uploads/1234-abc.jpg", or null if no photo
+  price: number;
   available: boolean;
   owner_name: string;         // display_name of the user who owns this mini
   owner_username: string;

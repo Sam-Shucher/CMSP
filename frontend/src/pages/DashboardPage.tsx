@@ -178,9 +178,15 @@ function MiniCard({ mini }: { mini: Mini }): React.ReactElement {
           </span>
         </div>
 
-        <p style={{ fontSize: '12px', color: '#8a7d6a', marginBottom: '10px' }}>
+        <p style={{ fontSize: '12px', color: '#8a7d6a', marginBottom: '4px' }}>
           owned by {mini.owner_name}
         </p>
+
+        {mini.price > 0 && (
+          <p style={{ fontSize: '13px', color: '#c9a84c', fontWeight: 600, marginBottom: '10px' }}>
+            ${mini.price.toFixed(2)}
+          </p>
+        )}
 
         {/* Description — clamped to 2 lines to keep cards uniform height */}
         {mini.description && (

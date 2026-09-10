@@ -15,6 +15,8 @@ type UserRow = {
   email: string;
   username: string;
   display_name: string;
+  phone: string | null;
+  neighborhood: string | null;
   role: string;       // 'user' | 'admin'
   created_at: string;
 };
@@ -159,6 +161,8 @@ export default function AdminPage(): React.ReactElement {
               <th style={thStyle}>Username</th>
               <th style={thStyle}>Display Name</th>
               <th style={thStyle}>Email</th>
+              <th style={thStyle}>Phone</th>
+              <th style={thStyle}>Neighborhood</th>
               <th style={thStyle}>Role</th>
               <th style={thStyle}>Joined</th>
               <th style={thStyle}></th>
@@ -170,6 +174,8 @@ export default function AdminPage(): React.ReactElement {
                 <td style={tdStyle}>{u.username}</td>
                 <td style={tdStyle}>{u.display_name}</td>
                 <td style={tdStyle}>{u.email}</td>
+                <td style={tdStyle}>{u.phone ?? '—'}</td>
+                <td style={tdStyle}>{u.neighborhood ?? '—'}</td>
                 <td style={tdStyle}>
                   {/* Admins get a green badge, regular users get a grey tag */}
                   <span className={u.role === 'admin' ? 'badge-available' : 'tag'}>{u.role}</span>

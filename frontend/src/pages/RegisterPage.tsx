@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { api, User } from '../api/client';
 import { useAuth } from '../App';
+import { validateUsername, validatePassword } from '../utils/validation';
 
 // All fields the registration form tracks.
 // Defined as a named type so we can use keyof FormState for type-safe field updates.
@@ -9,6 +10,8 @@ type FormState = {
   email: string;
   username: string;
   displayName: string;
+  phone: string;        // optional
+  neighborhood: string; // optional
   password: string;
   confirm: string; // password confirmation — only used client-side, never sent to the server
 };
@@ -17,7 +20,7 @@ export default function RegisterPage(): React.ReactElement {
   const { setUser } = useAuth();
   const navigate = useNavigate();
 
-  const [form, setForm]       = useState<FormState>({ email: '', username: '', displayName: '', password: '', confirm: '' });
+  const [form, setForm]       = useState<FormState>({ email: '', username: '', displayName: '', phone: '', neighborhood: '', password: '', confirm: '' });
   const [error, setError]     = useState<string>('');
   const [loading, setLoading] = useState<boolean>(false);
 
@@ -35,16 +38,18 @@ export default function RegisterPage(): React.ReactElement {
     setError('');
 
     // Client-side validation — catches simple mistakes before hitting the server
+    const usernameResult = validateUsername(form.username);
+    if (!usernameResult.valid) {
+      setError(usernameResult.error!);
+      return;
+    }
+    const passwordResult = validatePassword(form.password);
+    if (!passwordResult.valid) {
+      setError(passwordResult.error!);
+      return;
+    }
     if (form.password !== form.confirm) {
       setError('Passwords do not match');
-      return;
-    }
-    if (form.password.length < 8) {
-      setError('Password must be at least 8 characters');
-      return;
-    }
-    if (!/^[a-zA-Z0-9_]+$/.test(form.username)) {
-      setError('Username can only contain letters, numbers, and underscores');
       return;
     }
 
@@ -57,6 +62,8 @@ export default function RegisterPage(): React.ReactElement {
           email: form.email,
           username: form.username,
           displayName: form.displayName || form.username,
+          phone: form.phone || undefined,
+          neighborhood: form.neighborhood || undefined,
           password: form.password,
           // confirm is NOT sent — it was only used for client-side validation
         },
@@ -82,31 +89,47 @@ export default function RegisterPage(): React.ReactElement {
           {error && <div className="error-msg">{error}</div>}
 
           <div>
-            <label style={labelStyle}>Email (must be on the invite list)</label>
-            <input type="email" value={form.email} onChange={set('email')} placeholder="your@email.com" required autoFocus />
+            <label style={labelStyle} htmlFor="email">Email (must be on the invite list)</label>
+            <input id="email" type="email" value={form.email} onChange={set('email')} placeholder="your@email.com" required autoFocus />
           </div>
 
           <div>
-            <label style={labelStyle}>Username</label>
-            <input type="text" value={form.username} onChange={set('username')} placeholder="dungeon_master_42" required maxLength={50} />
+            <label style={labelStyle} htmlFor="username">Username</label>
+            <input id="username" type="text" value={form.username} onChange={set('username')} placeholder="dungeon_master_42" required maxLength={32} />
           </div>
 
           <div>
-            <label style={labelStyle}>
+            <label style={labelStyle} htmlFor="displayName">
               Display Name{' '}
               <span style={{ color: '#8a7d6a', fontWeight: 400 }}>(optional)</span>
             </label>
-            <input type="text" value={form.displayName} onChange={set('displayName')} placeholder="Merric the Bard" maxLength={100} />
+            <input id="displayName" type="text" value={form.displayName} onChange={set('displayName')} placeholder="Merric the Bard" maxLength={100} />
           </div>
 
           <div>
-            <label style={labelStyle}>Password</label>
-            <input type="password" value={form.password} onChange={set('password')} placeholder="At least 8 characters" required />
+            <label style={labelStyle} htmlFor="phone">
+              Phone{' '}
+              <span style={{ color: '#8a7d6a', fontWeight: 400 }}>(optional)</span>
+            </label>
+            <input id="phone" type="tel" value={form.phone} onChange={set('phone')} placeholder="555-123-4567" maxLength={20} />
           </div>
 
           <div>
-            <label style={labelStyle}>Confirm Password</label>
-            <input type="password" value={form.confirm} onChange={set('confirm')} placeholder="••••••••" required />
+            <label style={labelStyle} htmlFor="neighborhood">
+              Neighborhood{' '}
+              <span style={{ color: '#8a7d6a', fontWeight: 400 }}>(optional)</span>
+            </label>
+            <input id="neighborhood" type="text" value={form.neighborhood} onChange={set('neighborhood')} placeholder="Downtown" maxLength={100} />
+          </div>
+
+          <div>
+            <label style={labelStyle} htmlFor="password">Password</label>
+            <input id="password" type="password" value={form.password} onChange={set('password')} placeholder="At least 8 characters" required maxLength={32} />
+          </div>
+
+          <div>
+            <label style={labelStyle} htmlFor="confirm">Confirm Password</label>
+            <input id="confirm" type="password" value={form.confirm} onChange={set('confirm')} placeholder="••••••••" required maxLength={32} />
           </div>
 
           <button className="btn-primary" type="submit" disabled={loading} style={{ marginTop: '6px', padding: '12px' }}>
