@@ -70,6 +70,62 @@ interface TagNameRow extends RowDataPacket {
   name: string;
 }
 
+interface OwnerRow extends RowDataPacket {
+  owner_id: number;
+  image_path: string | null;
+}
+
+// The join query used by both GET / and GET /:id, kept in one place so the
+// shape returned to the frontend never drifts between the two.
+const MINI_SELECT = `
+  SELECT m.id, m.name, m.description, m.image_path, m.price, m.available,
+         u.display_name AS owner_name, u.username AS owner_username, u.id AS owner_id,
+         m.created_at,
+         GROUP_CONCAT(t.name ORDER BY t.name SEPARATOR ',') AS tags
+  FROM minis m
+  JOIN users u ON m.owner_id = u.id
+  LEFT JOIN mini_tags mt ON m.id = mt.mini_id
+  LEFT JOIN tags t ON mt.tag_id = t.id
+`;
+
+// Converts a raw joined row into the shape the frontend expects
+// (price as a number, tags as a string array instead of a CSV blob).
+function serializeMini(row: MiniRow) {
+  return {
+    ...row,
+    price: Number(row.price),
+    tags: row.tags ? row.tags.split(',') : [],
+  };
+}
+
+// Replaces all of a mini's tags with the given comma-separated list —
+// shared by POST / and PATCH /:id so the upsert logic only lives in one place.
+async function setTags(miniId: number, tagsInput: string | undefined): Promise<void> {
+  await pool.execute<ResultSetHeader>('DELETE FROM mini_tags WHERE mini_id = ?', [miniId]);
+
+  if (!tagsInput) return;
+
+  const tagList: string[] = tagsInput
+    .split(',')
+    .map((t: string) => t.trim().toLowerCase())
+    .filter(Boolean); // remove empty strings from trailing commas
+
+  for (const tagName of tagList) {
+    // INSERT IGNORE skips silently if the tag name already exists (avoids duplicate key error)
+    await pool.execute<ResultSetHeader>('INSERT IGNORE INTO tags (name) VALUES (?)', [tagName]);
+
+    // Fetch the id of the tag we just created or that already existed
+    const [tagRows] = await pool.execute<TagRow[]>('SELECT id FROM tags WHERE name = ?', [tagName]);
+    const tagId: number = tagRows[0].id;
+
+    // Link the tag to this mini in the junction table
+    await pool.execute<ResultSetHeader>(
+      'INSERT IGNORE INTO mini_tags (mini_id, tag_id) VALUES (?, ?)',
+      [miniId, tagId]
+    );
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Routes
 // ---------------------------------------------------------------------------
@@ -104,30 +160,46 @@ router.get('/', requireAuth, async (req: AuthRequest, res: Response): Promise<vo
     // GROUP_CONCAT aggregates all of a mini's tag names into one comma-separated
     // string per row, so we don't get duplicate mini rows (one per tag)
     const [rows] = await pool.execute<MiniRow[]>(
-      `SELECT m.id, m.name, m.description, m.image_path, m.price, m.available,
-              u.display_name AS owner_name, u.username AS owner_username, u.id AS owner_id,
-              m.created_at,
-              GROUP_CONCAT(t.name ORDER BY t.name SEPARATOR ',') AS tags
-       FROM minis m
-       JOIN users u ON m.owner_id = u.id
-       LEFT JOIN mini_tags mt ON m.id = mt.mini_id
-       LEFT JOIN tags t ON mt.tag_id = t.id
-       ${whereClause}
-       GROUP BY m.id
-       ORDER BY m.created_at DESC`,
+      `${MINI_SELECT} ${whereClause} GROUP BY m.id ORDER BY m.created_at DESC`,
       params
     );
 
-    // Convert the comma-separated tags string back into a proper string array,
-    // and price from mysql2's string representation into a number, before
-    // sending to the frontend
-    const minis = rows.map(m => ({
-      ...m,
-      price: Number(m.price),
-      tags: m.tags ? m.tags.split(',') : [],
-    }));
+    res.json(rows.map(serializeMini));
+  } catch (err: unknown) {
+    console.error(err);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
 
-    res.json(minis);
+// GET /api/minis/tags
+// Returns a sorted list of every tag that exists in the database.
+// Used by the dashboard to populate the filter buttons.
+// Registered before /:id so "tags" isn't swallowed as an :id value.
+router.get('/tags', requireAuth, async (_req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const [rows] = await pool.execute<TagNameRow[]>('SELECT name FROM tags ORDER BY name');
+    res.json(rows.map(r => r.name));
+  } catch (err: unknown) {
+    console.error(err);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// GET /api/minis/:id
+// Returns a single mini by id — used to prefill the edit form.
+router.get('/:id', requireAuth, async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const [rows] = await pool.execute<MiniRow[]>(
+      `${MINI_SELECT} WHERE m.id = ? GROUP BY m.id`,
+      [req.params.id]
+    );
+
+    if (rows.length === 0) {
+      res.status(404).json({ error: 'Mini not found' });
+      return;
+    }
+
+    res.json(serializeMini(rows[0]));
   } catch (err: unknown) {
     console.error(err);
     res.status(500).json({ error: 'Server error' });
@@ -164,28 +236,7 @@ router.post('/', requireAuth, upload.single('image'), async (req: AuthRequest, r
     );
     const miniId: number = result.insertId;
 
-    // If tags were provided, upsert each one and link it to the new mini
-    if (tags) {
-      const tagList: string[] = tags
-        .split(',')
-        .map((t: string) => t.trim().toLowerCase())
-        .filter(Boolean); // remove empty strings from trailing commas
-
-      for (const tagName of tagList) {
-        // INSERT IGNORE skips silently if the tag name already exists (avoids duplicate key error)
-        await pool.execute<ResultSetHeader>('INSERT IGNORE INTO tags (name) VALUES (?)', [tagName]);
-
-        // Fetch the id of the tag we just created or that already existed
-        const [tagRows] = await pool.execute<TagRow[]>('SELECT id FROM tags WHERE name = ?', [tagName]);
-        const tagId: number = tagRows[0].id;
-
-        // Link the tag to this mini in the junction table
-        await pool.execute<ResultSetHeader>(
-          'INSERT IGNORE INTO mini_tags (mini_id, tag_id) VALUES (?, ?)',
-          [miniId, tagId]
-        );
-      }
-    }
+    await setTags(miniId, tags);
 
     res.status(201).json({ message: 'Mini added', miniId });
   } catch (err: unknown) {
@@ -194,13 +245,66 @@ router.post('/', requireAuth, upload.single('image'), async (req: AuthRequest, r
   }
 });
 
-// GET /api/minis/tags
-// Returns a sorted list of every tag that exists in the database.
-// Used by the dashboard to populate the filter buttons.
-router.get('/tags', requireAuth, async (_req: AuthRequest, res: Response): Promise<void> => {
+// PATCH /api/minis/:id
+// Edits an existing mini. Only the owner or an admin may do this.
+// Expects multipart/form-data (an optional replacement image may be included).
+router.patch('/:id', requireAuth, upload.single('image'), async (req: AuthRequest, res: Response): Promise<void> => {
+  const miniId = req.params.id;
+  const { name, description, tags, price } = req.body as Record<string, string>;
+
   try {
-    const [rows] = await pool.execute<TagNameRow[]>('SELECT name FROM tags ORDER BY name');
-    res.json(rows.map(r => r.name));
+    const [ownerRows] = await pool.execute<OwnerRow[]>(
+      'SELECT owner_id, image_path FROM minis WHERE id = ?',
+      [miniId]
+    );
+
+    if (ownerRows.length === 0) {
+      res.status(404).json({ error: 'Mini not found' });
+      return;
+    }
+
+    const isOwner = ownerRows[0].owner_id === req.user!.userId;
+    const isAdmin = req.user!.role === 'admin';
+    if (!isOwner && !isAdmin) {
+      res.status(403).json({ error: 'You can only edit your own minis' });
+      return;
+    }
+
+    if (!name?.trim()) {
+      res.status(400).json({ error: 'Name is required' });
+      return;
+    }
+
+    const priceValue: number = price?.trim() ? Number(price) : 0;
+    if (Number.isNaN(priceValue) || priceValue < 0) {
+      res.status(400).json({ error: 'Price must be a non-negative number' });
+      return;
+    }
+
+    // A new image replaces the old one; otherwise the existing image_path is kept.
+    const imagePath: string | null = req.file
+      ? `/uploads/${req.file.filename}`
+      : ownerRows[0].image_path;
+
+    // Delete the old image file from disk once it's no longer referenced
+    if (req.file && ownerRows[0].image_path) {
+      const oldFile = path.join(uploadsDir, path.basename(ownerRows[0].image_path));
+      fs.unlink(oldFile, () => {}); // best-effort cleanup; ignore errors
+    }
+
+    await pool.execute<ResultSetHeader>(
+      'UPDATE minis SET name = ?, description = ?, price = ?, image_path = ? WHERE id = ?',
+      [name.trim(), description?.trim() || null, priceValue, imagePath, miniId]
+    );
+
+    await setTags(Number(miniId), tags);
+
+    const [rows] = await pool.execute<MiniRow[]>(
+      `${MINI_SELECT} WHERE m.id = ? GROUP BY m.id`,
+      [miniId]
+    );
+
+    res.json(serializeMini(rows[0]));
   } catch (err: unknown) {
     console.error(err);
     res.status(500).json({ error: 'Server error' });

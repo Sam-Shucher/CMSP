@@ -142,4 +142,29 @@ router.patch('/users/:id/role', async (req: AuthRequest, res: Response): Promise
   }
 });
 
+// DELETE /api/admin/users/:id
+// Permanently deletes a user account (their minis go with it — owner_id has
+// ON DELETE CASCADE). Blocked for your own account so an admin can't lock
+// themselves out by mis-clicking.
+router.delete('/users/:id', async (req: AuthRequest, res: Response): Promise<void> => {
+  if (Number(req.params.id) === req.user!.userId) {
+    res.status(400).json({ error: 'You cannot delete your own account' });
+    return;
+  }
+
+  try {
+    const [result] = await pool.execute<ResultSetHeader>('DELETE FROM users WHERE id = ?', [req.params.id]);
+
+    if (result.affectedRows === 0) {
+      res.status(404).json({ error: 'User not found' });
+      return;
+    }
+
+    res.json({ message: 'User deleted' });
+  } catch (err: unknown) {
+    console.error(err);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 export default router;

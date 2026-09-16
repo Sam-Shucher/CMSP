@@ -1,5 +1,7 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { api } from '../api/client';
+import { useAuth } from '../App';
+import ConfirmDeleteModal from '../components/ConfirmDeleteModal';
 
 // Shape of a row from GET /api/admin/approved-emails
 type ApprovedEmail = {
@@ -23,13 +25,20 @@ type UserRow = {
 
 // Admin panel — lets admins manage the invite list and user roles.
 // Access is gated by the AdminRoute wrapper in App.tsx.
+// A pending destructive action awaiting type-to-confirm before it's carried out.
+type PendingDelete =
+  | { kind: 'email'; id: number; label: string }
+  | { kind: 'user'; id: number; label: string };
+
 export default function AdminPage(): React.ReactElement {
+  const { user: currentUser } = useAuth();
   const [emails, setEmails]     = useState<ApprovedEmail[]>([]);
   const [users, setUsers]       = useState<UserRow[]>([]);
   const [newEmail, setNewEmail] = useState<string>('');
   const [error, setError]       = useState<string>('');
   const [success, setSuccess]   = useState<string>('');
   const [loading, setLoading]   = useState<boolean>(false);
+  const [pendingDelete, setPendingDelete] = useState<PendingDelete | null>(null);
 
   // Fetches both the invite list and the user list in parallel.
   // Wrapped in useCallback so it can be added to the useEffect dependency array without
@@ -66,18 +75,24 @@ export default function AdminPage(): React.ReactElement {
     }
   }
 
-  // Removes an email from the invite list after confirmation
-  async function removeEmail(id: number): Promise<void> {
-    if (!confirm('Remove this email from the invite list?')) return;
-    await api(`/api/admin/approved-emails/${id}`, { method: 'DELETE' });
-    void fetchData();
-  }
-
   // Toggles a user between 'user' and 'admin' roles
   async function toggleRole(userId: number, currentRole: string): Promise<void> {
     const newRole: string = currentRole === 'admin' ? 'user' : 'admin';
     if (!confirm(`Change this user's role to ${newRole}?`)) return;
     await api(`/api/admin/users/${userId}/role`, { method: 'PATCH', json: { role: newRole } });
+    void fetchData();
+  }
+
+  // Carries out whatever destructive action is pending, once the modal
+  // confirms the typed phrase matched.
+  async function confirmPendingDelete(): Promise<void> {
+    if (!pendingDelete) return;
+    if (pendingDelete.kind === 'email') {
+      await api(`/api/admin/approved-emails/${pendingDelete.id}`, { method: 'DELETE' });
+    } else {
+      await api(`/api/admin/users/${pendingDelete.id}`, { method: 'DELETE' });
+    }
+    setPendingDelete(null);
     void fetchData();
   }
 
@@ -132,7 +147,7 @@ export default function AdminPage(): React.ReactElement {
                   <button
                     className="btn-danger"
                     style={{ padding: '4px 10px', fontSize: '12px' }}
-                    onClick={() => void removeEmail(e.id)}
+                    onClick={() => setPendingDelete({ kind: 'email', id: e.id, label: e.email })}
                   >
                     Remove
                   </button>
@@ -182,19 +197,46 @@ export default function AdminPage(): React.ReactElement {
                 </td>
                 <td style={tdStyle}>{new Date(u.created_at).toLocaleDateString()}</td>
                 <td style={tdStyle}>
-                  <button
-                    className="btn-secondary"
-                    style={{ padding: '4px 10px', fontSize: '12px' }}
-                    onClick={() => void toggleRole(u.id, u.role)}
-                  >
-                    {u.role === 'admin' ? 'Demote' : 'Make Admin'}
-                  </button>
+                  <div style={{ display: 'flex', gap: '8px' }}>
+                    <button
+                      className="btn-secondary"
+                      style={{ padding: '4px 10px', fontSize: '12px' }}
+                      onClick={() => void toggleRole(u.id, u.role)}
+                    >
+                      {u.role === 'admin' ? 'Demote' : 'Make Admin'}
+                    </button>
+                    {/* Never offer to delete your own account — the server blocks it too, but hiding it avoids a confusing error */}
+                    {u.id !== currentUser?.userId && (
+                      <button
+                        className="btn-danger"
+                        style={{ padding: '4px 10px', fontSize: '12px' }}
+                        onClick={() => setPendingDelete({ kind: 'user', id: u.id, label: u.username })}
+                      >
+                        Delete User
+                      </button>
+                    )}
+                  </div>
                 </td>
               </tr>
             ))}
           </tbody>
         </table>
       </section>
+
+      {pendingDelete && (
+        <ConfirmDeleteModal
+          title={pendingDelete.kind === 'email' ? 'Remove email' : 'Delete user'}
+          description={
+            pendingDelete.kind === 'email'
+              ? 'This removes the email from the invite list. It will not affect an account that already registered with it.'
+              : 'This permanently deletes the account and everything they own (their minis included). This cannot be undone.'
+          }
+          confirmPhrase={pendingDelete.label}
+          confirmButtonLabel={pendingDelete.kind === 'email' ? 'Delete' : 'Confirm Delete'}
+          onConfirm={() => void confirmPendingDelete()}
+          onCancel={() => setPendingDelete(null)}
+        />
+      )}
     </div>
   );
 }

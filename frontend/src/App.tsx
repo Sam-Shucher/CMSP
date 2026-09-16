@@ -1,11 +1,13 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
-import { BrowserRouter, Routes, Route, Navigate, useNavigate } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate, Link, useNavigate } from 'react-router-dom';
 import { api, User } from './api/client';
 import LoginPage from './pages/LoginPage';
 import RegisterPage from './pages/RegisterPage';
 import DashboardPage from './pages/DashboardPage';
 import UploadMiniPage from './pages/UploadMiniPage';
+import EditMiniPage from './pages/EditMiniPage';
 import AdminPage from './pages/AdminPage';
+import ProfilePage from './pages/ProfilePage';
 
 // ---------------------------------------------------------------------------
 // Auth context
@@ -67,7 +69,7 @@ function NavBar(): React.ReactElement | null {
       {user.role === 'admin' && (
         <a href="/admin" style={{ color: '#c9a84c', fontSize: '14px' }}>Admin</a>
       )}
-      <span style={{ color: '#8a7d6a', fontSize: '14px' }}>{user.username}</span>
+      <Link to="/profile" style={{ color: '#8a7d6a', fontSize: '14px' }}>{user.username}</Link>
       <button className="btn-secondary" style={{ padding: '6px 14px', fontSize: '13px' }} onClick={logout}>
         Logout
       </button>
@@ -124,8 +126,10 @@ export default function App(): React.ReactElement {
           <Route path="/register" element={<RegisterPage />} />
 
           {/* Protected routes — redirect to /login if not authenticated */}
-          <Route path="/"       element={<PrivateRoute><DashboardPage /></PrivateRoute>} />
-          <Route path="/upload" element={<PrivateRoute><UploadMiniPage /></PrivateRoute>} />
+          <Route path="/"              element={<PrivateRoute><DashboardPage /></PrivateRoute>} />
+          <Route path="/upload"        element={<PrivateRoute><UploadMiniPage /></PrivateRoute>} />
+          <Route path="/minis/:id/edit" element={<PrivateRoute><EditMiniPage /></PrivateRoute>} />
+          <Route path="/profile"       element={<PrivateRoute><ProfilePage /></PrivateRoute>} />
 
           {/* Admin route — requires both login and admin role */}
           <Route path="/admin"  element={<PrivateRoute><AdminRoute><AdminPage /></AdminRoute></PrivateRoute>} />

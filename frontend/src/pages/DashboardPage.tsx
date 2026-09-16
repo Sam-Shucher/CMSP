@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import { api, Mini } from '../api/client';
+import { useAuth } from '../App';
 
 // The main browse page — shows a searchable, filterable grid of all minis.
 export default function DashboardPage(): React.ReactElement {
@@ -130,6 +131,9 @@ export default function DashboardPage(): React.ReactElement {
 // ---------------------------------------------------------------------------
 
 function MiniCard({ mini }: { mini: Mini }): React.ReactElement {
+  const { user } = useAuth();
+  const canEdit = user != null && (user.userId === mini.owner_id || user.role === 'admin');
+
   return (
     <div
       style={{
@@ -178,8 +182,13 @@ function MiniCard({ mini }: { mini: Mini }): React.ReactElement {
           </span>
         </div>
 
-        <p style={{ fontSize: '12px', color: '#8a7d6a', marginBottom: '4px' }}>
-          owned by {mini.owner_name}
+        <p style={{ fontSize: '12px', color: '#8a7d6a', marginBottom: '4px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <span>owned by {mini.owner_name}</span>
+          {canEdit && (
+            <Link to={`/minis/${mini.id}/edit`} style={{ color: '#c9a84c', fontSize: '12px' }}>
+              Edit
+            </Link>
+          )}
         </p>
 
         {mini.price > 0 && (
