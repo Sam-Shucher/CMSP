@@ -8,12 +8,14 @@
 # Pass --no-restart to skip restarting MariaDB and the app service (used by
 # rpi-setup.sh before the app service exists).
 #
-# Re-applies backend/src/db/schema.sql and restarts MariaDB on every run —
-# schema.sql is all CREATE TABLE IF NOT EXISTS (never alters or drops
-# anything, so it's safe to re-run), and a stale MariaDB connection was the
-# cause of a production 500 once before. Note: schema.sql only adds brand
-# new tables — a new COLUMN on an existing table still needs a manual
-# ALTER TABLE, the same way phone/neighborhood did.
+# Runs backend/src/db/migrations/*.sql in order via the migration runner,
+# which tracks what's already been applied in a schema_migrations table —
+# nothing is ever skipped or re-run. This replaces manually pasting SQL in
+# some remembered order on the Pi, which is exactly what caused three
+# separate production outages (mini_images, phone/neighborhood, collections)
+# before this existed. Also still re-applies schema.sql (CREATE TABLE IF NOT
+# EXISTS only — never alters or drops anything) as a defensive no-op for
+# brand new tables, and restarts MariaDB before the app reconnects.
 
 set -euo pipefail
 
@@ -24,14 +26,17 @@ cd "$REPO_DIR"
 echo "==> Installing dependencies (root, backend, frontend)"
 npm run install:all
 
-echo "==> Applying database schema (safe to re-run)"
-sudo mariadb < backend/src/db/schema.sql
-
 echo "==> Building frontend (frontend/dist)"
 npm --prefix frontend run build
 
 echo "==> Building backend (backend/dist)"
 npm --prefix backend run build
+
+echo "==> Applying database schema (safe to re-run — only creates missing tables)"
+sudo mariadb < backend/src/db/schema.sql
+
+echo "==> Applying database migrations"
+node backend/dist/db/runMigrations.js
 
 if [ "${1:-}" != "--no-restart" ]; then
   echo "==> Restarting MariaDB (clears any stale connections before the app reconnects)"

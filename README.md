@@ -92,6 +92,36 @@ docker compose -f docker-compose.test.yml down -v  # tear it down when done
 Requires Docker Desktop. This container is local-only and separate from the
 Pi's database — nothing here touches production.
 
+## Database migrations
+
+`backend/src/db/schema.sql` only ever runs `CREATE TABLE IF NOT EXISTS` — it
+builds a brand-new database, but it does **nothing** for a database that
+already exists (a new column on an existing table is silently skipped).
+That gap caused three separate production outages in this project's history
+(the `mini_images` table, the `phone`/`neighborhood` columns, and the
+collections tables/columns all shipped in code before they ever reached the
+Pi's actual database).
+
+The fix: **every schema.sql change that isn't a brand new `CREATE TABLE`
+must also get a file in `backend/src/db/migrations/`**, numbered after the
+last one (`004_whatever.sql`, ...). Migration files must be idempotent
+(`ADD COLUMN IF NOT EXISTS`, `CREATE TABLE IF NOT EXISTS`, guard-check
+before adding a constraint) so they're safe to run any number of times.
+
+`backend/src/db/runMigrations.ts` applies whatever hasn't run yet, tracked
+in a `schema_migrations` table, and is invoked automatically by
+`scripts/rpi-update.sh` and `scripts/rpi-setup.sh` on every deploy — there
+is no manual step, and no order to get wrong.
+
+`backend/src/db/migrations.integration.test.ts` is the check that actually
+enforces the rule above: it builds one database from `schema.sql` directly
+and a second from `schema.baseline.sql` (the project's original day-zero
+schema) plus every migration file in order, then asserts the two databases
+end up with identical tables, columns, and foreign keys. If a schema.sql
+edit isn't matched by a migration, this test fails — that's the whole
+point. It's part of `npm --prefix backend run test:integration`, so it runs
+against the same Docker MariaDB as the rest of that suite.
+
 ## Running it on a Raspberry Pi
 
 This is the intended home for the app — it runs as a systemd service and

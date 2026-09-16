@@ -2,27 +2,56 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Project
+
+Mini Library — an invite-only web app for a tabletop miniatures collection,
+split into isolated "collections" (groups, e.g. "Chicago", "dojo"). Runs
+full-time on a Raspberry Pi. See `README.md` for the full picture (stack,
+local dev setup, collections model, Pi deployment).
+
+- `backend/` — Express + TypeScript + MySQL/MariaDB (`mysql2`), JWT cookie auth
+- `frontend/` — React + Vite + TypeScript
+- `scripts/` — Raspberry Pi setup/update scripts
+
 ## Commands
 
 ```bash
-npm run dev       # Start Vite dev server (HMR, typically http://localhost:5173)
-npm run build     # Type-check with tsc, then bundle for production (output: dist/)
-npm run preview   # Serve the production build locally
-npx prettier --write .  # Format all files
+npm run dev                                 # both servers (root)
+npm --prefix backend run test               # backend unit tests — mocked DB
+npm --prefix backend run test:integration   # backend tests against real MariaDB (needs docker compose -f docker-compose.test.yml up -d)
+npm --prefix frontend run test              # frontend tests
+npm --prefix backend run build              # tsc + copies db/migrations/*.sql into dist/
 ```
 
-There are no test commands — this project has no test suite.
+## Database schema changes — read this before editing schema.sql
 
-## Architecture
+`schema.sql` only runs `CREATE TABLE IF NOT EXISTS`. It builds a fresh
+database correctly, but does **nothing** for a database that already
+exists — a new column on an existing table is silently skipped. This has
+caused multiple production outages (features shipping in code that the
+Pi's actual database never received).
 
-A minimal TypeScript + Vite single-page counter app scaffolded by JetBrains WebStorm. No runtime dependencies; only `typescript`, `vite`, and `prettier` as devDependencies.
+**The rule: any change to `schema.sql` that isn't a brand-new `CREATE TABLE`
+must be paired with a new file in `backend/src/db/migrations/`**, numbered
+sequentially (`004_...sql` after the last one). Migration files must be
+idempotent (`ADD COLUMN IF NOT EXISTS`, guard-check before adding a
+constraint) — they may run any number of times, including against a
+database that already has everything via a fresh `schema.sql`.
 
-- `index.html` — HTML entry point; counter UI is defined here with button elements
-- `src/main.ts` — sole source file; queries the DOM and wires up counter logic with `+1`, `+2`, `-1`, `-2` buttons; counter value wraps within `[-99, 99]`
-- `public/` — static assets (SVGs, fonts, `style.css`); served as-is by Vite
+After adding a migration, run `npm --prefix backend run test:integration` —
+`migrations.integration.test.ts` builds one database from `schema.sql` and
+another from `schema.baseline.sql` + every migration file, then asserts
+they're identical. If they're not, a migration is missing or wrong; fix
+the migration, never the test.
 
-TypeScript is configured in strict mode (`strict: true`, `noUnusedLocals`, `noUnusedParameters`, `noFallthroughCasesInSwitch`). Prettier uses single quotes, 2-space indent, 80-char print width.
+Migrations apply automatically on every deploy via `scripts/rpi-update.sh`
+(and on first-time setup via `scripts/rpi-setup.sh`) — there's no manual
+SQL step for the person deploying this.
 
-## Known Incomplete Code
+## Testing approach
 
-The `-2` button in `src/main.ts` (lines 24–25) is missing its event listener callback — it was intentionally left incomplete as a WebStorm learning exercise. The inline comments explain the expected behavior.
+This project is built test-driven: write the test (mocked unit test for
+route logic; real-database integration test for anything SQL-shaped)
+before writing the implementation. Both suites must pass, along with
+`tsc --noEmit` in both `backend/` and `frontend/`, before considering a
+change done.
