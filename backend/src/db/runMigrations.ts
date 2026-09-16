@@ -7,11 +7,19 @@
 // scripts/rpi-setup.sh on every deploy; safe to run any number of times.
 //
 // Usage: npm run migrate  (dev)  /  node dist/db/runMigrations.js  (prod)
-import 'dotenv/config';
 import fs from 'fs';
 import path from 'path';
 import mysql from 'mysql2/promise';
 import { RowDataPacket } from 'mysql2';
+
+// Resolved relative to this file (backend/dist/db/runMigrations.js at
+// runtime), not the caller's working directory — plain `dotenv/config`
+// looks for `.env` in process.cwd(), which silently found nothing (and fell
+// back to root/no-password) the one time this was invoked from the repo
+// root instead of backend/. This can't repeat that mistake regardless of
+// where it's called from.
+import dotenv from 'dotenv';
+dotenv.config({ path: path.join(__dirname, '../../.env') });
 
 const MIGRATIONS_DIR = path.join(__dirname, 'migrations');
 

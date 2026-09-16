@@ -36,7 +36,7 @@ echo "==> Applying database schema (safe to re-run — only creates missing tabl
 sudo mariadb < backend/src/db/schema.sql
 
 echo "==> Applying database migrations"
-node backend/dist/db/runMigrations.js
+(cd backend && node dist/db/runMigrations.js)
 
 if [ "${1:-}" != "--no-restart" ]; then
   echo "==> Restarting MariaDB (clears any stale connections before the app reconnects)"
