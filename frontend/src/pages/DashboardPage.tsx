@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import { api, Mini } from '../api/client';
 import { useAuth } from '../App';
+import MiniDetailModal from '../components/MiniDetailModal';
 
 // The main browse page — shows a searchable, filterable grid of all minis.
 export default function DashboardPage(): React.ReactElement {
@@ -11,6 +12,7 @@ export default function DashboardPage(): React.ReactElement {
   const [activeTag, setActiveTag] = useState<string>('');    // currently selected tag filter
   const [loading, setLoading]     = useState<boolean>(true);
   const [error, setError]         = useState<string>('');
+  const [selectedMini, setSelectedMini] = useState<Mini | null>(null);
 
   // Fetches minis from the API, passing any active search or tag filter as query params.
   // Wrapped in useCallback so that useEffect only re-runs when search or activeTag actually change.
@@ -118,9 +120,13 @@ export default function DashboardPage(): React.ReactElement {
           gap: '20px',
         }}>
           {minis.map((mini: Mini) => (
-            <MiniCard key={mini.id} mini={mini} />
+            <MiniCard key={mini.id} mini={mini} onOpenDetail={() => setSelectedMini(mini)} />
           ))}
         </div>
+      )}
+
+      {selectedMini && (
+        <MiniDetailModal mini={selectedMini} onClose={() => setSelectedMini(null)} />
       )}
     </div>
   );
@@ -130,19 +136,20 @@ export default function DashboardPage(): React.ReactElement {
 // MiniCard — displays a single mini in the grid
 // ---------------------------------------------------------------------------
 
-function MiniCard({ mini }: { mini: Mini }): React.ReactElement {
+function MiniCard({ mini, onOpenDetail }: { mini: Mini; onOpenDetail: () => void }): React.ReactElement {
   const { user } = useAuth();
   const canEdit = user != null && (user.userId === mini.owner_id || user.role === 'admin');
 
   return (
     <div
+      onClick={onOpenDetail}
       style={{
         background: '#252219',
         border: '1px solid #3d3629',
         borderRadius: '8px',
         overflow: 'hidden',
         transition: 'border-color 0.15s, transform 0.15s',
-        cursor: 'default',
+        cursor: 'pointer',
       }}
       // Subtle lift effect on hover — done in JS because inline styles don't support :hover
       onMouseEnter={(e: React.MouseEvent<HTMLDivElement>) => {
@@ -195,7 +202,11 @@ function MiniCard({ mini }: { mini: Mini }): React.ReactElement {
         <p style={{ fontSize: '12px', color: '#8a7d6a', marginBottom: '4px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <span>owned by {mini.owner_name}</span>
           {canEdit && (
-            <Link to={`/minis/${mini.id}/edit`} style={{ color: '#c9a84c', fontSize: '12px' }}>
+            <Link
+              to={`/minis/${mini.id}/edit`}
+              onClick={(e: React.MouseEvent) => e.stopPropagation()}
+              style={{ color: '#c9a84c', fontSize: '12px' }}
+            >
               Edit
             </Link>
           )}
