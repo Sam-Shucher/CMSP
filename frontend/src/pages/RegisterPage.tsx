@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
-import { api, User } from '../api/client';
+import { api } from '../api/client';
 import { useAuth } from '../App';
 import { validateUsername, validatePassword } from '../utils/validation';
 
@@ -17,7 +17,7 @@ type FormState = {
 };
 
 export default function RegisterPage(): React.ReactElement {
-  const { setUser } = useAuth();
+  const { refreshSession } = useAuth();
   const navigate = useNavigate();
 
   const [form, setForm]       = useState<FormState>({ email: '', username: '', displayName: '', phone: '', neighborhood: '', password: '', confirm: '' });
@@ -55,8 +55,8 @@ export default function RegisterPage(): React.ReactElement {
 
     setLoading(true);
     try {
-      // The server will check if this email is on the approved_emails invite list
-      const data = await api<User>('/api/auth/register', {
+      // The server will check if this email is on a collection's invite list
+      await api('/api/auth/register', {
         method: 'POST',
         json: {
           email: form.email,
@@ -68,7 +68,10 @@ export default function RegisterPage(): React.ReactElement {
           // confirm is NOT sent — it was only used for client-side validation
         },
       });
-      setUser(data);
+      // Re-fetch the session from the server — the register response never
+      // included userId, and now also carries collectionId, so this is the
+      // one place both come from the actual source of truth (the cookie).
+      await refreshSession();
       navigate('/'); // redirect to dashboard on success
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Registration failed');

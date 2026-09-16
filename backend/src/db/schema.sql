@@ -6,12 +6,27 @@ CREATE DATABASE IF NOT EXISTS mini_library
 
 USE mini_library;
 
--- Invite list — only emails here can register
+-- A collection is a fully separate group of people and minis (e.g. "Chicago",
+-- "Coast2Coast", "dojo"). Nothing about a collection is visible to someone
+-- who isn't a member of it — see collection_memberships below.
+CREATE TABLE IF NOT EXISTS collections (
+  id         INT PRIMARY KEY AUTO_INCREMENT,
+  name       VARCHAR(100) UNIQUE NOT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Invite list — only emails here can register, scoped per collection. The
+-- same email can be invited into more than one collection at once (hence
+-- UNIQUE on the pair, not on email alone), and registering joins every
+-- collection whose invite list contains that email.
 CREATE TABLE IF NOT EXISTS approved_emails (
-  id       INT PRIMARY KEY AUTO_INCREMENT,
-  email    VARCHAR(255) UNIQUE NOT NULL,
-  added_by INT NULL,
-  added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  id            INT PRIMARY KEY AUTO_INCREMENT,
+  email         VARCHAR(255) NOT NULL,
+  collection_id INT NOT NULL,
+  added_by      INT NULL,
+  added_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE (email, collection_id),
+  FOREIGN KEY (collection_id) REFERENCES collections(id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS users (
@@ -26,17 +41,33 @@ CREATE TABLE IF NOT EXISTS users (
   created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Which collections a user belongs to (many-to-many). This is the only
+-- thing that grants access to a collection's minis or admin panel — a role
+-- of 'admin' above is site-wide capability, but an admin still can't touch
+-- a collection they aren't a member of.
+CREATE TABLE IF NOT EXISTS collection_memberships (
+  id            INT PRIMARY KEY AUTO_INCREMENT,
+  user_id       INT NOT NULL,
+  collection_id INT NOT NULL,
+  joined_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE (user_id, collection_id),
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+  FOREIGN KEY (collection_id) REFERENCES collections(id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS minis (
-  id          INT PRIMARY KEY AUTO_INCREMENT,
-  name        VARCHAR(255) NOT NULL,
-  description TEXT,
-  owner_id    INT NOT NULL,
-  image_path  VARCHAR(500), -- legacy single-photo column, superseded by mini_images below
-  price       DECIMAL(6,2) NOT NULL DEFAULT 0.00,
-  available   BOOLEAN DEFAULT TRUE,
-  created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  updated_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE
+  id            INT PRIMARY KEY AUTO_INCREMENT,
+  name          VARCHAR(255) NOT NULL,
+  description   TEXT,
+  owner_id      INT NOT NULL,
+  collection_id INT NOT NULL,
+  image_path    VARCHAR(500), -- legacy single-photo column, superseded by mini_images below
+  price         DECIMAL(6,2) NOT NULL DEFAULT 0.00,
+  available     BOOLEAN DEFAULT TRUE,
+  created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE,
+  FOREIGN KEY (collection_id) REFERENCES collections(id) ON DELETE CASCADE
 );
 
 -- Up to 3 photos per mini (position 0-2, enforced in application code).
@@ -61,7 +92,9 @@ CREATE TABLE IF NOT EXISTS mini_tags (
   FOREIGN KEY (tag_id)  REFERENCES tags(id)  ON DELETE CASCADE
 );
 
--- Bootstrap: add your own email so you can be the first to register
--- INSERT INTO approved_emails (email) VALUES ('your@email.com');
--- After registering, promote yourself to admin:
+-- Bootstrap: create at least one collection, then add your own email to its
+-- invite list so you can be the first to register into it:
+-- INSERT INTO collections (name) VALUES ('Chicago');
+-- INSERT INTO approved_emails (email, collection_id) VALUES ('your@email.com', (SELECT id FROM collections WHERE name = 'Chicago'));
+-- After registering, promote yourself to (site-wide) admin:
 -- UPDATE users SET role = 'admin' WHERE email = 'your@email.com';

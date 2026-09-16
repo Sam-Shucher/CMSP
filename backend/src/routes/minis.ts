@@ -4,11 +4,18 @@ import path from 'path';
 import fs from 'fs';
 import { RowDataPacket, ResultSetHeader } from 'mysql2';
 import { pool } from '../db/connection';
-import { requireAuth, AuthRequest } from '../middleware/requireAuth';
+import { requireAuth } from '../middleware/requireAuth';
+import { requireCollectionMembership, CollectionRequest } from '../middleware/requireCollectionMembership';
 import { matchesSearch } from '../utils/search';
 
 const router = Router();
 const MAX_IMAGES = 3;
+
+// Every route in this file is scoped to the caller's active collection.
+// requireCollectionMembership re-verifies that membership against the
+// database on every request (never just trusts the JWT claim) and attaches
+// the verified id as req.collectionId — every query below filters on it.
+router.use(requireAuth, requireCollectionMembership);
 
 // Ensure the uploads directory exists when the server starts.
 // Uploaded images live here and are served as static files by index.ts.
@@ -172,18 +179,21 @@ async function setImages(miniId: number, keptPaths: string[], newFiles: Express.
 // ---------------------------------------------------------------------------
 
 // GET /api/minis?q=search&tag=dragon
-// Returns all minis, optionally filtered by name/description search or a tag.
-// All routes here require the user to be logged in (requireAuth middleware).
-router.get('/', requireAuth, async (req: AuthRequest, res: Response): Promise<void> => {
+// Returns minis in the caller's active collection, optionally filtered by
+// name/description search or a tag. Minis in every other collection are
+// invisible here, full stop — the collection_id filter below is mandatory,
+// not optional like q/tag.
+router.get('/', async (req: CollectionRequest, res: Response): Promise<void> => {
   // Pull optional query params — both default to undefined if not provided
   const { q, tag } = req.query as Record<string, string | undefined>;
 
   try {
-    // The tag filter (a controlled pill, not free text) stays an exact match in SQL.
-    // Free-text search (q) is applied afterwards in JS — see matchesSearch below —
-    // so a misspelled search term still finds a close match, which plain SQL LIKE can't do.
-    const params: (string | number)[] = [];
-    const where: string[] = [];
+    // The collection filter is always present; tag (a controlled pill, not
+    // free text) stays an exact match in SQL. Free-text search (q) is
+    // applied afterwards in JS — see matchesSearch below — so a misspelled
+    // search term still finds a close match, which plain SQL LIKE can't do.
+    const params: (string | number)[] = [req.collectionId!];
+    const where: string[] = ['m.collection_id = ?'];
 
     if (tag) {
       // Subquery: find minis that have a tag matching the filter
@@ -191,12 +201,10 @@ router.get('/', requireAuth, async (req: AuthRequest, res: Response): Promise<vo
       params.push(tag);
     }
 
-    const whereClause = where.length ? `WHERE ${where.join(' AND ')}` : '';
-
     // GROUP_CONCAT aggregates all of a mini's tag names into one comma-separated
     // string per row, so we don't get duplicate mini rows (one per tag)
     const [rows] = await pool.execute<MiniRow[]>(
-      `${MINI_SELECT} ${whereClause} GROUP BY m.id ORDER BY m.created_at DESC`,
+      `${MINI_SELECT} WHERE ${where.join(' AND ')} GROUP BY m.id ORDER BY m.created_at DESC`,
       params
     );
 
@@ -213,12 +221,20 @@ router.get('/', requireAuth, async (req: AuthRequest, res: Response): Promise<vo
 });
 
 // GET /api/minis/tags
-// Returns a sorted list of every tag that exists in the database.
-// Used by the dashboard to populate the filter buttons.
+// Returns the sorted list of tags actually used by minis in the caller's
+// active collection — not every tag in the database, so a tag name from
+// another collection's minis can't leak through the filter pills.
 // Registered before /:id so "tags" isn't swallowed as an :id value.
-router.get('/tags', requireAuth, async (_req: AuthRequest, res: Response): Promise<void> => {
+router.get('/tags', async (req: CollectionRequest, res: Response): Promise<void> => {
   try {
-    const [rows] = await pool.execute<TagNameRow[]>('SELECT name FROM tags ORDER BY name');
+    const [rows] = await pool.execute<TagNameRow[]>(
+      `SELECT DISTINCT t.name FROM tags t
+       JOIN mini_tags mt ON mt.tag_id = t.id
+       JOIN minis m ON m.id = mt.mini_id
+       WHERE m.collection_id = ?
+       ORDER BY t.name`,
+      [req.collectionId!]
+    );
     res.json(rows.map(r => r.name));
   } catch (err: unknown) {
     console.error(err);
@@ -227,12 +243,14 @@ router.get('/tags', requireAuth, async (_req: AuthRequest, res: Response): Promi
 });
 
 // GET /api/minis/:id
-// Returns a single mini by id — used to prefill the edit form.
-router.get('/:id', requireAuth, async (req: AuthRequest, res: Response): Promise<void> => {
+// Returns a single mini by id — used to prefill the edit form. A mini from
+// a different collection returns 404, identical to a nonexistent id, so an
+// id guess can't be used to even confirm another collection's mini exists.
+router.get('/:id', async (req: CollectionRequest, res: Response): Promise<void> => {
   try {
     const [rows] = await pool.execute<MiniRow[]>(
-      `${MINI_SELECT} WHERE m.id = ? GROUP BY m.id`,
-      [req.params.id]
+      `${MINI_SELECT} WHERE m.id = ? AND m.collection_id = ? GROUP BY m.id`,
+      [req.params.id, req.collectionId!]
     );
 
     if (rows.length === 0) {
@@ -248,9 +266,9 @@ router.get('/:id', requireAuth, async (req: AuthRequest, res: Response): Promise
 });
 
 // POST /api/minis
-// Creates a new mini. Expects multipart/form-data.
+// Creates a new mini in the caller's active collection. Expects multipart/form-data.
 // Fields: name (required), description, tags (comma-separated), images (0-3 files).
-router.post('/', requireAuth, upload.array('images', MAX_IMAGES), handleUploadError, async (req: AuthRequest, res: Response): Promise<void> => {
+router.post('/', upload.array('images', MAX_IMAGES), handleUploadError, async (req: CollectionRequest, res: Response): Promise<void> => {
   const { name, description, tags, price } = req.body as Record<string, string>;
   const files = (req.files as Express.Multer.File[] | undefined) ?? [];
 
@@ -270,8 +288,8 @@ router.post('/', requireAuth, upload.array('images', MAX_IMAGES), handleUploadEr
   try {
     // Insert the mini itself — req.user! is safe here because requireAuth ran first
     const [result] = await pool.execute<ResultSetHeader>(
-      'INSERT INTO minis (name, description, owner_id, price) VALUES (?, ?, ?, ?)',
-      [name.trim(), description?.trim() || null, req.user!.userId, priceValue]
+      'INSERT INTO minis (name, description, owner_id, collection_id, price) VALUES (?, ?, ?, ?, ?)',
+      [name.trim(), description?.trim() || null, req.user!.userId, req.collectionId!, priceValue]
     );
     const miniId: number = result.insertId;
 
@@ -286,19 +304,21 @@ router.post('/', requireAuth, upload.array('images', MAX_IMAGES), handleUploadEr
 });
 
 // PATCH /api/minis/:id
-// Edits an existing mini. Only the owner or an admin may do this.
+// Edits an existing mini. Only the owner or an admin may do this, and only
+// within the caller's active collection — a mini from another collection
+// looks exactly like a nonexistent one (404), same as GET /:id above.
 // Expects multipart/form-data. `existingImages` is a JSON array of image
 // paths (from the mini's current photos) to keep; any new files in the
 // `images` field are appended after them, capped at MAX_IMAGES total.
-router.patch('/:id', requireAuth, upload.array('images', MAX_IMAGES), handleUploadError, async (req: AuthRequest, res: Response): Promise<void> => {
+router.patch('/:id', upload.array('images', MAX_IMAGES), handleUploadError, async (req: CollectionRequest, res: Response): Promise<void> => {
   const miniId = req.params.id;
   const { name, description, tags, price, existingImages } = req.body as Record<string, string>;
   const newFiles = (req.files as Express.Multer.File[] | undefined) ?? [];
 
   try {
     const [ownerRows] = await pool.execute<OwnerRow[]>(
-      'SELECT owner_id FROM minis WHERE id = ?',
-      [miniId]
+      'SELECT owner_id FROM minis WHERE id = ? AND collection_id = ?',
+      [miniId, req.collectionId!]
     );
 
     if (ownerRows.length === 0) {
@@ -374,16 +394,17 @@ router.patch('/:id', requireAuth, upload.array('images', MAX_IMAGES), handleUplo
 });
 
 // DELETE /api/minis/:id
-// Deletes a mini. Only the owner or an admin may do this. Tags and photo
-// rows are removed automatically via ON DELETE CASCADE; the photo files
-// themselves still need cleaning up from disk here.
-router.delete('/:id', requireAuth, async (req: AuthRequest, res: Response): Promise<void> => {
+// Deletes a mini. Only the owner or an admin may do this, and only within
+// the caller's active collection. Tags and photo rows are removed
+// automatically via ON DELETE CASCADE; the photo files themselves still
+// need cleaning up from disk here.
+router.delete('/:id', async (req: CollectionRequest, res: Response): Promise<void> => {
   const miniId = req.params.id;
 
   try {
     const [ownerRows] = await pool.execute<OwnerRow[]>(
-      'SELECT owner_id FROM minis WHERE id = ?',
-      [miniId]
+      'SELECT owner_id FROM minis WHERE id = ? AND collection_id = ?',
+      [miniId, req.collectionId!]
     );
 
     if (ownerRows.length === 0) {

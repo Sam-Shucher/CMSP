@@ -44,6 +44,13 @@ export type User = {
   userId: number;
   username: string;
   role: string;      // 'user' | 'admin'
+  collectionId?: number; // absent until a collection is selected — see /api/auth/select-collection
+};
+
+// One row from GET /api/auth/collections — the collections the current user belongs to
+export type Collection = {
+  id: number;
+  name: string;
 };
 
 // One row from GET /api/minis — the shape the backend sends back

@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { api, Mini } from '../api/client';
 import MiniForm, { MiniFormValues } from '../components/MiniForm';
+import ConfirmDeleteModal from '../components/ConfirmDeleteModal';
 
 // Page for editing a mini you already own (or, if you're an admin, anyone's).
 // The server re-checks ownership on submit regardless of what's shown here.
@@ -10,6 +11,7 @@ export default function EditMiniPage(): React.ReactElement {
   const navigate = useNavigate();
   const [mini, setMini]           = useState<Mini | null>(null);
   const [loadError, setLoadError] = useState<string>('');
+  const [confirmingDelete, setConfirmingDelete] = useState<boolean>(false);
 
   useEffect(() => {
     api<Mini>(`/api/minis/${id}`)
@@ -28,6 +30,11 @@ export default function EditMiniPage(): React.ReactElement {
 
     await api(`/api/minis/${id}`, { method: 'PATCH', body: fd });
     navigate('/'); // back to the dashboard after a successful edit
+  }
+
+  async function handleDelete(): Promise<void> {
+    await api(`/api/minis/${id}`, { method: 'DELETE' });
+    navigate('/'); // back to the dashboard after a successful delete
   }
 
   if (loadError) {
@@ -58,6 +65,25 @@ export default function EditMiniPage(): React.ReactElement {
         onSubmit={handleSubmit}
         onCancel={() => navigate('/')}
       />
+
+      {/* Kept separate from the form's own buttons so a mistaken click while
+          editing doesn't land anywhere near "delete this permanently". */}
+      <div style={{ marginTop: '32px', paddingTop: '20px', borderTop: '1px solid #3d3629' }}>
+        <button type="button" className="btn-danger" onClick={() => setConfirmingDelete(true)}>
+          Delete Mini
+        </button>
+      </div>
+
+      {confirmingDelete && (
+        <ConfirmDeleteModal
+          title="Delete mini"
+          description="This permanently deletes this mini and its photos. This cannot be undone."
+          confirmPhrase={mini.name}
+          confirmButtonLabel="Confirm Delete"
+          onConfirm={() => void handleDelete()}
+          onCancel={() => setConfirmingDelete(false)}
+        />
+      )}
     </div>
   );
 }

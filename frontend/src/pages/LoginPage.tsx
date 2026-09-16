@@ -1,14 +1,10 @@
 import React, { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
-import { api, User } from '../api/client';
+import { api } from '../api/client';
 import { useAuth } from '../App';
 
-// The server returns the User fields plus a displayName on successful login.
-// We only store the User portion (userId, username, role) in the auth context.
-type LoginResponse = User & { displayName: string };
-
 export default function LoginPage(): React.ReactElement {
-  const { setUser } = useAuth();
+  const { refreshSession } = useAuth();
   const navigate = useNavigate();
 
   // Controlled inputs — each has its own state string
@@ -23,12 +19,14 @@ export default function LoginPage(): React.ReactElement {
     setLoading(true);
 
     try {
-      const data = await api<LoginResponse>('/api/auth/login', {
+      await api('/api/auth/login', {
         method: 'POST',
         json: { email, password },
       });
-      // Store the logged-in user in context so the rest of the app can read it
-      setUser({ userId: data.userId, username: data.username, role: data.role });
+      // Re-fetch the session from the server rather than trusting this
+      // response body directly — it picks up collectionId (and re-derives
+      // it from the fresh cookie, the actual source of truth) in one place.
+      await refreshSession();
       navigate('/'); // redirect to the dashboard
     } catch (err: unknown) {
       // Display the server's error message (e.g. "Invalid email or password")

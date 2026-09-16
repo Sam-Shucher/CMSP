@@ -31,7 +31,8 @@ type PendingDelete =
   | { kind: 'user'; id: number; label: string };
 
 export default function AdminPage(): React.ReactElement {
-  const { user: currentUser } = useAuth();
+  const { user: currentUser, collections } = useAuth();
+  const activeCollectionName = collections.find(c => c.id === currentUser?.collectionId)?.name ?? '';
   const [emails, setEmails]     = useState<ApprovedEmail[]>([]);
   const [users, setUsers]       = useState<UserRow[]>([]);
   const [newEmail, setNewEmail] = useState<string>('');
@@ -98,7 +99,10 @@ export default function AdminPage(): React.ReactElement {
 
   return (
     <div style={{ padding: '28px 32px', maxWidth: '860px', margin: '0 auto' }}>
-      <h2 style={{ fontSize: '22px', color: '#c9a84c', marginBottom: '28px' }}>Admin Panel</h2>
+      <h2 style={{ fontSize: '22px', color: '#c9a84c', marginBottom: '4px' }}>Admin Panel</h2>
+      <p style={{ fontSize: '13px', color: '#8a7d6a', marginBottom: '24px' }}>
+        Managing <strong style={{ color: '#e8e0d0' }}>{activeCollectionName}</strong> — switch groups to administer a different one.
+      </p>
 
       {/* ------------------------------------------------------------------ */}
       {/* Invite list — who is allowed to create an account                   */}
@@ -169,7 +173,7 @@ export default function AdminPage(): React.ReactElement {
       {/* Registered users — manage roles                                      */}
       {/* ------------------------------------------------------------------ */}
       <section style={sectionStyle}>
-        <h3 style={sectionHeadStyle}>Registered Users</h3>
+        <h3 style={sectionHeadStyle}>Members of {activeCollectionName}</h3>
         <table style={tableStyle}>
           <thead>
             <tr>
@@ -205,14 +209,14 @@ export default function AdminPage(): React.ReactElement {
                     >
                       {u.role === 'admin' ? 'Demote' : 'Make Admin'}
                     </button>
-                    {/* Never offer to delete your own account — the server blocks it too, but hiding it avoids a confusing error */}
+                    {/* Never offer to remove yourself from the group you're administering — the server blocks it too, but hiding it avoids a confusing error */}
                     {u.id !== currentUser?.userId && (
                       <button
                         className="btn-danger"
                         style={{ padding: '4px 10px', fontSize: '12px' }}
                         onClick={() => setPendingDelete({ kind: 'user', id: u.id, label: u.username })}
                       >
-                        Delete User
+                        Remove from Group
                       </button>
                     )}
                   </div>
@@ -225,11 +229,11 @@ export default function AdminPage(): React.ReactElement {
 
       {pendingDelete && (
         <ConfirmDeleteModal
-          title={pendingDelete.kind === 'email' ? 'Remove email' : 'Delete user'}
+          title={pendingDelete.kind === 'email' ? 'Remove email' : 'Remove member'}
           description={
             pendingDelete.kind === 'email'
               ? 'This removes the email from the invite list. It will not affect an account that already registered with it.'
-              : 'This permanently deletes the account and everything they own (their minis included). This cannot be undone.'
+              : `This removes them from ${activeCollectionName} (their minis here go with it). If this is their only group, their whole account is deleted too. This cannot be undone.`
           }
           confirmPhrase={pendingDelete.label}
           confirmButtonLabel={pendingDelete.kind === 'email' ? 'Delete' : 'Confirm Delete'}

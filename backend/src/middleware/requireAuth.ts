@@ -9,6 +9,11 @@ export interface JwtPayload {
   userId: number;
   username: string;
   role: string;
+  // The collection the user most recently selected (see /api/auth/select-collection).
+  // Absent until they pick one. Never trust this alone for access control —
+  // requireCollectionMembership re-verifies it against the database on every
+  // request, since membership can be revoked after this token was issued.
+  collectionId?: number;
 }
 
 // Express's Request type doesn't have a `user` field by default.

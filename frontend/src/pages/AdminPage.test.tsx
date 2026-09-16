@@ -17,7 +17,7 @@ const USERS = [
 
 function renderAdminPage() {
   return render(
-    <AuthContext.Provider value={{ user: SELF_ADMIN, loading: false, setUser: vi.fn() }}>
+    <AuthContext.Provider value={{ user: SELF_ADMIN, loading: false, setUser: vi.fn(), collections: [], selectCollection: vi.fn(), refreshSession: vi.fn() }}>
       <AdminPage />
     </AuthContext.Provider>
   );
@@ -40,7 +40,7 @@ describe('AdminPage — type-to-confirm deletion', () => {
     renderAdminPage();
     await screen.findByText('friend@example.com');
 
-    await userEvent.click(screen.getByRole('button', { name: /remove/i }));
+    await userEvent.click(screen.getByRole('button', { name: /^remove$/i }));
     const deleteButton = await screen.findByRole('button', { name: /^delete$/i });
     expect(deleteButton).toBeDisabled();
 
@@ -53,7 +53,7 @@ describe('AdminPage — type-to-confirm deletion', () => {
     renderAdminPage();
     await screen.findByText('friend@example.com');
 
-    await userEvent.click(screen.getByRole('button', { name: /remove/i }));
+    await userEvent.click(screen.getByRole('button', { name: /^remove$/i }));
     await userEvent.type(await screen.findByLabelText(/type/i), 'friend@example.com');
     await userEvent.click(screen.getByRole('button', { name: /^delete$/i }));
 
@@ -62,23 +62,23 @@ describe('AdminPage — type-to-confirm deletion', () => {
     );
   });
 
-  it('does not show a Delete User button for your own row', async () => {
+  it('does not show a Remove from Group button for your own row', async () => {
     renderAdminPage();
     await screen.findByText('grunt');
 
     const rows = screen.getAllByRole('row');
     const bossRow = rows.find(r => r.textContent?.includes('boss'));
     expect(bossRow).toBeDefined();
-    expect(within(bossRow!).queryByRole('button', { name: /delete user/i })).not.toBeInTheDocument();
+    expect(within(bossRow!).queryByRole('button', { name: /remove from group/i })).not.toBeInTheDocument();
   });
 
-  it('deletes another user once their username is retyped and confirmed', async () => {
+  it('removes another user from the group once their username is retyped and confirmed', async () => {
     renderAdminPage();
     await screen.findByText('grunt');
 
     const rows = screen.getAllByRole('row');
     const gruntRow = rows.find(r => r.textContent?.includes('grunt'));
-    await userEvent.click(within(gruntRow!).getByRole('button', { name: /delete user/i }));
+    await userEvent.click(within(gruntRow!).getByRole('button', { name: /remove from group/i }));
 
     await userEvent.type(await screen.findByLabelText(/type/i), 'grunt');
     await userEvent.click(screen.getByRole('button', { name: /^confirm delete$/i }));

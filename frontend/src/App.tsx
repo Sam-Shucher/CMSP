@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import { BrowserRouter, Routes, Route, Navigate, Link, useNavigate } from 'react-router-dom';
-import { api, User } from './api/client';
+import { api, User, Collection } from './api/client';
 import LoginPage from './pages/LoginPage';
 import RegisterPage from './pages/RegisterPage';
 import DashboardPage from './pages/DashboardPage';
@@ -8,6 +8,7 @@ import UploadMiniPage from './pages/UploadMiniPage';
 import EditMiniPage from './pages/EditMiniPage';
 import AdminPage from './pages/AdminPage';
 import ProfilePage from './pages/ProfilePage';
+import CollectionPicker from './pages/CollectionPicker';
 
 // ---------------------------------------------------------------------------
 // Auth context
@@ -19,6 +20,9 @@ type AuthContextType = {
   user: User | null;
   loading: boolean;        // true while the initial /api/auth/me check is in flight
   setUser: (u: User | null) => void;
+  collections: Collection[]; // the groups the current user belongs to
+  selectCollection: (id: number) => Promise<void>;
+  refreshSession: () => Promise<void>; // re-fetches user + collections from the server
 };
 
 // Default context value — loading=true so pages don't flash the wrong state
@@ -26,6 +30,9 @@ export const AuthContext = createContext<AuthContextType>({
   user: null,
   loading: true,
   setUser: () => {},
+  collections: [],
+  selectCollection: async () => {},
+  refreshSession: async () => {},
 });
 
 // Convenience hook so any component can read the auth context without importing AuthContext
@@ -38,7 +45,7 @@ export function useAuth(): AuthContextType {
 // ---------------------------------------------------------------------------
 
 function NavBar(): React.ReactElement | null {
-  const { user, setUser } = useAuth();
+  const { user, setUser, collections } = useAuth();
   const navigate = useNavigate();
 
   async function logout(): Promise<void> {
@@ -49,6 +56,18 @@ function NavBar(): React.ReactElement | null {
 
   // Don't render the nav at all on the login/register pages
   if (!user) return null;
+
+  const activeCollection = collections.find((c: Collection) => c.id === user.collectionId);
+
+  // Clearing collectionId (client-side only) makes the top-level gate in
+  // AppBody show the picker again — the actual switch still goes through
+  // POST /api/auth/select-collection, which re-verifies membership.
+  function switchCollection(): void {
+    // Safe to assert — this is only reachable from a button rendered below
+    // the `if (!user) return null;` guard above.
+    setUser({ ...user!, collectionId: undefined });
+    navigate('/');
+  }
 
   return (
     <nav style={{
@@ -63,6 +82,19 @@ function NavBar(): React.ReactElement | null {
       <span style={{ fontFamily: 'Cinzel, serif', color: '#c9a84c', fontSize: '18px', marginRight: 'auto' }}>
         ⚔ Mini Library
       </span>
+      {activeCollection && (
+        collections.length > 1 ? (
+          <button
+            type="button"
+            onClick={switchCollection}
+            style={{ background: 'none', border: 'none', color: '#8a7d6a', fontSize: '14px', cursor: 'pointer', padding: 0 }}
+          >
+            {activeCollection.name} (Switch)
+          </button>
+        ) : (
+          <span style={{ color: '#8a7d6a', fontSize: '14px' }}>{activeCollection.name}</span>
+        )
+      )}
       <a href="/" style={{ color: '#e8e0d0', fontSize: '14px' }}>Browse</a>
       <a href="/upload" style={{ color: '#e8e0d0', fontSize: '14px' }}>Add Mini</a>
       {/* Admin link only appears for users with the admin role */}
@@ -99,44 +131,117 @@ function AdminRoute({ children }: { children: React.ReactNode }): React.ReactEle
 }
 
 // ---------------------------------------------------------------------------
+// AppBody — decides between the loading spinner, the "pick a group" gate,
+// and the normal app. Split out from App so it can call useAuth() (App
+// itself provides the context, so it can't consume it in the same component).
+// ---------------------------------------------------------------------------
+
+function AppBody(): React.ReactElement {
+  const { user, loading, collections, selectCollection } = useAuth();
+
+  if (loading) {
+    return <div style={{ padding: '40px', textAlign: 'center', color: '#8a7d6a' }}>Loading…</div>;
+  }
+
+  // Logged in, but no group selected yet — gate everything else on that
+  // choice first, regardless of which URL they landed on.
+  if (user && !user.collectionId) {
+    if (collections.length === 0) {
+      return (
+        <div style={{ padding: '60px 24px', textAlign: 'center', color: '#8a7d6a' }}>
+          <p style={{ fontSize: '18px', marginBottom: '8px' }}>You're not in any group yet.</p>
+          <p style={{ fontSize: '14px' }}>Ask an admin to add your email to a group's invite list.</p>
+        </div>
+      );
+    }
+    return <CollectionPicker collections={collections} onSelect={(id: number) => void selectCollection(id)} />;
+  }
+
+  return (
+    <>
+      <NavBar />
+      <Routes>
+        {/* Public routes — accessible without logging in */}
+        <Route path="/login"    element={<LoginPage />} />
+        <Route path="/register" element={<RegisterPage />} />
+
+        {/* Protected routes — redirect to /login if not authenticated */}
+        <Route path="/"              element={<PrivateRoute><DashboardPage /></PrivateRoute>} />
+        <Route path="/upload"        element={<PrivateRoute><UploadMiniPage /></PrivateRoute>} />
+        <Route path="/minis/:id/edit" element={<PrivateRoute><EditMiniPage /></PrivateRoute>} />
+        <Route path="/profile"       element={<PrivateRoute><ProfilePage /></PrivateRoute>} />
+
+        {/* Admin route — requires both login and admin role */}
+        <Route path="/admin"  element={<PrivateRoute><AdminRoute><AdminPage /></AdminRoute></PrivateRoute>} />
+
+        {/* Catch-all: send anything unrecognised to the dashboard */}
+        <Route path="*" element={<Navigate to="/" replace />} />
+      </Routes>
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Root App component
 // ---------------------------------------------------------------------------
 
 export default function App(): React.ReactElement {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
+  const [collections, setCollections] = useState<Collection[]>([]);
+
+  // Loads the current session fresh from the server: who's logged in (from
+  // the cookie) and which collections they belong to, auto-entering the one
+  // group if that's all there is. Used both on first mount and right after
+  // login/register — those pages call this instead of hand-building a User
+  // object from their own response bodies, so the collectionId (and, for
+  // registration, even the userId) always comes from the real source of
+  // truth instead of possibly being stale or incomplete.
+  async function refreshSession(): Promise<void> {
+    try {
+      const loadedUser = await api<User>('/api/auth/me');
+      setUser(loadedUser);
+      try {
+        const myCollections = await api<Collection[]>('/api/auth/collections');
+        setCollections(myCollections);
+
+        // Auto-enter when there's only one possible choice and none is
+        // selected yet (covers a page refresh right after registering
+        // into a single group, before the JWT picked one up).
+        if (!loadedUser.collectionId && myCollections.length === 1) {
+          const updated = await api<{ collectionId: number }>('/api/auth/select-collection', {
+            method: 'POST',
+            json: { collectionId: myCollections[0].id },
+          });
+          setUser((prev: User | null) => prev ? { ...prev, collectionId: updated.collectionId } : prev);
+        }
+      } catch {
+        setCollections([]); // non-fatal — nav just won't show a group name
+      }
+    } catch {
+      setUser(null); // 401 means not logged in — that's fine
+    }
+  }
 
   // On first load, ask the backend if we already have a valid session (cookie).
   // This restores the logged-in state after a page refresh without asking the user
   // to log in again — the JWT cookie handles it transparently.
   useEffect(() => {
-    api<User>('/api/auth/me')
-      .then(setUser)
-      .catch(() => setUser(null)) // 401 means not logged in — that's fine
-      .finally(() => setLoading(false));
+    void refreshSession().finally(() => setLoading(false));
   }, []);
 
+  async function selectCollection(id: number): Promise<void> {
+    const updated = await api<{ collectionId: number }>('/api/auth/select-collection', {
+      method: 'POST',
+      json: { collectionId: id },
+    });
+    setUser((prev: User | null) => prev ? { ...prev, collectionId: updated.collectionId } : prev);
+  }
+
   return (
-    <AuthContext.Provider value={{ user, loading, setUser }}>
+    <AuthContext.Provider value={{ user, loading, setUser, collections, selectCollection, refreshSession }}>
       <BrowserRouter>
-        <NavBar />
-        <Routes>
-          {/* Public routes — accessible without logging in */}
-          <Route path="/login"    element={<LoginPage />} />
-          <Route path="/register" element={<RegisterPage />} />
-
-          {/* Protected routes — redirect to /login if not authenticated */}
-          <Route path="/"              element={<PrivateRoute><DashboardPage /></PrivateRoute>} />
-          <Route path="/upload"        element={<PrivateRoute><UploadMiniPage /></PrivateRoute>} />
-          <Route path="/minis/:id/edit" element={<PrivateRoute><EditMiniPage /></PrivateRoute>} />
-          <Route path="/profile"       element={<PrivateRoute><ProfilePage /></PrivateRoute>} />
-
-          {/* Admin route — requires both login and admin role */}
-          <Route path="/admin"  element={<PrivateRoute><AdminRoute><AdminPage /></AdminRoute></PrivateRoute>} />
-
-          {/* Catch-all: send anything unrecognised to the dashboard */}
-          <Route path="*" element={<Navigate to="/" replace />} />
-        </Routes>
+        <AppBody />
       </BrowserRouter>
     </AuthContext.Provider>
   );

@@ -2,7 +2,6 @@ import { useEffect, useState, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import { api, Mini } from '../api/client';
 import { useAuth } from '../App';
-import ConfirmDeleteModal from '../components/ConfirmDeleteModal';
 
 // The main browse page — shows a searchable, filterable grid of all minis.
 export default function DashboardPage(): React.ReactElement {
@@ -12,7 +11,6 @@ export default function DashboardPage(): React.ReactElement {
   const [activeTag, setActiveTag] = useState<string>('');    // currently selected tag filter
   const [loading, setLoading]     = useState<boolean>(true);
   const [error, setError]         = useState<string>('');
-  const [pendingDelete, setPendingDelete] = useState<{ id: number; name: string } | null>(null);
 
   // Fetches minis from the API, passing any active search or tag filter as query params.
   // Wrapped in useCallback so that useEffect only re-runs when search or activeTag actually change.
@@ -41,14 +39,6 @@ export default function DashboardPage(): React.ReactElement {
   useEffect(() => {
     void api<string[]>('/api/minis/tags').then(setTags).catch(() => {});
   }, []);
-
-  // Carries out a pending deletion once the confirm modal's typed phrase matched.
-  async function confirmPendingDelete(): Promise<void> {
-    if (!pendingDelete) return;
-    await api(`/api/minis/${pendingDelete.id}`, { method: 'DELETE' });
-    setPendingDelete(null);
-    void fetchMinis();
-  }
 
   return (
     <div style={{ padding: '28px 32px', maxWidth: '1200px', margin: '0 auto' }}>
@@ -128,20 +118,9 @@ export default function DashboardPage(): React.ReactElement {
           gap: '20px',
         }}>
           {minis.map((mini: Mini) => (
-            <MiniCard key={mini.id} mini={mini} onRequestDelete={() => setPendingDelete({ id: mini.id, name: mini.name })} />
+            <MiniCard key={mini.id} mini={mini} />
           ))}
         </div>
-      )}
-
-      {pendingDelete && (
-        <ConfirmDeleteModal
-          title="Delete mini"
-          description="This permanently deletes this mini and its photos. This cannot be undone."
-          confirmPhrase={pendingDelete.name}
-          confirmButtonLabel="Confirm Delete"
-          onConfirm={() => void confirmPendingDelete()}
-          onCancel={() => setPendingDelete(null)}
-        />
       )}
     </div>
   );
@@ -151,7 +130,7 @@ export default function DashboardPage(): React.ReactElement {
 // MiniCard — displays a single mini in the grid
 // ---------------------------------------------------------------------------
 
-function MiniCard({ mini, onRequestDelete }: { mini: Mini; onRequestDelete: () => void }): React.ReactElement {
+function MiniCard({ mini }: { mini: Mini }): React.ReactElement {
   const { user } = useAuth();
   const canEdit = user != null && (user.userId === mini.owner_id || user.role === 'admin');
 
@@ -216,18 +195,9 @@ function MiniCard({ mini, onRequestDelete }: { mini: Mini; onRequestDelete: () =
         <p style={{ fontSize: '12px', color: '#8a7d6a', marginBottom: '4px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <span>owned by {mini.owner_name}</span>
           {canEdit && (
-            <span style={{ display: 'flex', gap: '10px' }}>
-              <Link to={`/minis/${mini.id}/edit`} style={{ color: '#c9a84c', fontSize: '12px' }}>
-                Edit
-              </Link>
-              <button
-                type="button"
-                onClick={onRequestDelete}
-                style={{ background: 'none', border: 'none', color: '#c0392b', cursor: 'pointer', fontSize: '12px', padding: 0 }}
-              >
-                Delete
-              </button>
-            </span>
+            <Link to={`/minis/${mini.id}/edit`} style={{ color: '#c9a84c', fontSize: '12px' }}>
+              Edit
+            </Link>
           )}
         </p>
 

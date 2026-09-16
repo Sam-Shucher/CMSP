@@ -6,10 +6,13 @@
 // Safe to re-run — existing rows are skipped instead of erroring.
 import 'dotenv/config';
 import bcrypt from 'bcryptjs';
+import { RowDataPacket, ResultSetHeader } from 'mysql2';
 import { pool } from './connection';
 
 // The passwords are intentionally simple and documented here — these accounts
 // only ever exist in your local/dev database, never in production data.
+const COLLECTIONS = ['Chicago', 'Coast2Coast', 'dojo'];
+
 const TEST_USERS = [
   { email: 'alice@test.local', username: 'alice',   password: 'password123', displayName: 'Alice (test)',   phone: '555-000-0001', neighborhood: 'Riverside' },
   { email: 'bob@test.local',   username: 'bob',     password: 'password123', displayName: 'Bob (test)',     phone: '555-000-0002', neighborhood: 'Downtown' },
@@ -17,22 +20,29 @@ const TEST_USERS = [
 ];
 
 async function seed(): Promise<void> {
+  for (const name of COLLECTIONS) {
+    await pool.execute('INSERT IGNORE INTO collections (name) VALUES (?)', [name]);
+  }
+  const [collectionRows] = await pool.execute<RowDataPacket[]>('SELECT id FROM collections WHERE name = ?', ['Chicago']);
+  const chicagoId = collectionRows[0].id as number;
+
   for (const u of TEST_USERS) {
     // Invite-gate: a user can't register unless their email is approved first
-    await pool.execute('INSERT IGNORE INTO approved_emails (email) VALUES (?)', [u.email]);
+    await pool.execute('INSERT IGNORE INTO approved_emails (email, collection_id) VALUES (?, ?)', [u.email, chicagoId]);
 
-    const [existing] = await pool.execute('SELECT id FROM users WHERE email = ?', [u.email]);
-    if ((existing as unknown[]).length > 0) {
+    const [existing] = await pool.execute<RowDataPacket[]>('SELECT id FROM users WHERE email = ?', [u.email]);
+    if (existing.length > 0) {
       console.log(`Skipping ${u.email} — already exists`);
       continue;
     }
 
     const passwordHash = await bcrypt.hash(u.password, 12);
-    await pool.execute(
+    const [result] = await pool.execute<ResultSetHeader>(
       'INSERT INTO users (email, username, password_hash, display_name, phone, neighborhood) VALUES (?, ?, ?, ?, ?, ?)',
       [u.email, u.username, passwordHash, u.displayName, u.phone, u.neighborhood]
     );
-    console.log(`Created ${u.email} / ${u.username} — password: ${u.password}`);
+    await pool.execute('INSERT IGNORE INTO collection_memberships (user_id, collection_id) VALUES (?, ?)', [result.insertId, chicagoId]);
+    console.log(`Created ${u.email} / ${u.username} — password: ${u.password} — joined Chicago`);
   }
 
   // Give the first test account admin rights so you have something to test the panel with

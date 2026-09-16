@@ -12,6 +12,24 @@ full-time on a Raspberry Pi.
 - **Deployment:** systemd service on the Pi, exposed to the internet via a
   Cloudflare Tunnel (no port forwarding needed)
 
+## Collections (groups)
+
+The app supports any number of separate collections (shown to users as
+"groups" — e.g. "Chicago", "Coast2Coast", "dojo"). Each is fully isolated:
+its minis, invite list, and admin panel are invisible to anyone who isn't a
+member. A person can belong to more than one; after login they pick which
+one to enter, and can switch from the nav.
+
+- Invites (`approved_emails`) are scoped per collection. Registering joins
+  every collection whose invite list contains that email.
+- Admins are site-wide (`users.role`), but an admin's panel only ever shows
+  the collection they're currently in — there's no cross-collection view.
+  Adding someone to a *second* collection they're already registered in is
+  a manual `INSERT INTO collection_memberships (user_id, collection_id) …`
+  for now (no dedicated UI yet).
+- To add a new collection: `INSERT INTO collections (name) VALUES ('Name');`
+  then invite people into it the normal way from an admin who's a member.
+
 ## Project layout
 
 ```
@@ -34,9 +52,10 @@ npm run install:all        # installs root, backend, and frontend deps
    ```
 2. Copy `backend/.env.example` to `backend/.env` and fill in your local DB
    credentials and a random `JWT_SECRET`.
-3. Add your own email to the invite list so you can register:
+3. Create a collection and add your own email to its invite list so you can register:
    ```sql
-   INSERT INTO approved_emails (email) VALUES ('your@email.com');
+   INSERT INTO collections (name) VALUES ('Chicago');
+   INSERT INTO approved_emails (email, collection_id) VALUES ('your@email.com', (SELECT id FROM collections WHERE name = 'Chicago'));
    ```
 4. Start both servers:
    ```bash

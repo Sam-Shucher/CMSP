@@ -7,14 +7,15 @@ import { AuthContext } from '../App';
 
 function renderRegisterPage() {
   const setUser = vi.fn();
+  const refreshSession = vi.fn().mockResolvedValue(undefined);
   render(
     <MemoryRouter>
-      <AuthContext.Provider value={{ user: null, loading: false, setUser }}>
+      <AuthContext.Provider value={{ user: null, loading: false, setUser, collections: [], selectCollection: vi.fn(), refreshSession }}>
         <RegisterPage />
       </AuthContext.Provider>
     </MemoryRouter>
   );
-  return { setUser };
+  return { setUser, refreshSession };
 }
 
 async function fillForm(
@@ -74,16 +75,16 @@ describe('RegisterPage validation', () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it('submits to the API when all fields are valid', async () => {
+  it('submits to the API when all fields are valid, then refreshes the session from the server', async () => {
     vi.mocked(fetch).mockResolvedValueOnce({
       ok: true,
-      json: async () => ({ userId: 1, username: 'valid_user', role: 'user', displayName: 'valid_user' }),
+      json: async () => ({ username: 'valid_user', role: 'user', displayName: 'valid_user', collectionId: 5 }),
     } as Response);
 
-    const { setUser } = renderRegisterPage();
+    const { refreshSession } = renderRegisterPage();
     await fillForm();
 
     await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
-    expect(setUser).toHaveBeenCalled();
+    expect(refreshSession).toHaveBeenCalled();
   });
 });

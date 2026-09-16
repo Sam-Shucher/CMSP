@@ -13,9 +13,22 @@ import { createApp } from '../app';
 const app = createApp();
 const execute = pool.execute as unknown as ReturnType<typeof vi.fn>;
 
-const OWNER = { userId: 1, username: 'owner', role: 'user' };
-const OTHER = { userId: 2, username: 'other', role: 'user' };
-const ADMIN = { userId: 3, username: 'boss', role: 'admin' };
+const COLLECTION_A = 10;
+const COLLECTION_B = 20;
+
+const OWNER = { userId: 1, username: 'owner', role: 'user', collectionId: COLLECTION_A };
+const OTHER = { userId: 2, username: 'other', role: 'user', collectionId: COLLECTION_A };
+const ADMIN = { userId: 3, username: 'boss', role: 'admin', collectionId: COLLECTION_A };
+// Same site-wide admin role, but currently acting in a DIFFERENT collection —
+// this is the case that must never be allowed to touch collection A's minis.
+const ADMIN_OTHER_COLLECTION = { userId: 3, username: 'boss', role: 'admin', collectionId: COLLECTION_B };
+const NOT_A_MEMBER = { userId: 4, username: 'outsider', role: 'user', collectionId: COLLECTION_B };
+
+// The requireCollectionMembership middleware's DB check, confirming the
+// caller really belongs to the collection their JWT claims — this is always
+// the first execute() call on every route in this file.
+const MEMBERSHIP_CONFIRMED = [[{ id: 1 }]];
+const NOT_A_MEMBER_ROW = [[]];
 
 function tinyPng(): Buffer {
   // Smallest possible valid PNG — enough to satisfy multer's image/* fileFilter.
@@ -48,12 +61,32 @@ beforeEach(() => {
   execute.mockReset();
 });
 
+describe('Collection access control', () => {
+  it('rejects every route with 403 when the caller is not a member of their claimed collection', async () => {
+    execute.mockResolvedValueOnce(NOT_A_MEMBER_ROW);
+
+    const res = await request(app).get('/api/minis').set('Cookie', authCookie(NOT_A_MEMBER));
+
+    expect(res.status).toBe(403);
+  });
+
+  it('rejects with 400 when no collection has been selected at all', async () => {
+    const res = await request(app)
+      .get('/api/minis')
+      .set('Cookie', authCookie({ userId: 1, username: 'owner', role: 'user' })); // no collectionId
+
+    expect(res.status).toBe(400);
+  });
+});
+
 describe('GET /api/minis — fuzzy search', () => {
   it('finds a mini whose name is misspelled in the search term', async () => {
-    execute.mockResolvedValueOnce([[
-      miniRow({ id: 1, name: 'Tabaxi Bard' }),
-      miniRow({ id: 2, name: 'Goblin Grunt' }),
-    ]]);
+    execute
+      .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
+      .mockResolvedValueOnce([[
+        miniRow({ id: 1, name: 'Tabaxi Bard' }),
+        miniRow({ id: 2, name: 'Goblin Grunt' }),
+      ]]);
 
     const res = await request(app)
       .get('/api/minis?q=tabaxe')
@@ -65,10 +98,12 @@ describe('GET /api/minis — fuzzy search', () => {
   });
 
   it('excludes minis that do not match at all', async () => {
-    execute.mockResolvedValueOnce([[
-      miniRow({ id: 1, name: 'Tabaxi Bard' }),
-      miniRow({ id: 2, name: 'Goblin Grunt' }),
-    ]]);
+    execute
+      .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
+      .mockResolvedValueOnce([[
+        miniRow({ id: 1, name: 'Tabaxi Bard' }),
+        miniRow({ id: 2, name: 'Goblin Grunt' }),
+      ]]);
 
     const res = await request(app)
       .get('/api/minis?q=beholder')
@@ -77,11 +112,24 @@ describe('GET /api/minis — fuzzy search', () => {
     expect(res.status).toBe(200);
     expect(res.body).toHaveLength(0);
   });
+
+  it('scopes the list query to the caller\'s active collection', async () => {
+    execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED).mockResolvedValueOnce([[]]);
+
+    await request(app).get('/api/minis').set('Cookie', authCookie(OWNER));
+
+    expect(execute).toHaveBeenCalledWith(
+      expect.stringContaining('m.collection_id = ?'),
+      expect.arrayContaining([COLLECTION_A])
+    );
+  });
 });
 
 describe('GET /api/minis/:id', () => {
   it('returns the mini with images split into an array', async () => {
-    execute.mockResolvedValueOnce([[miniRow({ images: '/uploads/a.png,/uploads/b.png' })]]);
+    execute
+      .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
+      .mockResolvedValueOnce([[miniRow({ images: '/uploads/a.png,/uploads/b.png' })]]);
 
     const res = await request(app)
       .get('/api/minis/42')
@@ -92,7 +140,9 @@ describe('GET /api/minis/:id', () => {
   });
 
   it('returns an empty images array when the mini has no photos', async () => {
-    execute.mockResolvedValueOnce([[miniRow({ images: null })]]);
+    execute
+      .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
+      .mockResolvedValueOnce([[miniRow({ images: null })]]);
 
     const res = await request(app)
       .get('/api/minis/42')
@@ -103,7 +153,7 @@ describe('GET /api/minis/:id', () => {
   });
 
   it('returns 404 when the mini does not exist', async () => {
-    execute.mockResolvedValueOnce([[]]);
+    execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED).mockResolvedValueOnce([[]]);
 
     const res = await request(app)
       .get('/api/minis/999')
@@ -111,11 +161,28 @@ describe('GET /api/minis/:id', () => {
 
     expect(res.status).toBe(404);
   });
+
+  it('returns 404 (not 403) for a mini that exists but belongs to a different collection', async () => {
+    // The query itself (id + collection_id) returns nothing — same as "doesn't exist" —
+    // so a probing request can't even confirm another collection's mini exists.
+    execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED).mockResolvedValueOnce([[]]);
+
+    const res = await request(app)
+      .get('/api/minis/42')
+      .set('Cookie', authCookie(ADMIN_OTHER_COLLECTION));
+
+    expect(res.status).toBe(404);
+    expect(execute).toHaveBeenCalledWith(
+      expect.stringContaining('m.collection_id = ?'),
+      ['42', COLLECTION_B]
+    );
+  });
 });
 
 describe('POST /api/minis — photos', () => {
   it('accepts up to 3 images and stores one mini_images row per photo', async () => {
     execute
+      .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
       .mockResolvedValueOnce([{ insertId: 42 }]) // INSERT INTO minis
       .mockResolvedValueOnce([{}])                // DELETE mini_tags (setTags, unconditional)
       .mockResolvedValueOnce([{}])                // DELETE mini_images (setImages, unconditional)
@@ -131,6 +198,10 @@ describe('POST /api/minis — photos', () => {
 
     expect(res.status).toBe(201);
     expect(execute).toHaveBeenCalledWith(
+      expect.stringContaining('INSERT INTO minis'),
+      expect.arrayContaining([COLLECTION_A])
+    );
+    expect(execute).toHaveBeenCalledWith(
       expect.stringContaining('INSERT INTO mini_images'),
       expect.arrayContaining([42, 0])
     );
@@ -141,6 +212,8 @@ describe('POST /api/minis — photos', () => {
   });
 
   it('rejects a 4th photo with a clean 400 instead of a server error', async () => {
+    execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED);
+
     const res = await request(app)
       .post('/api/minis')
       .set('Cookie', authCookie(OWNER))
@@ -158,6 +231,7 @@ describe('POST /api/minis — photos', () => {
 describe('PATCH /api/minis/:id — photos', () => {
   it('lets the owner keep some existing photos and add a new one, within the cap of 3', async () => {
     execute
+      .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
       .mockResolvedValueOnce([[{ owner_id: 1 }]])                                   // ownership lookup
       .mockResolvedValueOnce([[{ image_path: '/uploads/old1.png' }, { image_path: '/uploads/old2.png' }]]) // current images
       .mockResolvedValueOnce([{}])                                                   // UPDATE minis
@@ -180,6 +254,7 @@ describe('PATCH /api/minis/:id — photos', () => {
 
   it('rejects keeping 3 existing photos plus a new one (4 total) with 400', async () => {
     execute
+      .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
       .mockResolvedValueOnce([[{ owner_id: 1 }]])
       .mockResolvedValueOnce([[
         { image_path: '/uploads/a.png' },
@@ -199,7 +274,7 @@ describe('PATCH /api/minis/:id — photos', () => {
   });
 
   it('rejects a non-owner, non-admin with 403', async () => {
-    execute.mockResolvedValueOnce([[{ owner_id: 1 }]]);
+    execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED).mockResolvedValueOnce([[{ owner_id: 1 }]]);
 
     const res = await request(app)
       .patch('/api/minis/42')
@@ -209,8 +284,9 @@ describe('PATCH /api/minis/:id — photos', () => {
     expect(res.status).toBe(403);
   });
 
-  it('lets an admin edit someone else\'s mini', async () => {
+  it('lets an admin edit someone else\'s mini in the SAME collection', async () => {
     execute
+      .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
       .mockResolvedValueOnce([[{ owner_id: 1 }]])
       .mockResolvedValueOnce([[]])
       .mockResolvedValueOnce([{}])
@@ -226,8 +302,24 @@ describe('PATCH /api/minis/:id — photos', () => {
     expect(res.status).toBe(200);
   });
 
+  it('returns 404 for an admin acting in a DIFFERENT collection than the mini — role alone is never enough', async () => {
+    // Ownership lookup includes collection_id, so it finds nothing for this admin's active collection.
+    execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED).mockResolvedValueOnce([[]]);
+
+    const res = await request(app)
+      .patch('/api/minis/42')
+      .set('Cookie', authCookie(ADMIN_OTHER_COLLECTION))
+      .field('name', 'Hijacked Wolf');
+
+    expect(res.status).toBe(404);
+    expect(execute).toHaveBeenCalledWith(
+      expect.stringContaining('collection_id'),
+      ['42', COLLECTION_B]
+    );
+  });
+
   it('returns 404 when the mini does not exist', async () => {
-    execute.mockResolvedValueOnce([[]]);
+    execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED).mockResolvedValueOnce([[]]);
 
     const res = await request(app)
       .patch('/api/minis/999')
@@ -239,6 +331,7 @@ describe('PATCH /api/minis/:id — photos', () => {
 
   it('rejects a blank name with 400', async () => {
     execute
+      .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
       .mockResolvedValueOnce([[{ owner_id: 1 }]])
       .mockResolvedValueOnce([[]]);
 
@@ -252,6 +345,7 @@ describe('PATCH /api/minis/:id — photos', () => {
 
   it('rejects a negative price with 400', async () => {
     execute
+      .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
       .mockResolvedValueOnce([[{ owner_id: 1 }]])
       .mockResolvedValueOnce([[]]);
 
@@ -273,6 +367,7 @@ describe('PATCH /api/minis/:id — photos', () => {
 describe('DELETE /api/minis/:id', () => {
   it('lets the owner delete their own mini', async () => {
     execute
+      .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
       .mockResolvedValueOnce([[{ owner_id: 1 }]])            // ownership lookup
       .mockResolvedValueOnce([[{ image_path: '/uploads/a.png' }]]) // images to clean up
       .mockResolvedValueOnce([{}]);                           // DELETE FROM minis
@@ -285,8 +380,9 @@ describe('DELETE /api/minis/:id', () => {
     expect(execute).toHaveBeenCalledWith(expect.stringContaining('DELETE FROM minis'), ['42']);
   });
 
-  it('lets an admin delete someone else\'s mini', async () => {
+  it('lets an admin delete someone else\'s mini in the SAME collection', async () => {
     execute
+      .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
       .mockResolvedValueOnce([[{ owner_id: 1 }]])
       .mockResolvedValueOnce([[]])
       .mockResolvedValueOnce([{}]);
@@ -298,8 +394,18 @@ describe('DELETE /api/minis/:id', () => {
     expect(res.status).toBe(200);
   });
 
+  it('returns 404 for an admin acting in a DIFFERENT collection than the mini', async () => {
+    execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED).mockResolvedValueOnce([[]]);
+
+    const res = await request(app)
+      .delete('/api/minis/42')
+      .set('Cookie', authCookie(ADMIN_OTHER_COLLECTION));
+
+    expect(res.status).toBe(404);
+  });
+
   it('rejects a non-owner, non-admin with 403', async () => {
-    execute.mockResolvedValueOnce([[{ owner_id: 1 }]]);
+    execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED).mockResolvedValueOnce([[{ owner_id: 1 }]]);
 
     const res = await request(app)
       .delete('/api/minis/42')
@@ -309,7 +415,7 @@ describe('DELETE /api/minis/:id', () => {
   });
 
   it('returns 404 when the mini does not exist', async () => {
-    execute.mockResolvedValueOnce([[]]);
+    execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED).mockResolvedValueOnce([[]]);
 
     const res = await request(app)
       .delete('/api/minis/999')

@@ -18,6 +18,15 @@ interface UserRow extends RowDataPacket {
   display_name: string;
 }
 
+interface CollectionIdRow extends RowDataPacket {
+  collection_id: number;
+}
+
+interface CollectionRow extends RowDataPacket {
+  id: number;
+  name: string;
+}
+
 // Signs a JWT with the given payload and writes it as an httpOnly cookie.
 // httpOnly = the browser's JavaScript can never read this cookie, which blocks
 // XSS attacks from stealing the token. The cookie is sent automatically on
@@ -33,8 +42,10 @@ function setAuthCookie(res: Response, payload: JwtPayload): void {
 }
 
 // POST /api/auth/register
-// Creates a new user account. The email MUST already exist in the approved_emails
-// table — that's the invite-only gate. Only the admin can add emails there.
+// Creates a new user account. The email MUST already be on at least one
+// collection's invite list. Registering joins every collection whose invite
+// list contains the email — so someone pre-invited to two collections at
+// once only has to sign up once.
 router.post('/register', async (req: Request, res: Response): Promise<void> => {
   const { email, username, password, displayName, phone, neighborhood } = req.body as Record<string, string>;
 
@@ -44,9 +55,9 @@ router.post('/register', async (req: Request, res: Response): Promise<void> => {
   }
 
   try {
-    // Check the invite list — RowDataPacket is mysql2's type for SELECT rows
-    const [approved] = await pool.execute<RowDataPacket[]>(
-      'SELECT id FROM approved_emails WHERE email = ?',
+    // Check the invite lists — RowDataPacket is mysql2's type for SELECT rows
+    const [approved] = await pool.execute<CollectionIdRow[]>(
+      'SELECT collection_id FROM approved_emails WHERE email = ?',
       [email.toLowerCase()]
     );
     if (approved.length === 0) {
@@ -73,14 +84,27 @@ router.post('/register', async (req: Request, res: Response): Promise<void> => {
       'INSERT INTO users (email, username, password_hash, display_name, phone, neighborhood) VALUES (?, ?, ?, ?, ?, ?)',
       [email.toLowerCase(), username, passwordHash, displayName || username, phone?.trim() || null, neighborhood?.trim() || null]
     );
+    const userId: number = result.insertId;
 
-    // Sign a JWT with the new user's info and send it back as a cookie
-    setAuthCookie(res, { userId: result.insertId, username, role: 'user' });
+    // Join every collection that invited this email
+    for (const row of approved) {
+      await pool.execute<ResultSetHeader>(
+        'INSERT IGNORE INTO collection_memberships (user_id, collection_id) VALUES (?, ?)',
+        [userId, row.collection_id]
+      );
+    }
+
+    // Only auto-select a collection when there's exactly one — otherwise the
+    // frontend sends them to the picker before they can do anything else.
+    const collectionId = approved.length === 1 ? approved[0].collection_id : undefined;
+
+    setAuthCookie(res, { userId, username, role: 'user', ...(collectionId ? { collectionId } : {}) });
     res.status(201).json({
       message: 'Account created',
       username,
       role: 'user',
       displayName: displayName || username,
+      collectionId,
     });
   } catch (err: unknown) {
     console.error(err);
@@ -115,8 +139,16 @@ router.post('/login', async (req: Request, res: Response): Promise<void> => {
     }
 
     const { id, username, role, display_name } = rows[0];
-    setAuthCookie(res, { userId: id, username, role });
-    res.json({ message: 'Logged in', username, role, displayName: display_name });
+
+    // Auto-select the collection only when it's unambiguous — same rule as registration.
+    const [memberships] = await pool.execute<CollectionIdRow[]>(
+      'SELECT collection_id FROM collection_memberships WHERE user_id = ?',
+      [id]
+    );
+    const collectionId = memberships.length === 1 ? memberships[0].collection_id : undefined;
+
+    setAuthCookie(res, { userId: id, username, role, ...(collectionId ? { collectionId } : {}) });
+    res.json({ message: 'Logged in', username, role, displayName: display_name, collectionId });
   } catch (err: unknown) {
     console.error(err);
     res.status(500).json({ error: 'Server error' });
@@ -136,6 +168,66 @@ router.post('/logout', (_req: Request, res: Response): void => {
 // load to restore the logged-in state without a full DB round-trip.
 router.get('/me', requireAuth, (req: AuthRequest, res: Response): void => {
   res.json(req.user);
+});
+
+// GET /api/auth/collections
+// Returns the collections the current user belongs to — used to render the
+// "select a collection" picker after login/registration.
+router.get('/collections', requireAuth, async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const [rows] = await pool.execute<CollectionRow[]>(
+      `SELECT c.id, c.name FROM collections c
+       JOIN collection_memberships cm ON cm.collection_id = c.id
+       WHERE cm.user_id = ?
+       ORDER BY c.name`,
+      [req.user!.userId]
+    );
+    res.json(rows);
+  } catch (err: unknown) {
+    console.error(err);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// POST /api/auth/select-collection
+// Switches the active collection. Re-verifies membership against the
+// database (never trusts the request body alone) before re-issuing the
+// auth cookie with the new collectionId baked in.
+router.post('/select-collection', requireAuth, async (req: AuthRequest, res: Response): Promise<void> => {
+  const { collectionId } = req.body as { collectionId?: number };
+
+  if (!collectionId) {
+    res.status(400).json({ error: 'collectionId is required' });
+    return;
+  }
+
+  try {
+    const [rows] = await pool.execute<CollectionRow[]>(
+      `SELECT c.id, c.name FROM collections c
+       JOIN collection_memberships cm ON cm.collection_id = c.id
+       WHERE cm.user_id = ? AND c.id = ?`,
+      [req.user!.userId, collectionId]
+    );
+
+    if (rows.length === 0) {
+      res.status(403).json({ error: 'You are not a member of that collection' });
+      return;
+    }
+
+    // Built explicitly (not spread from req.user) — the decoded JWT also carries
+    // exp/iat claims that would collide with the expiresIn option when re-signing.
+    const updatedPayload: JwtPayload = {
+      userId: req.user!.userId,
+      username: req.user!.username,
+      role: req.user!.role,
+      collectionId: rows[0].id,
+    };
+    setAuthCookie(res, updatedPayload);
+    res.json({ ...updatedPayload, collectionName: rows[0].name });
+  } catch (err: unknown) {
+    console.error(err);
+    res.status(500).json({ error: 'Server error' });
+  }
 });
 
 export default router;
