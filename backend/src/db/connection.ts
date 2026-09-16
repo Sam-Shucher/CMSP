@@ -6,6 +6,7 @@ import 'dotenv/config';
 // connectionLimit: 10 means at most 10 simultaneous queries.
 export const pool = mysql.createPool({
   host:             process.env.DB_HOST     ?? 'localhost',
+  port:             Number(process.env.DB_PORT) || 3306, // lets integration tests point at a dockerized DB on a non-default port
   user:             process.env.DB_USER     ?? 'root',
   password:         process.env.DB_PASS     ?? '',
   database:         process.env.DB_NAME     ?? 'mini_library',

@@ -1,4 +1,4 @@
-import { Router, Response } from 'express';
+import { Router, Request, Response, NextFunction } from 'express';
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
@@ -7,6 +7,7 @@ import { pool } from '../db/connection';
 import { requireAuth, AuthRequest } from '../middleware/requireAuth';
 
 const router = Router();
+const MAX_IMAGES = 3;
 
 // Ensure the uploads directory exists when the server starts.
 // Uploaded images live here and are served as static files by index.ts.
@@ -40,25 +41,40 @@ const upload = multer({
   },
 });
 
+// Converts a multer/fileFilter error into a clean 400 JSON response instead
+// of Express's default HTML error page. Placed right after upload.array(...)
+// in each route's middleware list — Express routes to it only when that
+// middleware calls next(err).
+function handleUploadError(err: unknown, _req: Request, res: Response, next: NextFunction): void {
+  if (err instanceof multer.MulterError) {
+    res.status(400).json({ error: `You can have at most ${MAX_IMAGES} photos per mini` });
+    return;
+  }
+  if (err instanceof Error) {
+    res.status(400).json({ error: err.message });
+    return;
+  }
+  next(err);
+}
+
 // ---------------------------------------------------------------------------
 // Row types — these tell TypeScript the shape of each DB row we SELECT
 // ---------------------------------------------------------------------------
 
-// The full shape of a row from the minis + users + tags join query
+// The full shape of a row from the minis + users + tags + images join query
 interface MiniRow extends RowDataPacket {
   id: number;
   name: string;
   description: string | null;
-  image_path: string | null;
   price: string; // mysql2 returns DECIMAL columns as strings to avoid float rounding issues
   available: boolean;
   owner_name: string;
   owner_username: string;
   owner_id: number;
   created_at: string;
-  // GROUP_CONCAT returns a comma-separated string like "dragon,painted,large"
-  // or null if the mini has no tags at all
+  // GROUP_CONCAT returns a comma-separated string, or null if there are none
   tags: string | null;
+  images: string | null;
 }
 
 interface TagRow extends RowDataPacket {
@@ -72,16 +88,24 @@ interface TagNameRow extends RowDataPacket {
 
 interface OwnerRow extends RowDataPacket {
   owner_id: number;
-  image_path: string | null;
+}
+
+interface ImagePathRow extends RowDataPacket {
+  image_path: string;
 }
 
 // The join query used by both GET / and GET /:id, kept in one place so the
-// shape returned to the frontend never drifts between the two.
+// shape returned to the frontend never drifts between the two. Images are
+// fetched via a correlated subquery (not a LEFT JOIN) so they don't multiply
+// rows against the tags LEFT JOIN — two one-to-many joins in the same query
+// would otherwise duplicate tag names once per image.
 const MINI_SELECT = `
-  SELECT m.id, m.name, m.description, m.image_path, m.price, m.available,
+  SELECT m.id, m.name, m.description, m.price, m.available,
          u.display_name AS owner_name, u.username AS owner_username, u.id AS owner_id,
          m.created_at,
-         GROUP_CONCAT(t.name ORDER BY t.name SEPARATOR ',') AS tags
+         GROUP_CONCAT(t.name ORDER BY t.name SEPARATOR ',') AS tags,
+         (SELECT GROUP_CONCAT(mi.image_path ORDER BY mi.position SEPARATOR ',')
+          FROM mini_images mi WHERE mi.mini_id = m.id) AS images
   FROM minis m
   JOIN users u ON m.owner_id = u.id
   LEFT JOIN mini_tags mt ON m.id = mt.mini_id
@@ -89,12 +113,13 @@ const MINI_SELECT = `
 `;
 
 // Converts a raw joined row into the shape the frontend expects
-// (price as a number, tags as a string array instead of a CSV blob).
+// (price as a number, tags/images as string arrays instead of CSV blobs).
 function serializeMini(row: MiniRow) {
   return {
     ...row,
     price: Number(row.price),
     tags: row.tags ? row.tags.split(',') : [],
+    images: row.images ? row.images.split(',') : [],
   };
 }
 
@@ -122,6 +147,21 @@ async function setTags(miniId: number, tagsInput: string | undefined): Promise<v
     await pool.execute<ResultSetHeader>(
       'INSERT IGNORE INTO mini_tags (mini_id, tag_id) VALUES (?, ?)',
       [miniId, tagId]
+    );
+  }
+}
+
+// Replaces all of a mini's photos with keptPaths (existing images the caller
+// chose to keep, in order) followed by newFiles (freshly uploaded ones).
+// Shared by POST / and PATCH /:id, same pattern as setTags above.
+async function setImages(miniId: number, keptPaths: string[], newFiles: Express.Multer.File[]): Promise<void> {
+  await pool.execute<ResultSetHeader>('DELETE FROM mini_images WHERE mini_id = ?', [miniId]);
+
+  const allPaths = [...keptPaths, ...newFiles.map(f => `/uploads/${f.filename}`)];
+  for (let i = 0; i < allPaths.length; i++) {
+    await pool.execute<ResultSetHeader>(
+      'INSERT INTO mini_images (mini_id, image_path, position) VALUES (?, ?, ?)',
+      [miniId, allPaths[i], i]
     );
   }
 }
@@ -207,10 +247,11 @@ router.get('/:id', requireAuth, async (req: AuthRequest, res: Response): Promise
 });
 
 // POST /api/minis
-// Creates a new mini. Expects multipart/form-data (because of the image upload).
-// Fields: name (required), description, tags (comma-separated), image (file).
-router.post('/', requireAuth, upload.single('image'), async (req: AuthRequest, res: Response): Promise<void> => {
+// Creates a new mini. Expects multipart/form-data.
+// Fields: name (required), description, tags (comma-separated), images (0-3 files).
+router.post('/', requireAuth, upload.array('images', MAX_IMAGES), handleUploadError, async (req: AuthRequest, res: Response): Promise<void> => {
   const { name, description, tags, price } = req.body as Record<string, string>;
+  const files = (req.files as Express.Multer.File[] | undefined) ?? [];
 
   if (!name?.trim()) {
     res.status(400).json({ error: 'Name is required' });
@@ -226,17 +267,15 @@ router.post('/', requireAuth, upload.single('image'), async (req: AuthRequest, r
   }
 
   try {
-    // req.file is populated by multer if an image was included in the upload
-    const imagePath: string | null = req.file ? `/uploads/${req.file.filename}` : null;
-
     // Insert the mini itself — req.user! is safe here because requireAuth ran first
     const [result] = await pool.execute<ResultSetHeader>(
-      'INSERT INTO minis (name, description, owner_id, image_path, price) VALUES (?, ?, ?, ?, ?)',
-      [name.trim(), description?.trim() || null, req.user!.userId, imagePath, priceValue]
+      'INSERT INTO minis (name, description, owner_id, price) VALUES (?, ?, ?, ?)',
+      [name.trim(), description?.trim() || null, req.user!.userId, priceValue]
     );
     const miniId: number = result.insertId;
 
     await setTags(miniId, tags);
+    await setImages(miniId, [], files);
 
     res.status(201).json({ message: 'Mini added', miniId });
   } catch (err: unknown) {
@@ -247,14 +286,17 @@ router.post('/', requireAuth, upload.single('image'), async (req: AuthRequest, r
 
 // PATCH /api/minis/:id
 // Edits an existing mini. Only the owner or an admin may do this.
-// Expects multipart/form-data (an optional replacement image may be included).
-router.patch('/:id', requireAuth, upload.single('image'), async (req: AuthRequest, res: Response): Promise<void> => {
+// Expects multipart/form-data. `existingImages` is a JSON array of image
+// paths (from the mini's current photos) to keep; any new files in the
+// `images` field are appended after them, capped at MAX_IMAGES total.
+router.patch('/:id', requireAuth, upload.array('images', MAX_IMAGES), handleUploadError, async (req: AuthRequest, res: Response): Promise<void> => {
   const miniId = req.params.id;
-  const { name, description, tags, price } = req.body as Record<string, string>;
+  const { name, description, tags, price, existingImages } = req.body as Record<string, string>;
+  const newFiles = (req.files as Express.Multer.File[] | undefined) ?? [];
 
   try {
     const [ownerRows] = await pool.execute<OwnerRow[]>(
-      'SELECT owner_id, image_path FROM minis WHERE id = ?',
+      'SELECT owner_id FROM minis WHERE id = ?',
       [miniId]
     );
 
@@ -270,6 +312,20 @@ router.patch('/:id', requireAuth, upload.single('image'), async (req: AuthReques
       return;
     }
 
+    let keptPaths: string[] = [];
+    if (existingImages) {
+      try {
+        keptPaths = JSON.parse(existingImages);
+      } catch {
+        keptPaths = [];
+      }
+    }
+
+    if (keptPaths.length + newFiles.length > MAX_IMAGES) {
+      res.status(400).json({ error: `You can have at most ${MAX_IMAGES} photos per mini` });
+      return;
+    }
+
     if (!name?.trim()) {
       res.status(400).json({ error: 'Name is required' });
       return;
@@ -281,23 +337,28 @@ router.patch('/:id', requireAuth, upload.single('image'), async (req: AuthReques
       return;
     }
 
-    // A new image replaces the old one; otherwise the existing image_path is kept.
-    const imagePath: string | null = req.file
-      ? `/uploads/${req.file.filename}`
-      : ownerRows[0].image_path;
-
-    // Delete the old image file from disk once it's no longer referenced
-    if (req.file && ownerRows[0].image_path) {
-      const oldFile = path.join(uploadsDir, path.basename(ownerRows[0].image_path));
-      fs.unlink(oldFile, () => {}); // best-effort cleanup; ignore errors
-    }
+    // Figure out which of the mini's current photos are being dropped, so we
+    // can clean up their files from disk once the DB is updated.
+    const [currentImageRows] = await pool.execute<ImagePathRow[]>(
+      'SELECT image_path FROM mini_images WHERE mini_id = ? ORDER BY position',
+      [miniId]
+    );
+    const droppedPaths = currentImageRows
+      .map(r => r.image_path)
+      .filter(p => !keptPaths.includes(p));
 
     await pool.execute<ResultSetHeader>(
-      'UPDATE minis SET name = ?, description = ?, price = ?, image_path = ? WHERE id = ?',
-      [name.trim(), description?.trim() || null, priceValue, imagePath, miniId]
+      'UPDATE minis SET name = ?, description = ?, price = ? WHERE id = ?',
+      [name.trim(), description?.trim() || null, priceValue, miniId]
     );
 
     await setTags(Number(miniId), tags);
+    await setImages(Number(miniId), keptPaths, newFiles);
+
+    for (const droppedPath of droppedPaths) {
+      const oldFile = path.join(uploadsDir, path.basename(droppedPath));
+      fs.unlink(oldFile, () => {}); // best-effort cleanup; ignore errors
+    }
 
     const [rows] = await pool.execute<MiniRow[]>(
       `${MINI_SELECT} WHERE m.id = ? GROUP BY m.id`,

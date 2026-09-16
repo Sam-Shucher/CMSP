@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import ImageDropzone from './ImageDropzone';
+import MultiImagePicker from './MultiImagePicker';
 
 export type MiniFormValues = {
   name: string;
@@ -10,18 +10,18 @@ export type MiniFormValues = {
 
 type MiniFormProps = {
   initialValues: MiniFormValues;
-  initialPreviewUrl?: string | null; // existing image, when editing a mini that already has one
+  initialImages?: string[]; // existing photos, when editing a mini that already has some
   submitLabel: string;
   submittingLabel: string;
-  onSubmit: (values: MiniFormValues, image: File | null) => Promise<void>;
+  onSubmit: (values: MiniFormValues, newImages: File[], keptExistingImages: string[]) => Promise<void>;
   onCancel: () => void;
 };
 
-// Shared name/description/tags/price/photo form used by both the "Add Mini"
+// Shared name/description/tags/price/photos form used by both the "Add Mini"
 // and "Edit Mini" pages, so the fields and validation only live in one place.
 export default function MiniForm({
   initialValues,
-  initialPreviewUrl,
+  initialImages,
   submitLabel,
   submittingLabel,
   onSubmit,
@@ -32,20 +32,15 @@ export default function MiniForm({
   const [tags, setTags]               = useState<string>(initialValues.tags);
   const [price, setPrice]             = useState<string>(initialValues.price);
 
-  const [image, setImage]     = useState<File | null>(null);
-  const [preview, setPreview] = useState<string | null>(initialPreviewUrl ?? null);
+  const [keptImages, setKeptImages] = useState<string[]>(initialImages ?? []);
+  const [newImages, setNewImages]   = useState<File[]>([]);
 
   const [error, setError]     = useState<string>('');
   const [loading, setLoading] = useState<boolean>(false);
 
-  function handleSelectImage(file: File): void {
-    setImage(file);
-    setPreview(URL.createObjectURL(file));
-  }
-
-  function handleClearImage(): void {
-    setImage(null);
-    setPreview(null);
+  function handleImagesChange(kept: string[], added: File[]): void {
+    setKeptImages(kept);
+    setNewImages(added);
   }
 
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>): Promise<void> {
@@ -59,7 +54,7 @@ export default function MiniForm({
     setLoading(true);
 
     try {
-      await onSubmit({ name: name.trim(), description, tags, price }, image);
+      await onSubmit({ name: name.trim(), description, tags, price }, newImages, keptImages);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Something went wrong');
     } finally {
@@ -94,6 +89,7 @@ export default function MiniForm({
           onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setDescription(e.target.value)}
           placeholder="Scale, manufacturer, paint job notes…"
           rows={5}
+          spellCheck
           style={{ resize: 'vertical' }}
         />
       </div>
@@ -112,6 +108,7 @@ export default function MiniForm({
           value={tags}
           onChange={(e: React.ChangeEvent<HTMLInputElement>) => setTags(e.target.value)}
           placeholder="undead, boss, dragon, painted"
+          spellCheck
         />
         {/* Live tag preview — split on commas and render each as a chip */}
         {tags && (
@@ -142,15 +139,10 @@ export default function MiniForm({
         />
       </div>
 
-      {/* Photo — click to browse or drag an image onto the box */}
+      {/* Photos — up to 3, click to browse or drag onto the box */}
       <div>
-        <label style={labelStyle}>Photo</label>
-        <ImageDropzone
-          file={image}
-          previewUrl={preview}
-          onSelect={handleSelectImage}
-          onClear={handleClearImage}
-        />
+        <label style={labelStyle}>Photos</label>
+        <MultiImagePicker existingPaths={initialImages ?? []} onChange={handleImagesChange} />
       </div>
 
       {/* Submit / Cancel */}

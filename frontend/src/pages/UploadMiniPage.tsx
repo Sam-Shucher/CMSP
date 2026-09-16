@@ -11,7 +11,7 @@ const DESCRIPTION_TEMPLATE = 'Manufacturer: \nScale: \nSeries: \n';
 export default function UploadMiniPage(): React.ReactElement {
   const navigate = useNavigate();
 
-  async function handleSubmit(values: MiniFormValues, image: File | null): Promise<void> {
+  async function handleSubmit(values: MiniFormValues, newImages: File[]): Promise<void> {
     // Build a FormData object — this is how you send files and text together in one request.
     // The browser sets the Content-Type to multipart/form-data automatically.
     const fd = new FormData();
@@ -19,7 +19,7 @@ export default function UploadMiniPage(): React.ReactElement {
     if (values.description.trim()) fd.append('description', values.description.trim());
     if (values.tags.trim())        fd.append('tags', values.tags.trim());
     if (values.price.trim())       fd.append('price', values.price.trim());
-    if (image)                     fd.append('image', image);
+    newImages.forEach((file: File) => fd.append('images', file));
 
     // Pass body directly (not json:) so the api() helper doesn't set Content-Type to JSON
     await api('/api/minis', { method: 'POST', body: fd });

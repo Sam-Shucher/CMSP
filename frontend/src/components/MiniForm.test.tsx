@@ -42,8 +42,30 @@ describe('MiniForm', () => {
     await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
     expect(onSubmit).toHaveBeenCalledWith(
       expect.objectContaining({ name: 'Beholder' }),
-      null
+      [],
+      []
     );
+  });
+
+  it('prefills existing images and includes them as kept images on submit', async () => {
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+    render(
+      <MiniForm
+        initialValues={{ ...EMPTY_VALUES, name: 'Dire Wolf' }}
+        initialImages={['/uploads/a.png']}
+        submitLabel="Save"
+        submittingLabel="Saving…"
+        onSubmit={onSubmit}
+        onCancel={vi.fn()}
+      />
+    );
+
+    expect(screen.getByRole('img', { name: /mini/i })).toHaveAttribute('src', '/uploads/a.png');
+
+    await userEvent.click(screen.getByRole('button', { name: /save/i }));
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect(onSubmit).toHaveBeenCalledWith(expect.anything(), [], ['/uploads/a.png']);
   });
 
   it('rejects a blank name and does not call onSubmit', async () => {
@@ -62,6 +84,21 @@ describe('MiniForm', () => {
 
     expect(await screen.findByText(/name is required/i)).toBeInTheDocument();
     expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it('enables the browser spell checker on the description and tags fields', () => {
+    render(
+      <MiniForm
+        initialValues={EMPTY_VALUES}
+        submitLabel="Save"
+        submittingLabel="Saving…"
+        onSubmit={vi.fn()}
+        onCancel={vi.fn()}
+      />
+    );
+
+    expect(screen.getByLabelText(/description/i)).toHaveAttribute('spellcheck', 'true');
+    expect(screen.getByLabelText(/tags/i)).toHaveAttribute('spellcheck', 'true');
   });
 
   it('rejects a negative price and does not call onSubmit', async () => {

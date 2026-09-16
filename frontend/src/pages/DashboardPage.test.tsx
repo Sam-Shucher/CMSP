@@ -8,7 +8,7 @@ const MINI_OWNED_BY_1 = {
   id: 1,
   name: 'Dire Wolf',
   description: null,
-  image_path: null,
+  images: [],
   price: 0,
   available: true,
   owner_name: 'Owner Name',

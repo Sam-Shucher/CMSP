@@ -154,14 +154,24 @@ function MiniCard({ mini }: { mini: Mini }): React.ReactElement {
         e.currentTarget.style.transform = 'none';
       }}
     >
-      {/* Photo area — shows the uploaded image or a placeholder sword icon */}
-      <div style={{ height: '180px', background: '#1c1a17', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}>
-        {mini.image_path ? (
-          <img
-            src={mini.image_path}
-            alt={mini.name}
-            style={{ width: '100%', height: '100%', objectFit: 'cover' }}
-          />
+      {/* Photo area — shows the cover photo (first of up to 3) or a placeholder sword icon */}
+      <div style={{ height: '180px', background: '#1c1a17', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden', position: 'relative' }}>
+        {mini.images.length > 0 ? (
+          <>
+            <img
+              src={mini.images[0]}
+              alt={mini.name}
+              style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+            />
+            {mini.images.length > 1 && (
+              <span style={{
+                position: 'absolute', bottom: '6px', right: '6px', background: 'rgba(0,0,0,0.65)',
+                color: '#e8e0d0', fontSize: '11px', padding: '2px 7px', borderRadius: '10px',
+              }}>
+                +{mini.images.length - 1}
+              </span>
+            )}
+          </>
         ) : (
           <span style={{ fontSize: '48px', opacity: 0.2 }}>⚔</span>
         )}

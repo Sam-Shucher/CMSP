@@ -51,7 +51,7 @@ export type Mini = {
   id: number;
   name: string;
   description: string | null;
-  image_path: string | null;  // e.g. "/uploads/1234-abc.jpg", or null if no photo
+  images: string[];           // e.g. ["/uploads/1234-abc.jpg"], up to 3, already split by the backend
   price: number;
   available: boolean;
   owner_name: string;         // display_name of the user who owns this mini

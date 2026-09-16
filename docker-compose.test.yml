@@ -1,0 +1,24 @@
+# Spins up a throwaway MariaDB for local integration tests — mirrors the
+# database the Raspberry Pi actually runs, so SQL that only breaks against a
+# real server (bad GROUP BY, missing columns, etc.) gets caught here instead
+# of in production. Not used by the app itself; only by `npm run test:integration`.
+#
+# Usage:
+#   docker compose -f docker-compose.test.yml up -d
+#   npm --prefix backend run test:integration
+#   docker compose -f docker-compose.test.yml down -v   # wipe it when done
+services:
+  mini-library-test-db:
+    image: mariadb:10.11
+    environment:
+      MARIADB_ROOT_PASSWORD: test_root_password
+    ports:
+      - "3307:3306"
+    volumes:
+      # Runs once against an empty data directory — same schema.sql the Pi uses.
+      - ./backend/src/db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "mariadb-admin ping -h 127.0.0.1 -uroot -p$$MARIADB_ROOT_PASSWORD --silent"]
+      interval: 3s
+      timeout: 3s
+      retries: 20

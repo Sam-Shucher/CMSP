@@ -31,12 +31,21 @@ CREATE TABLE IF NOT EXISTS minis (
   name        VARCHAR(255) NOT NULL,
   description TEXT,
   owner_id    INT NOT NULL,
-  image_path  VARCHAR(500),
+  image_path  VARCHAR(500), -- legacy single-photo column, superseded by mini_images below
   price       DECIMAL(6,2) NOT NULL DEFAULT 0.00,
   available   BOOLEAN DEFAULT TRUE,
   created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+-- Up to 3 photos per mini (position 0-2, enforced in application code).
+CREATE TABLE IF NOT EXISTS mini_images (
+  id         INT PRIMARY KEY AUTO_INCREMENT,
+  mini_id    INT NOT NULL,
+  image_path VARCHAR(500) NOT NULL,
+  position   TINYINT NOT NULL DEFAULT 0,
+  FOREIGN KEY (mini_id) REFERENCES minis(id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS tags (

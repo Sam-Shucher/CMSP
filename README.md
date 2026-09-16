@@ -51,6 +51,28 @@ After registering your first account, promote yourself to admin:
 UPDATE users SET role = 'admin' WHERE email = 'your@email.com';
 ```
 
+## Testing
+
+```bash
+npm --prefix backend run test        # unit tests — mocked DB, fast
+npm --prefix backend run test:integration   # real MariaDB, catches SQL bugs mocks can't
+npm --prefix frontend run test
+```
+
+The unit tests mock the database, so they verify route logic (permissions,
+validation) but can't catch SQL that's only broken against a real server —
+a bad `GROUP BY`, a missing column, a `sql_mode` mismatch. The integration
+suite runs the same routes against a real, disposable MariaDB in Docker:
+
+```bash
+docker compose -f docker-compose.test.yml up -d   # starts MariaDB on localhost:3307
+npm --prefix backend run test:integration
+docker compose -f docker-compose.test.yml down -v  # tear it down when done
+```
+
+Requires Docker Desktop. This container is local-only and separate from the
+Pi's database — nothing here touches production.
+
 ## Running it on a Raspberry Pi
 
 This is the intended home for the app — it runs as a systemd service and

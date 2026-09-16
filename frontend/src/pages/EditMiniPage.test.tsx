@@ -19,7 +19,7 @@ const MINI = {
   id: 42,
   name: 'Dire Wolf',
   description: 'A wolf',
-  image_path: '/uploads/wolf.png',
+  images: ['/uploads/wolf.png'],
   price: 12.5,
   available: true,
   owner_name: 'Owner Name',

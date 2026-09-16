@@ -17,13 +17,14 @@ export default function EditMiniPage(): React.ReactElement {
       .catch((err: unknown) => setLoadError(err instanceof Error ? err.message : 'Failed to load mini'));
   }, [id]);
 
-  async function handleSubmit(values: MiniFormValues, image: File | null): Promise<void> {
+  async function handleSubmit(values: MiniFormValues, newImages: File[], keptExistingImages: string[]): Promise<void> {
     const fd = new FormData();
     fd.append('name', values.name);
     if (values.description.trim()) fd.append('description', values.description.trim());
     if (values.tags.trim())        fd.append('tags', values.tags.trim());
     if (values.price.trim())       fd.append('price', values.price.trim());
-    if (image)                     fd.append('image', image);
+    fd.append('existingImages', JSON.stringify(keptExistingImages));
+    newImages.forEach((file: File) => fd.append('images', file));
 
     await api(`/api/minis/${id}`, { method: 'PATCH', body: fd });
     navigate('/'); // back to the dashboard after a successful edit
@@ -51,7 +52,7 @@ export default function EditMiniPage(): React.ReactElement {
           tags: mini.tags.join(','),
           price: String(mini.price),
         }}
-        initialPreviewUrl={mini.image_path}
+        initialImages={mini.images}
         submitLabel="Save Changes"
         submittingLabel="Saving…"
         onSubmit={handleSubmit}
