@@ -48,6 +48,37 @@ beforeEach(() => {
   execute.mockReset();
 });
 
+describe('GET /api/minis — fuzzy search', () => {
+  it('finds a mini whose name is misspelled in the search term', async () => {
+    execute.mockResolvedValueOnce([[
+      miniRow({ id: 1, name: 'Tabaxi Bard' }),
+      miniRow({ id: 2, name: 'Goblin Grunt' }),
+    ]]);
+
+    const res = await request(app)
+      .get('/api/minis?q=tabaxe')
+      .set('Cookie', authCookie(OWNER));
+
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveLength(1);
+    expect(res.body[0].name).toBe('Tabaxi Bard');
+  });
+
+  it('excludes minis that do not match at all', async () => {
+    execute.mockResolvedValueOnce([[
+      miniRow({ id: 1, name: 'Tabaxi Bard' }),
+      miniRow({ id: 2, name: 'Goblin Grunt' }),
+    ]]);
+
+    const res = await request(app)
+      .get('/api/minis?q=beholder')
+      .set('Cookie', authCookie(OWNER));
+
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveLength(0);
+  });
+});
+
 describe('GET /api/minis/:id', () => {
   it('returns the mini with images split into an array', async () => {
     execute.mockResolvedValueOnce([[miniRow({ images: '/uploads/a.png,/uploads/b.png' })]]);
@@ -235,6 +266,60 @@ describe('PATCH /api/minis/:id — photos', () => {
 
   it('returns 401 with no auth cookie', async () => {
     const res = await request(app).patch('/api/minis/42').field('name', 'Wolf');
+    expect(res.status).toBe(401);
+  });
+});
+
+describe('DELETE /api/minis/:id', () => {
+  it('lets the owner delete their own mini', async () => {
+    execute
+      .mockResolvedValueOnce([[{ owner_id: 1 }]])            // ownership lookup
+      .mockResolvedValueOnce([[{ image_path: '/uploads/a.png' }]]) // images to clean up
+      .mockResolvedValueOnce([{}]);                           // DELETE FROM minis
+
+    const res = await request(app)
+      .delete('/api/minis/42')
+      .set('Cookie', authCookie(OWNER));
+
+    expect(res.status).toBe(200);
+    expect(execute).toHaveBeenCalledWith(expect.stringContaining('DELETE FROM minis'), ['42']);
+  });
+
+  it('lets an admin delete someone else\'s mini', async () => {
+    execute
+      .mockResolvedValueOnce([[{ owner_id: 1 }]])
+      .mockResolvedValueOnce([[]])
+      .mockResolvedValueOnce([{}]);
+
+    const res = await request(app)
+      .delete('/api/minis/42')
+      .set('Cookie', authCookie(ADMIN));
+
+    expect(res.status).toBe(200);
+  });
+
+  it('rejects a non-owner, non-admin with 403', async () => {
+    execute.mockResolvedValueOnce([[{ owner_id: 1 }]]);
+
+    const res = await request(app)
+      .delete('/api/minis/42')
+      .set('Cookie', authCookie(OTHER));
+
+    expect(res.status).toBe(403);
+  });
+
+  it('returns 404 when the mini does not exist', async () => {
+    execute.mockResolvedValueOnce([[]]);
+
+    const res = await request(app)
+      .delete('/api/minis/999')
+      .set('Cookie', authCookie(OWNER));
+
+    expect(res.status).toBe(404);
+  });
+
+  it('returns 401 with no auth cookie', async () => {
+    const res = await request(app).delete('/api/minis/42');
     expect(res.status).toBe(401);
   });
 });

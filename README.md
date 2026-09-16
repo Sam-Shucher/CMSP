@@ -129,6 +129,12 @@ journalctl -u mini-library -f         # tail the logs
 bash scripts/rpi-update.sh
 ```
 
+This also re-applies `backend/src/db/schema.sql` (safe — it only creates
+tables that don't exist yet, never alters or drops anything) and restarts
+MariaDB before the app reconnects. It does **not** add new columns to an
+already-existing table — that still needs a manual `ALTER TABLE`, the same
+way `phone`/`neighborhood` did.
+
 ## Environment variables
 
 See `backend/.env.example` for the full list. Key ones:

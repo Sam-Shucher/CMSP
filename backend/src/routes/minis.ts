@@ -5,6 +5,7 @@ import fs from 'fs';
 import { RowDataPacket, ResultSetHeader } from 'mysql2';
 import { pool } from '../db/connection';
 import { requireAuth, AuthRequest } from '../middleware/requireAuth';
+import { matchesSearch } from '../utils/search';
 
 const router = Router();
 const MAX_IMAGES = 3;
@@ -178,16 +179,11 @@ router.get('/', requireAuth, async (req: AuthRequest, res: Response): Promise<vo
   const { q, tag } = req.query as Record<string, string | undefined>;
 
   try {
-    // Build the WHERE clause dynamically based on which filters were provided.
-    // We collect conditions in an array and join them with AND at the end.
+    // The tag filter (a controlled pill, not free text) stays an exact match in SQL.
+    // Free-text search (q) is applied afterwards in JS — see matchesSearch below —
+    // so a misspelled search term still finds a close match, which plain SQL LIKE can't do.
     const params: (string | number)[] = [];
     const where: string[] = [];
-
-    if (q) {
-      where.push('(m.name LIKE ? OR m.description LIKE ?)');
-      // The % wildcards let SQL match the search term anywhere in the string
-      params.push(`%${q}%`, `%${q}%`);
-    }
 
     if (tag) {
       // Subquery: find minis that have a tag matching the filter
@@ -204,7 +200,12 @@ router.get('/', requireAuth, async (req: AuthRequest, res: Response): Promise<vo
       params
     );
 
-    res.json(rows.map(serializeMini));
+    let minis = rows.map(serializeMini);
+    if (q) {
+      minis = minis.filter(m => matchesSearch([m.name, m.description, m.tags], q));
+    }
+
+    res.json(minis);
   } catch (err: unknown) {
     console.error(err);
     res.status(500).json({ error: 'Server error' });
@@ -366,6 +367,49 @@ router.patch('/:id', requireAuth, upload.array('images', MAX_IMAGES), handleUplo
     );
 
     res.json(serializeMini(rows[0]));
+  } catch (err: unknown) {
+    console.error(err);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// DELETE /api/minis/:id
+// Deletes a mini. Only the owner or an admin may do this. Tags and photo
+// rows are removed automatically via ON DELETE CASCADE; the photo files
+// themselves still need cleaning up from disk here.
+router.delete('/:id', requireAuth, async (req: AuthRequest, res: Response): Promise<void> => {
+  const miniId = req.params.id;
+
+  try {
+    const [ownerRows] = await pool.execute<OwnerRow[]>(
+      'SELECT owner_id FROM minis WHERE id = ?',
+      [miniId]
+    );
+
+    if (ownerRows.length === 0) {
+      res.status(404).json({ error: 'Mini not found' });
+      return;
+    }
+
+    const isOwner = ownerRows[0].owner_id === req.user!.userId;
+    const isAdmin = req.user!.role === 'admin';
+    if (!isOwner && !isAdmin) {
+      res.status(403).json({ error: 'You can only delete your own minis' });
+      return;
+    }
+
+    const [imageRows] = await pool.execute<ImagePathRow[]>(
+      'SELECT image_path FROM mini_images WHERE mini_id = ?',
+      [miniId]
+    );
+
+    await pool.execute<ResultSetHeader>('DELETE FROM minis WHERE id = ?', [miniId]);
+
+    for (const { image_path } of imageRows) {
+      fs.unlink(path.join(uploadsDir, path.basename(image_path)), () => {}); // best-effort cleanup
+    }
+
+    res.json({ message: 'Mini deleted' });
   } catch (err: unknown) {
     console.error(err);
     res.status(500).json({ error: 'Server error' });

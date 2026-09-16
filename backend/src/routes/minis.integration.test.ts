@@ -32,6 +32,7 @@ afterAll(async () => {
 // Clean slate between tests — order matters because of FK constraints.
 beforeEach(async () => {
   await pool.query('DELETE FROM mini_tags');
+  await pool.query('DELETE FROM mini_images');
   await pool.query('DELETE FROM minis');
   await pool.query('DELETE FROM tags');
   await pool.query('DELETE FROM approved_emails');
@@ -184,5 +185,60 @@ describe('POST /api/minis then PATCH /api/minis/:id (real database)', () => {
       .field('name', 'Stolen Beholder');
 
     expect(editRes.status).toBe(403);
+  });
+});
+
+describe('DELETE /api/minis/:id (real database)', () => {
+  it('deletes the mini and it no longer appears in the list or by id', async () => {
+    const userId = await createTestUser();
+    const cookie = authCookie({ userId, username: 'owner', role: 'user' });
+
+    const createRes = await request(app)
+      .post('/api/minis')
+      .set('Cookie', cookie)
+      .field('name', 'Beholder');
+
+    const deleteRes = await request(app)
+      .delete(`/api/minis/${createRes.body.miniId}`)
+      .set('Cookie', cookie);
+    expect(deleteRes.status).toBe(200);
+
+    const getRes = await request(app).get(`/api/minis/${createRes.body.miniId}`).set('Cookie', cookie);
+    expect(getRes.status).toBe(404);
+
+    const listRes = await request(app).get('/api/minis').set('Cookie', cookie);
+    expect(listRes.body).toHaveLength(0);
+  });
+
+  it('rejects deletion from a user who does not own the mini', async () => {
+    const ownerId = await createTestUser({ email: 'owner@example.com', username: 'owner' });
+    const otherId = await createTestUser({ email: 'other@example.com', username: 'other' });
+
+    const createRes = await request(app)
+      .post('/api/minis')
+      .set('Cookie', authCookie({ userId: ownerId, username: 'owner', role: 'user' }))
+      .field('name', 'Beholder');
+
+    const deleteRes = await request(app)
+      .delete(`/api/minis/${createRes.body.miniId}`)
+      .set('Cookie', authCookie({ userId: otherId, username: 'other', role: 'user' }));
+
+    expect(deleteRes.status).toBe(403);
+  });
+});
+
+describe('GET /api/minis — fuzzy search (real database)', () => {
+  it('finds a misspelled search term against a real dataset', async () => {
+    const userId = await createTestUser();
+    const cookie = authCookie({ userId, username: 'owner', role: 'user' });
+
+    await request(app).post('/api/minis').set('Cookie', cookie).field('name', 'Tabaxi Bard');
+    await request(app).post('/api/minis').set('Cookie', cookie).field('name', 'Goblin Grunt');
+
+    const res = await request(app).get('/api/minis?q=tabaxe').set('Cookie', cookie);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveLength(1);
+    expect(res.body[0].name).toBe('Tabaxi Bard');
   });
 });
