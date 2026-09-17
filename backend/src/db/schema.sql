@@ -63,7 +63,7 @@ CREATE TABLE IF NOT EXISTS minis (
   collection_id INT NOT NULL,
   image_path    VARCHAR(500), -- legacy single-photo column, superseded by mini_images below
   price         DECIMAL(6,2) NOT NULL DEFAULT 0.00,
-  available     BOOLEAN DEFAULT TRUE,
+  available     BOOLEAN DEFAULT TRUE, -- legacy, unused: availability is derived from loans below
   created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE,
@@ -90,6 +90,47 @@ CREATE TABLE IF NOT EXISTS mini_tags (
   PRIMARY KEY (mini_id, tag_id),
   FOREIGN KEY (mini_id) REFERENCES minis(id) ON DELETE CASCADE,
   FOREIGN KEY (tag_id)  REFERENCES tags(id)  ON DELETE CASCADE
+);
+
+-- A borrower's basket. Adding a mini here reserves nothing — only checkout does.
+CREATE TABLE IF NOT EXISTS cart_items (
+  id       INT PRIMARY KEY AUTO_INCREMENT,
+  user_id  INT NOT NULL,
+  mini_id  INT NOT NULL,
+  added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE (user_id, mini_id),
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+  FOREIGN KEY (mini_id) REFERENCES minis(id) ON DELETE CASCADE
+);
+
+-- One row per mini per checkout. A mini is "available" when it has no
+-- negotiating/adventuring loan. Terms (when/where/how/duration) are agreed
+-- two-key style: both approval flags must be set on the same terms, and any
+-- edit clears the other side's approval. Only the owner sets duration and
+-- confirms the handoff, which starts the clock (due_at).
+CREATE TABLE IF NOT EXISTS loans (
+  id                INT PRIMARY KEY AUTO_INCREMENT,
+  mini_id           INT NOT NULL,
+  collection_id     INT NOT NULL,
+  borrower_id       INT NOT NULL,
+  owner_id          INT NOT NULL,
+  status            ENUM('negotiating', 'adventuring', 'returned', 'cancelled') NOT NULL DEFAULT 'negotiating',
+  handoff_when      DATETIME NULL,
+  handoff_where     VARCHAR(255) NULL,
+  handoff_how       VARCHAR(255) NULL,
+  duration_days     INT NULL,
+  borrower_approved BOOLEAN NOT NULL DEFAULT FALSE,
+  owner_approved    BOOLEAN NOT NULL DEFAULT FALSE,
+  handed_off_at     DATETIME NULL,
+  due_at            DATETIME NULL,
+  returned_at       DATETIME NULL,
+  cancelled_by      INT NULL,
+  created_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (mini_id) REFERENCES minis(id) ON DELETE CASCADE,
+  FOREIGN KEY (collection_id) REFERENCES collections(id) ON DELETE CASCADE,
+  FOREIGN KEY (borrower_id) REFERENCES users(id) ON DELETE CASCADE,
+  FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE,
+  FOREIGN KEY (cancelled_by) REFERENCES users(id) ON DELETE SET NULL
 );
 
 -- Bootstrap: create at least one collection, then add your own email to its

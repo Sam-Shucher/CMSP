@@ -1,0 +1,285 @@
+import { Router, Response } from 'express';
+import { RowDataPacket, ResultSetHeader } from 'mysql2';
+import { pool } from '../db/connection';
+import { requireAuth } from '../middleware/requireAuth';
+import { requireCollectionMembership, CollectionRequest } from '../middleware/requireCollectionMembership';
+import {
+  LoanSnapshot, LoanTerms, LoanApprovals, LoanStatus, RuleFailure,
+  roleOf, parseTermsPatch, applyTermsEdit, approveTerms, stageOf, termsToCopy, dueAtFrom,
+} from '../utils/loanRules';
+
+const router = Router();
+
+// Loans are only ever visible to their borrower and owner, and only inside
+// the collection they were made in — anyone else gets 404, same as if the
+// loan didn't exist. The actual rules live in utils/loanRules.ts.
+router.use(requireAuth, requireCollectionMembership);
+
+interface LoanRow extends RowDataPacket {
+  id: number;
+  mini_id: number;
+  borrower_id: number;
+  owner_id: number;
+  status: LoanStatus;
+  handoff_when: Date | null;
+  handoff_where: string | null;
+  handoff_how: string | null;
+  duration_days: number | null;
+  borrower_approved: number;
+  owner_approved: number;
+  handed_off_at: Date | null;
+  due_at: Date | null;
+  returned_at: Date | null;
+  created_at: Date;
+  mini_name: string;
+  mini_image: string | null;
+  borrower_username: string;
+  borrower_name: string;
+  owner_username: string;
+  owner_name: string;
+}
+
+// Params: collectionId, userId, userId — callers append further conditions.
+const LOAN_SELECT = `
+  SELECT l.*, m.name AS mini_name,
+         (SELECT mi.image_path FROM mini_images mi WHERE mi.mini_id = m.id ORDER BY mi.position LIMIT 1) AS mini_image,
+         b.username AS borrower_username, b.display_name AS borrower_name,
+         o.username AS owner_username, o.display_name AS owner_name
+  FROM loans l
+  JOIN minis m ON m.id = l.mini_id
+  JOIN users b ON b.id = l.borrower_id
+  JOIN users o ON o.id = l.owner_id
+  WHERE l.collection_id = ? AND (l.borrower_id = ? OR l.owner_id = ?)
+`;
+
+function toSnapshot(row: LoanRow): LoanSnapshot {
+  return {
+    status: row.status,
+    borrowerId: row.borrower_id,
+    ownerId: row.owner_id,
+    handoffWhen: row.handoff_when,
+    handoffWhere: row.handoff_where,
+    handoffHow: row.handoff_how,
+    durationDays: row.duration_days,
+    borrowerApproved: Boolean(row.borrower_approved),
+    ownerApproved: Boolean(row.owner_approved),
+    dueAt: row.due_at,
+  };
+}
+
+function iso(date: Date | null): string | null {
+  return date ? date.toISOString() : null;
+}
+
+function serializeLoan(row: LoanRow, userId: number) {
+  const snapshot = toSnapshot(row);
+  const role = roleOf(snapshot, userId);
+  return {
+    id: row.id,
+    miniId: row.mini_id,
+    miniName: row.mini_name,
+    miniImage: row.mini_image,
+    role,
+    counterpart: role === 'borrower'
+      ? { id: row.owner_id, username: row.owner_username, displayName: row.owner_name }
+      : { id: row.borrower_id, username: row.borrower_username, displayName: row.borrower_name },
+    status: row.status,
+    stage: stageOf(snapshot, new Date()),
+    handoffWhen: iso(row.handoff_when),
+    handoffWhere: row.handoff_where,
+    handoffHow: row.handoff_how,
+    durationDays: row.duration_days,
+    borrowerApproved: snapshot.borrowerApproved,
+    ownerApproved: snapshot.ownerApproved,
+    handedOffAt: iso(row.handed_off_at),
+    dueAt: iso(row.due_at),
+    returnedAt: iso(row.returned_at),
+    createdAt: iso(row.created_at),
+  };
+}
+
+async function findLoan(req: CollectionRequest, loanId: string | number): Promise<LoanRow | null> {
+  const userId = req.user!.userId;
+  const [rows] = await pool.execute<LoanRow[]>(
+    `${LOAN_SELECT} AND l.id = ?`,
+    [req.collectionId!, userId, userId, loanId]
+  );
+  return rows[0] ?? null;
+}
+
+async function sendLoan(req: CollectionRequest, res: Response, loanId: number): Promise<void> {
+  const row = await findLoan(req, loanId);
+  res.json(serializeLoan(row!, req.user!.userId));
+}
+
+function fail(res: Response, failure: RuleFailure): void {
+  res.status(failure.status).json({ error: failure.error });
+}
+
+// DATETIME has no sub-second precision, so round before storing to keep what
+// we compute (like due = handoff + N days) exactly what reads back.
+function nowToTheSecond(): Date {
+  const now = new Date();
+  now.setMilliseconds(0);
+  return now;
+}
+
+async function saveTerms(loanId: number, next: LoanTerms & LoanApprovals): Promise<number> {
+  const [result] = await pool.execute<ResultSetHeader>(
+    `UPDATE loans
+     SET handoff_when = ?, handoff_where = ?, handoff_how = ?, duration_days = ?,
+         borrower_approved = ?, owner_approved = ?
+     WHERE id = ? AND status = 'negotiating'`,
+    [
+      next.handoffWhen, next.handoffWhere, next.handoffHow, next.durationDays,
+      next.borrowerApproved ? 1 : 0, next.ownerApproved ? 1 : 0, loanId,
+    ]
+  );
+  return result.affectedRows;
+}
+
+const NOT_NEGOTIATING: RuleFailure = { ok: false, status: 409, error: 'This loan is no longer being negotiated' };
+
+// Wraps each handler: loads the loan (404 if it isn't yours or isn't in this
+// collection) and turns unexpected errors into a 500.
+function withLoan(handler: (req: CollectionRequest, res: Response, row: LoanRow) => Promise<void>) {
+  return async (req: CollectionRequest, res: Response): Promise<void> => {
+    try {
+      const row = await findLoan(req, req.params.id);
+      if (!row) {
+        res.status(404).json({ error: 'Loan not found' });
+        return;
+      }
+      await handler(req, res, row);
+    } catch (err: unknown) {
+      console.error(err);
+      res.status(500).json({ error: 'Server error' });
+    }
+  };
+}
+
+// GET /api/loans
+// Every loan you're part of in this collection, as borrower or owner.
+router.get('/', async (req: CollectionRequest, res: Response): Promise<void> => {
+  const userId = req.user!.userId;
+  try {
+    const [rows] = await pool.execute<LoanRow[]>(
+      `${LOAN_SELECT} ORDER BY l.created_at DESC, l.id DESC`,
+      [req.collectionId!, userId, userId]
+    );
+    res.json(rows.map(row => serializeLoan(row, userId)));
+  } catch (err: unknown) {
+    console.error(err);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// PATCH /api/loans/:id/terms  { when?, where?, how?, durationDays? }
+// Propose new terms. Clears the other side's approval (two-key rule).
+router.patch('/:id/terms', withLoan(async (req, res, row) => {
+  const snapshot = toSnapshot(row);
+  const role = roleOf(snapshot, req.user!.userId)!;
+  if (snapshot.status !== 'negotiating') return fail(res, NOT_NEGOTIATING);
+
+  const parsed = parseTermsPatch(req.body ?? {}, role);
+  if (!parsed.ok) return fail(res, parsed);
+
+  if (await saveTerms(row.id, applyTermsEdit(snapshot, role, parsed.patch)) === 0) return fail(res, NOT_NEGOTIATING);
+  await sendLoan(req, res, row.id);
+}));
+
+// POST /api/loans/:id/approve
+// Turn your key on the current terms.
+router.post('/:id/approve', withLoan(async (req, res, row) => {
+  const snapshot = toSnapshot(row);
+  const result = approveTerms(snapshot, roleOf(snapshot, req.user!.userId)!);
+  if (!result.ok) return fail(res, result);
+
+  const [update] = await pool.execute<ResultSetHeader>(
+    `UPDATE loans SET borrower_approved = ?, owner_approved = ? WHERE id = ? AND status = 'negotiating'`,
+    [result.borrowerApproved ? 1 : 0, result.ownerApproved ? 1 : 0, row.id]
+  );
+  if (update.affectedRows === 0) return fail(res, NOT_NEGOTIATING);
+  await sendLoan(req, res, row.id);
+}));
+
+// POST /api/loans/:id/apply-terms-to-all
+// Copies this loan's terms onto every other open request between the same
+// borrower and owner. Each one still goes through the two-key rule.
+router.post('/:id/apply-terms-to-all', withLoan(async (req, res, row) => {
+  const snapshot = toSnapshot(row);
+  const role = roleOf(snapshot, req.user!.userId)!;
+  if (snapshot.status !== 'negotiating') return fail(res, NOT_NEGOTIATING);
+
+  const copy = termsToCopy(snapshot, role);
+  if (Object.keys(copy).length === 0) {
+    return fail(res, { ok: false, status: 400, error: 'Set some terms on this request first' });
+  }
+
+  const userId = req.user!.userId;
+  const [others] = await pool.execute<LoanRow[]>(
+    `${LOAN_SELECT} AND l.borrower_id = ? AND l.owner_id = ? AND l.status = 'negotiating' AND l.id <> ?`,
+    [req.collectionId!, userId, userId, row.borrower_id, row.owner_id, row.id]
+  );
+
+  let updated = 0;
+  for (const other of others) {
+    updated += await saveTerms(other.id, applyTermsEdit(toSnapshot(other), role, copy));
+  }
+  res.json({ updated });
+}));
+
+// POST /api/loans/:id/handoff
+// Owner confirms the mini changed hands — it starts Adventuring and the clock starts.
+router.post('/:id/handoff', withLoan(async (req, res, row) => {
+  const snapshot = toSnapshot(row);
+  if (roleOf(snapshot, req.user!.userId) !== 'owner') {
+    return fail(res, { ok: false, status: 403, error: 'Only the owner can confirm the handoff' });
+  }
+  if (stageOf(snapshot, new Date()) !== 'agreed') {
+    return fail(res, { ok: false, status: 409, error: 'Both of you need to approve the terms before the handoff' });
+  }
+
+  const handedOffAt = nowToTheSecond();
+  const [update] = await pool.execute<ResultSetHeader>(
+    `UPDATE loans SET status = 'adventuring', handed_off_at = ?, due_at = ?
+     WHERE id = ? AND status = 'negotiating' AND borrower_approved = 1 AND owner_approved = 1`,
+    [handedOffAt, dueAtFrom(handedOffAt, snapshot.durationDays!), row.id]
+  );
+  if (update.affectedRows === 0) return fail(res, NOT_NEGOTIATING);
+  await sendLoan(req, res, row.id);
+}));
+
+// POST /api/loans/:id/return
+// Owner confirms they have the mini back.
+router.post('/:id/return', withLoan(async (req, res, row) => {
+  if (row.owner_id !== req.user!.userId) {
+    return fail(res, { ok: false, status: 403, error: 'Only the owner can mark a mini returned' });
+  }
+  if (row.status !== 'adventuring') {
+    return fail(res, { ok: false, status: 409, error: "This mini isn't out adventuring" });
+  }
+
+  const [update] = await pool.execute<ResultSetHeader>(
+    `UPDATE loans SET status = 'returned', returned_at = ? WHERE id = ? AND status = 'adventuring'`,
+    [nowToTheSecond(), row.id]
+  );
+  if (update.affectedRows === 0) return fail(res, { ok: false, status: 409, error: "This mini isn't out adventuring" });
+  await sendLoan(req, res, row.id);
+}));
+
+// POST /api/loans/:id/cancel
+// Either side can back out before the handoff.
+router.post('/:id/cancel', withLoan(async (req, res, row) => {
+  const cannotCancel: RuleFailure = { ok: false, status: 409, error: 'Only a request that hasn\'t been handed off can be cancelled' };
+  if (row.status !== 'negotiating') return fail(res, cannotCancel);
+
+  const [update] = await pool.execute<ResultSetHeader>(
+    `UPDATE loans SET status = 'cancelled', cancelled_by = ? WHERE id = ? AND status = 'negotiating'`,
+    [req.user!.userId, row.id]
+  );
+  if (update.affectedRows === 0) return fail(res, cannotCancel);
+  await sendLoan(req, res, row.id);
+}));
+
+export default router;

@@ -33,6 +33,7 @@ describe('App nav — username link', () => {
       if (url === '/api/users/me') return Promise.resolve(jsonResponse(PROFILE));
       if (url.startsWith('/api/minis/tags')) return Promise.resolve(jsonResponse([]));
       if (url.startsWith('/api/minis'))       return Promise.resolve(jsonResponse([]));
+      if (url === '/api/cart' || url === '/api/loans') return Promise.resolve(jsonResponse([]));
       return Promise.resolve(jsonResponse({}));
     }));
   });
@@ -46,6 +47,22 @@ describe('App nav — username link', () => {
     await userEvent.click(usernameLink);
 
     await waitFor(() => expect(screen.getByText(/my profile/i)).toBeInTheDocument());
+  });
+
+  it('links to the cart page from the nav', async () => {
+    render(<App />);
+
+    await userEvent.click(await screen.findByRole('link', { name: 'Cart' }));
+
+    await waitFor(() => expect(screen.getByRole('heading', { name: /your cart/i })).toBeInTheDocument());
+  });
+
+  it('links to the loans page from the nav', async () => {
+    render(<App />);
+
+    await userEvent.click(await screen.findByRole('link', { name: 'Loans' }));
+
+    await waitFor(() => expect(screen.getByRole('heading', { name: /^loans$/i })).toBeInTheDocument());
   });
 });
 

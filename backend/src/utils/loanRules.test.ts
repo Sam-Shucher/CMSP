@@ -1,0 +1,179 @@
+import { describe, it, expect } from 'vitest';
+import {
+  LoanSnapshot,
+  roleOf,
+  termsComplete,
+  parseTermsPatch,
+  applyTermsEdit,
+  approveTerms,
+  stageOf,
+  termsToCopy,
+  dueAtFrom,
+} from './loanRules';
+
+const WHEN = new Date('2026-10-01T18:00:00.000Z');
+
+function loan(overrides: Partial<LoanSnapshot> = {}): LoanSnapshot {
+  return {
+    status: 'negotiating',
+    borrowerId: 1,
+    ownerId: 2,
+    handoffWhen: null,
+    handoffWhere: null,
+    handoffHow: null,
+    durationDays: null,
+    borrowerApproved: false,
+    ownerApproved: false,
+    dueAt: null,
+    ...overrides,
+  };
+}
+
+const COMPLETE = { handoffWhen: WHEN, handoffWhere: 'Game store', handoffHow: 'In person', durationDays: 14 };
+
+describe('roleOf', () => {
+  it('identifies the borrower and the owner', () => {
+    expect(roleOf(loan(), 1)).toBe('borrower');
+    expect(roleOf(loan(), 2)).toBe('owner');
+  });
+
+  it('returns null for anyone else', () => {
+    expect(roleOf(loan(), 3)).toBeNull();
+  });
+});
+
+describe('termsComplete', () => {
+  it('is true only when when, where, how, and duration are all set', () => {
+    expect(termsComplete(loan(COMPLETE))).toBe(true);
+    expect(termsComplete(loan({ ...COMPLETE, durationDays: null }))).toBe(false);
+    expect(termsComplete(loan({ ...COMPLETE, handoffWhere: null }))).toBe(false);
+  });
+});
+
+describe('parseTermsPatch', () => {
+  it('accepts when/where/how from the borrower', () => {
+    const result = parseTermsPatch({ when: WHEN.toISOString(), where: ' Game store ', how: 'In person' }, 'borrower');
+    expect(result).toEqual({
+      ok: true,
+      patch: { handoffWhen: WHEN, handoffWhere: 'Game store', handoffHow: 'In person' },
+    });
+  });
+
+  it('lets the owner set a duration', () => {
+    expect(parseTermsPatch({ durationDays: 7 }, 'owner')).toEqual({ ok: true, patch: { durationDays: 7 } });
+  });
+
+  it('forbids the borrower from setting the duration', () => {
+    expect(parseTermsPatch({ durationDays: 7 }, 'borrower')).toMatchObject({ ok: false, status: 403 });
+  });
+
+  it('rejects an unparseable date', () => {
+    expect(parseTermsPatch({ when: 'next tuesday-ish' }, 'owner')).toMatchObject({ ok: false, status: 400 });
+  });
+
+  it('rejects durations that are not a whole number of days between 1 and 365', () => {
+    expect(parseTermsPatch({ durationDays: 0 }, 'owner')).toMatchObject({ ok: false, status: 400 });
+    expect(parseTermsPatch({ durationDays: 366 }, 'owner')).toMatchObject({ ok: false, status: 400 });
+    expect(parseTermsPatch({ durationDays: 2.5 }, 'owner')).toMatchObject({ ok: false, status: 400 });
+    expect(parseTermsPatch({ durationDays: '7' }, 'owner')).toMatchObject({ ok: false, status: 400 });
+  });
+
+  it('rejects blank or overly long where/how text', () => {
+    expect(parseTermsPatch({ where: '   ' }, 'owner')).toMatchObject({ ok: false, status: 400 });
+    expect(parseTermsPatch({ how: 'x'.repeat(256) }, 'owner')).toMatchObject({ ok: false, status: 400 });
+  });
+
+  it('rejects an empty update', () => {
+    expect(parseTermsPatch({}, 'owner')).toMatchObject({ ok: false, status: 400 });
+  });
+});
+
+describe('applyTermsEdit — the two-key rule', () => {
+  it('clears the other side\'s approval when terms change', () => {
+    const current = loan({ ...COMPLETE, borrowerApproved: true, ownerApproved: true });
+    const result = applyTermsEdit(current, 'owner', { durationDays: 21 });
+
+    expect(result.durationDays).toBe(21);
+    expect(result.borrowerApproved).toBe(false);
+  });
+
+  it('counts proposing complete terms as the editor turning their own key', () => {
+    const current = loan({ handoffWhen: WHEN, handoffWhere: 'Game store', handoffHow: 'In person' });
+    const result = applyTermsEdit(current, 'owner', { durationDays: 14 });
+
+    expect(result.ownerApproved).toBe(true);
+    expect(result.borrowerApproved).toBe(false);
+  });
+
+  it('does not approve on the editor\'s behalf while terms are still incomplete', () => {
+    const result = applyTermsEdit(loan(), 'borrower', { handoffWhere: 'Game store' });
+    expect(result.borrowerApproved).toBe(false);
+  });
+
+  it('leaves approvals alone when the "edit" doesn\'t actually change anything', () => {
+    const current = loan({ ...COMPLETE, borrowerApproved: true, ownerApproved: true });
+    const result = applyTermsEdit(current, 'owner', { durationDays: 14, handoffWhen: new Date(WHEN.getTime()) });
+
+    expect(result.borrowerApproved).toBe(true);
+    expect(result.ownerApproved).toBe(true);
+  });
+});
+
+describe('approveTerms', () => {
+  it('turns the caller\'s key on complete terms', () => {
+    const result = approveTerms(loan({ ...COMPLETE, ownerApproved: true }), 'borrower');
+    expect(result).toEqual({ ok: true, borrowerApproved: true, ownerApproved: true });
+  });
+
+  it('refuses to approve incomplete terms', () => {
+    expect(approveTerms(loan({ ...COMPLETE, durationDays: null }), 'borrower')).toMatchObject({ ok: false, status: 400 });
+  });
+
+  it('refuses once the loan is no longer being negotiated', () => {
+    expect(approveTerms(loan({ ...COMPLETE, status: 'adventuring' }), 'borrower')).toMatchObject({ ok: false, status: 409 });
+  });
+});
+
+describe('stageOf', () => {
+  const now = new Date('2026-10-10T12:00:00.000Z');
+
+  it('is "negotiating" until both keys are turned on complete terms', () => {
+    expect(stageOf(loan({ ...COMPLETE, ownerApproved: true }), now)).toBe('negotiating');
+  });
+
+  it('is "agreed" once both keys are turned', () => {
+    expect(stageOf(loan({ ...COMPLETE, ownerApproved: true, borrowerApproved: true }), now)).toBe('agreed');
+  });
+
+  it('is "adventuring" before the due date and "overdue" after it', () => {
+    expect(stageOf(loan({ status: 'adventuring', dueAt: new Date('2026-10-11T00:00:00.000Z') }), now)).toBe('adventuring');
+    expect(stageOf(loan({ status: 'adventuring', dueAt: new Date('2026-10-09T00:00:00.000Z') }), now)).toBe('overdue');
+  });
+
+  it('passes returned and cancelled straight through', () => {
+    expect(stageOf(loan({ status: 'returned' }), now)).toBe('returned');
+    expect(stageOf(loan({ status: 'cancelled' }), now)).toBe('cancelled');
+  });
+});
+
+describe('termsToCopy — "apply terms to all requests with this person"', () => {
+  it('copies when/where/how for the borrower, but never duration', () => {
+    expect(termsToCopy(loan(COMPLETE), 'borrower')).toEqual({
+      handoffWhen: WHEN, handoffWhere: 'Game store', handoffHow: 'In person',
+    });
+  });
+
+  it('copies duration too for the owner', () => {
+    expect(termsToCopy(loan(COMPLETE), 'owner')).toEqual(COMPLETE);
+  });
+
+  it('skips fields that aren\'t set, rather than blanking them on the other requests', () => {
+    expect(termsToCopy(loan({ handoffWhere: 'Game store' }), 'owner')).toEqual({ handoffWhere: 'Game store' });
+  });
+});
+
+describe('dueAtFrom', () => {
+  it('adds the duration in days to the handoff time', () => {
+    expect(dueAtFrom(new Date('2026-10-01T18:00:00.000Z'), 14)).toEqual(new Date('2026-10-15T18:00:00.000Z'));
+  });
+});

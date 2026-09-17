@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import MiniDetailModal from './MiniDetailModal';
 import { Mini } from '../api/client';
 
@@ -10,6 +10,7 @@ function makeMini(overrides: Partial<Mini> = {}): Mini {
     description: 'A very long and detailed description of this fierce wolf mini.',
     images: [],
     price: 12.5,
+    status: 'available',
     available: true,
     owner_name: 'Owner Name',
     owner_username: 'owner',
@@ -83,5 +84,60 @@ describe('MiniDetailModal', () => {
     render(<MiniDetailModal mini={makeMini()} onClose={onClose} />);
     fireEvent.keyDown(window, { key: 'Escape' });
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('MiniDetailModal — adding to the cart', () => {
+  it('offers "Add to cart" for someone else\'s available mini, and calls onAddToCart', async () => {
+    const onAddToCart = vi.fn().mockResolvedValue(undefined);
+    render(<MiniDetailModal mini={makeMini()} onClose={vi.fn()} isOwn={false} inCart={false} onAddToCart={onAddToCart} />);
+
+    fireEvent.click(screen.getByRole('button', { name: /add to cart/i }));
+    await waitFor(() => expect(onAddToCart).toHaveBeenCalledTimes(1));
+  });
+
+  it('shows it is already in your cart instead of offering to add it again', () => {
+    render(<MiniDetailModal mini={makeMini()} onClose={vi.fn()} isOwn={false} inCart={true} onAddToCart={vi.fn()} />);
+
+    expect(screen.queryByRole('button', { name: /add to cart/i })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /in your cart/i })).toBeDisabled();
+  });
+
+  it('never offers your own mini', () => {
+    render(<MiniDetailModal mini={makeMini()} onClose={vi.fn()} isOwn={true} inCart={false} onAddToCart={vi.fn()} />);
+
+    expect(screen.queryByRole('button', { name: /add to cart/i })).not.toBeInTheDocument();
+    expect(screen.getByText(/this is your mini/i)).toBeInTheDocument();
+  });
+
+  it.each([
+    ['requested', 'Requested'],
+    ['adventuring', 'Adventuring'],
+  ] as const)('blocks adding a %s mini and labels why', (status, label) => {
+    const onAddToCart = vi.fn();
+    render(
+      <MiniDetailModal
+        mini={makeMini({ status, available: false })}
+        onClose={vi.fn()}
+        isOwn={false}
+        inCart={false}
+        onAddToCart={onAddToCart}
+      />
+    );
+
+    expect(screen.queryByRole('button', { name: /add to cart/i })).not.toBeInTheDocument();
+    const unavailable = screen.getByRole('button', { name: /not available/i });
+    expect(unavailable).toBeDisabled();
+    fireEvent.click(unavailable);
+    expect(onAddToCart).not.toHaveBeenCalled();
+    expect(screen.getAllByText(label).length).toBeGreaterThan(0);
+  });
+
+  it('shows the server\'s message if adding fails', async () => {
+    const onAddToCart = vi.fn().mockRejectedValue(new Error("That mini isn't available right now"));
+    render(<MiniDetailModal mini={makeMini()} onClose={vi.fn()} isOwn={false} inCart={false} onAddToCart={onAddToCart} />);
+
+    fireEvent.click(screen.getByRole('button', { name: /add to cart/i }));
+    expect(await screen.findByText(/isn't available right now/i)).toBeInTheDocument();
   });
 });

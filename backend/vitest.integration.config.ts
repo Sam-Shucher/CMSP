@@ -10,6 +10,10 @@ export default defineConfig({
     globals: true,
     include: ['src/**/*.integration.test.ts'],
     testTimeout: 15000, // DB round-trips are slower than mocked calls
+    // Every file wipes and reseeds the same mini_library database in
+    // beforeEach, so files must not run concurrently or they'd delete each
+    // other's rows mid-test.
+    fileParallelism: false,
     env: {
       DB_HOST: '127.0.0.1',
       DB_PORT: '3307',

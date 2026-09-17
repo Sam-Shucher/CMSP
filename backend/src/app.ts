@@ -6,6 +6,8 @@ import authRouter from './routes/auth';
 import minisRouter from './routes/minis';
 import adminRouter from './routes/admin';
 import usersRouter from './routes/users';
+import cartRouter from './routes/cart';
+import loansRouter from './routes/loans';
 
 // Builds the Express app without starting it or touching the database —
 // kept separate from index.ts so tests can import it and run requests
@@ -34,6 +36,8 @@ export function createApp(): express.Express {
   app.use('/api/minis', minisRouter);  // /api/minis (browse, upload, tags, edit)
   app.use('/api/admin', adminRouter);  // /api/admin/approved-emails, /users (admin only)
   app.use('/api/users', usersRouter);  // /api/users/me (view/edit own profile)
+  app.use('/api/cart',  cartRouter);   // /api/cart (basket + checkout)
+  app.use('/api/loans', loansRouter);  // /api/loans (negotiation, handoff, return)
 
   // In production the backend also serves the built React app, so the whole
   // site runs on a single port. During development the Vite dev server handles

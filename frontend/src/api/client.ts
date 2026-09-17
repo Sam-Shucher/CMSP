@@ -53,6 +53,9 @@ export type Collection = {
   name: string;
 };
 
+// requested = checked out and being negotiated; adventuring = handed off to a borrower
+export type MiniStatus = 'available' | 'requested' | 'adventuring';
+
 // One row from GET /api/minis — the shape the backend sends back
 export type Mini = {
   id: number;
@@ -60,10 +63,46 @@ export type Mini = {
   description: string | null;
   images: string[];           // e.g. ["/uploads/1234-abc.jpg"], up to 3, already split by the backend
   price: number;
-  available: boolean;
+  status: MiniStatus;
+  available: boolean;         // status === 'available'
   owner_name: string;         // display_name of the user who owns this mini
   owner_username: string;
   owner_id: number;
   tags: string[];             // already split by the backend from GROUP_CONCAT
   created_at: string;
+};
+
+// One row from GET /api/cart
+export type CartItem = {
+  miniId: number;
+  name: string;
+  image: string | null;
+  ownerId: number;
+  ownerName: string;
+  ownerUsername: string;
+  status: MiniStatus;
+};
+
+export type LoanStage = 'negotiating' | 'agreed' | 'adventuring' | 'overdue' | 'returned' | 'cancelled';
+
+// One row from GET /api/loans, seen from the current user's side
+export type Loan = {
+  id: number;
+  miniId: number;
+  miniName: string;
+  miniImage: string | null;
+  role: 'borrower' | 'owner';
+  counterpart: { id: number; username: string; displayName: string };
+  status: 'negotiating' | 'adventuring' | 'returned' | 'cancelled';
+  stage: LoanStage;
+  handoffWhen: string | null;  // ISO timestamp
+  handoffWhere: string | null;
+  handoffHow: string | null;
+  durationDays: number | null;
+  borrowerApproved: boolean;
+  ownerApproved: boolean;
+  handedOffAt: string | null;
+  dueAt: string | null;
+  returnedAt: string | null;
+  createdAt: string;
 };

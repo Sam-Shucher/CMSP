@@ -1,0 +1,256 @@
+import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import request from 'supertest';
+import { createApp } from '../app';
+import { pool } from '../db/connection';
+import {
+  assertDatabaseReachable, resetDatabase, createCollection, createUser, createMini, TestUser,
+} from '../test/dbHelpers';
+
+const app = createApp();
+
+let owner: TestUser;
+let borrower: TestUser;
+let bystander: TestUser;
+
+const WHEN = '2026-10-01T18:00:00.000Z';
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+beforeAll(assertDatabaseReachable);
+afterAll(() => pool.end());
+
+beforeEach(async () => {
+  await resetDatabase();
+  const chicago = await createCollection('Chicago');
+  owner = await createUser('owner', chicago);
+  borrower = await createUser('borrower', chicago);
+  bystander = await createUser('bystander', chicago);
+});
+
+// Goes through the real cart + checkout flow, returning the new loan's id.
+async function requestMini(who: TestUser, miniId: number): Promise<number> {
+  await request(app).post('/api/cart').set('Cookie', who.cookie).send({ miniId });
+  const res = await request(app).post('/api/cart/checkout').set('Cookie', who.cookie);
+  return res.body.created.find((c: { miniId: number }) => c.miniId === miniId).loanId;
+}
+
+function proposeTerms(who: TestUser, loanId: number, body: Record<string, unknown>) {
+  return request(app).patch(`/api/loans/${loanId}/terms`).set('Cookie', who.cookie).send(body);
+}
+
+function act(who: TestUser, loanId: number, action: 'approve' | 'handoff' | 'return' | 'cancel' | 'apply-terms-to-all') {
+  return request(app).post(`/api/loans/${loanId}/${action}`).set('Cookie', who.cookie);
+}
+
+// Borrower proposes when/where/how, owner sets duration, borrower approves.
+async function agreeOnTerms(loanId: number, durationDays = 14): Promise<void> {
+  await proposeTerms(borrower, loanId, { when: WHEN, where: 'Game store', how: 'In person' });
+  await proposeTerms(owner, loanId, { durationDays });
+  await act(borrower, loanId, 'approve');
+}
+
+describe('seeing loans', () => {
+  it('shows the loan to both borrower and owner, each from their own side', async () => {
+    const miniId = await createMini(owner, 'Dire Wolf');
+    const loanId = await requestMini(borrower, miniId);
+
+    const asBorrower = await request(app).get('/api/loans').set('Cookie', borrower.cookie);
+    expect(asBorrower.body).toMatchObject([{
+      id: loanId, miniId, miniName: 'Dire Wolf', role: 'borrower',
+      counterpart: { id: owner.userId, username: 'owner' }, stage: 'negotiating',
+    }]);
+
+    const asOwner = await request(app).get('/api/loans').set('Cookie', owner.cookie);
+    expect(asOwner.body).toMatchObject([{ id: loanId, role: 'owner', counterpart: { id: borrower.userId } }]);
+  });
+
+  it('hides it from everyone else in the collection, and returns 404 if they try to touch it', async () => {
+    const loanId = await requestMini(borrower, await createMini(owner, 'Dire Wolf'));
+
+    const list = await request(app).get('/api/loans').set('Cookie', bystander.cookie);
+    expect(list.body).toEqual([]);
+
+    expect((await proposeTerms(bystander, loanId, { where: 'My house' })).status).toBe(404);
+    expect((await act(bystander, loanId, 'cancel')).status).toBe(404);
+  });
+
+  it('returns 404 when acting from a different collection, even as a participant', async () => {
+    const loanId = await requestMini(borrower, await createMini(owner, 'Dire Wolf'));
+    const dojo = await createCollection('dojo');
+    await pool.execute('INSERT INTO collection_memberships (user_id, collection_id) VALUES (?, ?)', [borrower.userId, dojo]);
+    const { authCookie } = await import('../test/helpers');
+    const borrowerInDojo = { ...borrower, cookie: authCookie({ userId: borrower.userId, username: 'borrower', role: 'user', collectionId: dojo }) };
+
+    expect((await proposeTerms(borrowerInDojo, loanId, { where: 'Game store' })).status).toBe(404);
+  });
+});
+
+describe('negotiating terms (two keys)', () => {
+  it('lets the borrower propose when/where/how, round-tripping the exact time', async () => {
+    const loanId = await requestMini(borrower, await createMini(owner, 'Dire Wolf'));
+
+    const res = await proposeTerms(borrower, loanId, { when: WHEN, where: 'Game store', how: 'In person' });
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      handoffWhen: WHEN, handoffWhere: 'Game store', handoffHow: 'In person',
+      borrowerApproved: false, // duration isn't set yet, so nothing to approve
+      stage: 'negotiating',
+    });
+  });
+
+  it('forbids the borrower from setting the duration', async () => {
+    const loanId = await requestMini(borrower, await createMini(owner, 'Dire Wolf'));
+    expect((await proposeTerms(borrower, loanId, { durationDays: 30 })).status).toBe(403);
+  });
+
+  it('only reaches "agreed" once both sides have approved the same complete terms', async () => {
+    const loanId = await requestMini(borrower, await createMini(owner, 'Dire Wolf'));
+    await proposeTerms(borrower, loanId, { when: WHEN, where: 'Game store', how: 'In person' });
+
+    const ownerSetsDuration = await proposeTerms(owner, loanId, { durationDays: 14 });
+    expect(ownerSetsDuration.body).toMatchObject({ ownerApproved: true, borrowerApproved: false, stage: 'negotiating' });
+
+    const borrowerApproves = await act(borrower, loanId, 'approve');
+    expect(borrowerApproves.status).toBe(200);
+    expect(borrowerApproves.body).toMatchObject({ ownerApproved: true, borrowerApproved: true, stage: 'agreed' });
+  });
+
+  it('un-turns the other key when terms change after agreement', async () => {
+    const loanId = await requestMini(borrower, await createMini(owner, 'Dire Wolf'));
+    await agreeOnTerms(loanId);
+
+    const res = await proposeTerms(owner, loanId, { durationDays: 21 });
+    expect(res.body).toMatchObject({ durationDays: 21, ownerApproved: true, borrowerApproved: false, stage: 'negotiating' });
+  });
+
+  it('refuses to approve incomplete terms', async () => {
+    const loanId = await requestMini(borrower, await createMini(owner, 'Dire Wolf'));
+    await proposeTerms(borrower, loanId, { where: 'Game store' });
+    expect((await act(owner, loanId, 'approve')).status).toBe(400);
+  });
+
+  it('rejects an invalid duration', async () => {
+    const loanId = await requestMini(borrower, await createMini(owner, 'Dire Wolf'));
+    expect((await proposeTerms(owner, loanId, { durationDays: 0 })).status).toBe(400);
+  });
+});
+
+describe('apply terms to all requests with the same person', () => {
+  it('copies the owner\'s terms onto every other open request with that borrower, and only that borrower', async () => {
+    const wolf = await createMini(owner, 'Dire Wolf');
+    const beholder = await createMini(owner, 'Beholder');
+    const dragon = await createMini(owner, 'Dragon');
+    const wolfLoan = await requestMini(borrower, wolf);
+    const beholderLoan = await requestMini(borrower, beholder);
+    const bystanderLoan = await requestMini(bystander, dragon);
+
+    await proposeTerms(owner, wolfLoan, { when: WHEN, where: 'Game store', how: 'In person', durationDays: 10 });
+
+    const res = await act(owner, wolfLoan, 'apply-terms-to-all');
+    expect(res.status).toBe(200);
+    expect(res.body.updated).toBe(1);
+
+    const ownerView = (await request(app).get('/api/loans').set('Cookie', owner.cookie)).body;
+    expect(ownerView.find((l: { id: number }) => l.id === beholderLoan)).toMatchObject({
+      handoffWhen: WHEN, handoffWhere: 'Game store', handoffHow: 'In person', durationDays: 10,
+      ownerApproved: true, borrowerApproved: false,
+    });
+    expect(ownerView.find((l: { id: number }) => l.id === bystanderLoan)).toMatchObject({
+      handoffWhere: null, durationDays: null,
+    });
+  });
+
+  it('never carries a duration across when the borrower applies terms', async () => {
+    const wolfLoan = await requestMini(borrower, await createMini(owner, 'Dire Wolf'));
+    const beholderLoan = await requestMini(borrower, await createMini(owner, 'Beholder'));
+    await proposeTerms(owner, wolfLoan, { durationDays: 10 });
+    await proposeTerms(borrower, wolfLoan, { when: WHEN, where: 'Game store', how: 'In person' });
+
+    await act(borrower, wolfLoan, 'apply-terms-to-all');
+
+    const view = (await request(app).get('/api/loans').set('Cookie', borrower.cookie)).body;
+    expect(view.find((l: { id: number }) => l.id === beholderLoan)).toMatchObject({
+      handoffWhere: 'Game store', durationDays: null,
+    });
+  });
+});
+
+describe('handoff and return', () => {
+  it('only lets the owner confirm the handoff, and only once terms are agreed', async () => {
+    const miniId = await createMini(owner, 'Dire Wolf');
+    const loanId = await requestMini(borrower, miniId);
+
+    expect((await act(owner, loanId, 'handoff')).status).toBe(409); // not agreed yet
+
+    await agreeOnTerms(loanId, 14);
+    expect((await act(borrower, loanId, 'handoff')).status).toBe(403);
+
+    const res = await act(owner, loanId, 'handoff');
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('adventuring');
+    expect(res.body.stage).toBe('adventuring');
+    expect(new Date(res.body.dueAt).getTime() - new Date(res.body.handedOffAt).getTime()).toBe(14 * DAY_MS);
+
+    const mini = await request(app).get(`/api/minis/${miniId}`).set('Cookie', bystander.cookie);
+    expect(mini.body.status).toBe('adventuring');
+  });
+
+  it('lets the owner mark an adventuring mini returned, making it available again', async () => {
+    const miniId = await createMini(owner, 'Dire Wolf');
+    const loanId = await requestMini(borrower, miniId);
+    await agreeOnTerms(loanId);
+    await act(owner, loanId, 'handoff');
+
+    expect((await act(borrower, loanId, 'return')).status).toBe(403);
+
+    const res = await act(owner, loanId, 'return');
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('returned');
+    expect(res.body.returnedAt).not.toBeNull();
+
+    const mini = await request(app).get(`/api/minis/${miniId}`).set('Cookie', bystander.cookie);
+    expect(mini.body.status).toBe('available');
+  });
+
+  it('refuses to mark a loan returned that was never handed off', async () => {
+    const loanId = await requestMini(borrower, await createMini(owner, 'Dire Wolf'));
+    expect((await act(owner, loanId, 'return')).status).toBe(409);
+  });
+});
+
+describe('cancelling', () => {
+  it('lets either side cancel before the handoff, freeing the mini', async () => {
+    const miniId = await createMini(owner, 'Dire Wolf');
+    const loanId = await requestMini(borrower, miniId);
+
+    const res = await act(borrower, loanId, 'cancel');
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('cancelled');
+
+    const mini = await request(app).get(`/api/minis/${miniId}`).set('Cookie', bystander.cookie);
+    expect(mini.body.status).toBe('available');
+  });
+
+  it('refuses to cancel once the mini is adventuring', async () => {
+    const loanId = await requestMini(borrower, await createMini(owner, 'Dire Wolf'));
+    await agreeOnTerms(loanId);
+    await act(owner, loanId, 'handoff');
+
+    expect((await act(owner, loanId, 'cancel')).status).toBe(409);
+  });
+
+  it('refuses edits to a cancelled loan', async () => {
+    const loanId = await requestMini(borrower, await createMini(owner, 'Dire Wolf'));
+    await act(owner, loanId, 'cancel');
+    expect((await proposeTerms(borrower, loanId, { where: 'Game store' })).status).toBe(409);
+  });
+});
+
+describe('deleting a mini that is out on loan', () => {
+  it('is blocked while a loan is active', async () => {
+    const miniId = await createMini(owner, 'Dire Wolf');
+    await requestMini(borrower, miniId);
+
+    const res = await request(app).delete(`/api/minis/${miniId}`).set('Cookie', owner.cookie);
+    expect(res.status).toBe(409);
+  });
+});

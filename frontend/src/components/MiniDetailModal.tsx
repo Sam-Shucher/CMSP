@@ -1,17 +1,37 @@
 import React, { useEffect, useState } from 'react';
 import { Mini } from '../api/client';
+import MiniStatusBadge from './MiniStatusBadge';
 
 type MiniDetailModalProps = {
   mini: Mini;
   onClose: () => void;
+  // Cart controls only render when onAddToCart is provided.
+  isOwn?: boolean;
+  inCart?: boolean;
+  onAddToCart?: () => Promise<void>;
 };
 
 // Full-detail overlay opened by clicking a mini card on the browse page —
 // bigger photo with prev/next arrows through all of its images (if it has
-// more than one), plus the full untruncated description.
-export default function MiniDetailModal({ mini, onClose }: MiniDetailModalProps): React.ReactElement {
+// more than one), the full description, and the "add to cart" action.
+export default function MiniDetailModal({ mini, onClose, isOwn = false, inCart = false, onAddToCart }: MiniDetailModalProps): React.ReactElement {
   const [index, setIndex] = useState<number>(0);
+  const [adding, setAdding] = useState<boolean>(false);
+  const [cartError, setCartError] = useState<string>('');
   const imageCount = mini.images.length;
+
+  async function handleAddToCart(): Promise<void> {
+    if (!onAddToCart) return;
+    setCartError('');
+    setAdding(true);
+    try {
+      await onAddToCart();
+    } catch (err: unknown) {
+      setCartError(err instanceof Error ? err.message : 'Could not add to cart');
+    } finally {
+      setAdding(false);
+    }
+  }
 
   function next(): void {
     setIndex(i => (i + 1) % imageCount);
@@ -114,9 +134,7 @@ export default function MiniDetailModal({ mini, onClose }: MiniDetailModalProps)
         <div style={{ padding: '22px' }}>
           <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '12px', marginBottom: '8px' }}>
             <h2 style={{ fontSize: '20px', color: '#c9a84c', fontFamily: 'inherit' }}>{mini.name}</h2>
-            <span className={mini.available ? 'badge-available' : 'badge-unavailable'} style={{ flexShrink: 0 }}>
-              {mini.available ? 'Available' : 'Out'}
-            </span>
+            <MiniStatusBadge status={mini.status} />
           </div>
 
           <p style={{ fontSize: '13px', color: '#8a7d6a', marginBottom: '14px' }}>owned by {mini.owner_name}</p>
@@ -140,6 +158,33 @@ export default function MiniDetailModal({ mini, onClose }: MiniDetailModalProps)
               ))}
             </div>
           )}
+
+          {onAddToCart && (
+            <div style={{ marginTop: '20px', paddingTop: '16px', borderTop: '1px solid #3d3629' }}>
+              {isOwn ? (
+                <p style={{ fontSize: '13px', color: '#8a7d6a' }}>This is your mini.</p>
+              ) : mini.status !== 'available' ? (
+                <button type="button" className="btn-secondary" disabled style={{ width: '100%' }}>
+                  Not available — {mini.status === 'adventuring' ? 'out adventuring' : 'already requested'}
+                </button>
+              ) : inCart ? (
+                <button type="button" className="btn-secondary" disabled style={{ width: '100%' }}>
+                  ✓ In your cart
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="btn-primary"
+                  onClick={() => void handleAddToCart()}
+                  disabled={adding}
+                  style={{ width: '100%' }}
+                >
+                  {adding ? 'Adding…' : 'Add to cart'}
+                </button>
+              )}
+              {cartError && <div className="error-msg" style={{ marginTop: '10px' }}>{cartError}</div>}
+            </div>
+          )}
         </div>
       </div>
     </div>
@@ -147,11 +192,10 @@ export default function MiniDetailModal({ mini, onClose }: MiniDetailModalProps)
 }
 
 // The global `button` rule (src/styles/global.css) sets padding: 10px 20px
-// on every button. Left on a fixed-size circular button, that padding adds
-// on top of width/height (default box-sizing is content-box), turning the
-// circle into a wide oval — box-sizing: border-box plus padding: 0 here
-// keeps the box exactly `size`, and flex centering keeps the glyph centered
-// regardless of the character's own natural alignment/line-height.
+// on every button. On a fixed-size circular button, 40px of horizontal
+// padding is more than the width, so the button grows sideways into an
+// oval — padding: 0 keeps the box exactly `size`, and flex centering keeps
+// its contents centered.
 function circleButtonStyle(size: number): React.CSSProperties {
   return {
     boxSizing: 'border-box',

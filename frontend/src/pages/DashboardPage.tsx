@@ -1,11 +1,14 @@
 import { useEffect, useState, useCallback } from 'react';
 import { Link } from 'react-router-dom';
-import { api, Mini } from '../api/client';
+import { api, Mini, CartItem } from '../api/client';
 import { useAuth } from '../App';
 import MiniDetailModal from '../components/MiniDetailModal';
+import MiniStatusBadge from '../components/MiniStatusBadge';
 
 // The main browse page — shows a searchable, filterable grid of all minis.
 export default function DashboardPage(): React.ReactElement {
+  const { user } = useAuth();
+  const [cartMiniIds, setCartMiniIds] = useState<Set<number>>(new Set());
   const [minis, setMinis]         = useState<Mini[]>([]);
   const [tags, setTags]           = useState<string[]>([]);  // all tags for the filter bar
   const [search, setSearch]       = useState<string>('');
@@ -41,6 +44,24 @@ export default function DashboardPage(): React.ReactElement {
   useEffect(() => {
     void api<string[]>('/api/minis/tags').then(setTags).catch(() => {});
   }, []);
+
+  const fetchCart = useCallback(async (): Promise<void> => {
+    try {
+      const items = await api<CartItem[]>('/api/cart');
+      setCartMiniIds(new Set(items.map((item: CartItem) => item.miniId)));
+    } catch {
+      // Non-fatal: the overlay just won't know what's already in the cart.
+    }
+  }, []);
+
+  useEffect(() => {
+    void fetchCart();
+  }, [fetchCart]);
+
+  async function addToCart(miniId: number): Promise<void> {
+    await api('/api/cart', { method: 'POST', json: { miniId } });
+    await fetchCart();
+  }
 
   return (
     <div style={{ padding: '28px 32px', maxWidth: '1200px', margin: '0 auto' }}>
@@ -126,7 +147,13 @@ export default function DashboardPage(): React.ReactElement {
       )}
 
       {selectedMini && (
-        <MiniDetailModal mini={selectedMini} onClose={() => setSelectedMini(null)} />
+        <MiniDetailModal
+          mini={selectedMini}
+          onClose={() => setSelectedMini(null)}
+          isOwn={selectedMini.owner_id === user?.userId}
+          inCart={cartMiniIds.has(selectedMini.id)}
+          onAddToCart={() => addToCart(selectedMini.id)}
+        />
       )}
     </div>
   );
@@ -190,13 +217,7 @@ function MiniCard({ mini, onOpenDetail }: { mini: Mini; onOpenDetail: () => void
           <h3 style={{ fontSize: '15px', fontFamily: 'inherit', fontWeight: 600, lineHeight: 1.3 }}>
             {mini.name}
           </h3>
-          {/* Available / Out badge */}
-          <span
-            className={mini.available ? 'badge-available' : 'badge-unavailable'}
-            style={{ flexShrink: 0 }}
-          >
-            {mini.available ? 'Available' : 'Out'}
-          </span>
+          <MiniStatusBadge status={mini.status} />
         </div>
 
         <p style={{ fontSize: '12px', color: '#8a7d6a', marginBottom: '4px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -218,15 +239,7 @@ function MiniCard({ mini, onOpenDetail }: { mini: Mini; onOpenDetail: () => void
           </p>
         )}
 
-        {/* Description — clamped to 2 lines to keep cards uniform height */}
-        {mini.description && (
-          <p style={{
-            fontSize: '13px', color: '#b0a898', marginBottom: '10px', lineHeight: 1.4,
-            display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden',
-          }}>
-            {mini.description}
-          </p>
-        )}
+        {/* Description is intentionally not shown here — click the card for the full detail overlay */}
 
         {/* Tag chips */}
         {mini.tags.length > 0 && (

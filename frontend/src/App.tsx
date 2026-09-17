@@ -9,6 +9,8 @@ import EditMiniPage from './pages/EditMiniPage';
 import AdminPage from './pages/AdminPage';
 import ProfilePage from './pages/ProfilePage';
 import CollectionPicker from './pages/CollectionPicker';
+import CartPage from './pages/CartPage';
+import LoansPage from './pages/LoansPage';
 
 // ---------------------------------------------------------------------------
 // Auth context
@@ -97,6 +99,8 @@ function NavBar(): React.ReactElement | null {
       )}
       <a href="/" style={{ color: '#e8e0d0', fontSize: '14px' }}>Browse</a>
       <a href="/upload" style={{ color: '#e8e0d0', fontSize: '14px' }}>Add Mini</a>
+      <Link to="/cart" style={{ color: '#e8e0d0', fontSize: '14px' }}>Cart</Link>
+      <Link to="/loans" style={{ color: '#e8e0d0', fontSize: '14px' }}>Loans</Link>
       {/* Admin link only appears for users with the admin role */}
       {user.role === 'admin' && (
         <a href="/admin" style={{ color: '#c9a84c', fontSize: '14px' }}>Admin</a>
@@ -170,6 +174,8 @@ function AppBody(): React.ReactElement {
         <Route path="/upload"        element={<PrivateRoute><UploadMiniPage /></PrivateRoute>} />
         <Route path="/minis/:id/edit" element={<PrivateRoute><EditMiniPage /></PrivateRoute>} />
         <Route path="/profile"       element={<PrivateRoute><ProfilePage /></PrivateRoute>} />
+        <Route path="/cart"          element={<PrivateRoute><CartPage /></PrivateRoute>} />
+        <Route path="/loans"         element={<PrivateRoute><LoansPage /></PrivateRoute>} />
 
         {/* Admin route — requires both login and admin role */}
         <Route path="/admin"  element={<PrivateRoute><AdminRoute><AdminPage /></AdminRoute></PrivateRoute>} />

@@ -7,6 +7,7 @@ import { pool } from '../db/connection';
 import { requireAuth } from '../middleware/requireAuth';
 import { requireCollectionMembership, CollectionRequest } from '../middleware/requireCollectionMembership';
 import { matchesSearch } from '../utils/search';
+import { activeLoanStatusSql, miniStatusFrom } from '../utils/miniStatus';
 
 const router = Router();
 const MAX_IMAGES = 3;
@@ -75,7 +76,7 @@ interface MiniRow extends RowDataPacket {
   name: string;
   description: string | null;
   price: string; // mysql2 returns DECIMAL columns as strings to avoid float rounding issues
-  available: boolean;
+  active_loan_status: string | null;
   owner_name: string;
   owner_username: string;
   owner_id: number;
@@ -96,6 +97,7 @@ interface TagNameRow extends RowDataPacket {
 
 interface OwnerRow extends RowDataPacket {
   owner_id: number;
+  active_loan_status?: string | null;
 }
 
 interface ImagePathRow extends RowDataPacket {
@@ -108,7 +110,8 @@ interface ImagePathRow extends RowDataPacket {
 // rows against the tags LEFT JOIN — two one-to-many joins in the same query
 // would otherwise duplicate tag names once per image.
 const MINI_SELECT = `
-  SELECT m.id, m.name, m.description, m.price, m.available,
+  SELECT m.id, m.name, m.description, m.price,
+         ${activeLoanStatusSql('m')} AS active_loan_status,
          u.display_name AS owner_name, u.username AS owner_username, u.id AS owner_id,
          m.created_at,
          GROUP_CONCAT(t.name ORDER BY t.name SEPARATOR ',') AS tags,
@@ -121,13 +124,18 @@ const MINI_SELECT = `
 `;
 
 // Converts a raw joined row into the shape the frontend expects
-// (price as a number, tags/images as string arrays instead of CSV blobs).
+// (price as a number, tags/images as string arrays instead of CSV blobs,
+// availability derived from the mini's loans).
 function serializeMini(row: MiniRow) {
+  const { active_loan_status, ...rest } = row;
+  const status = miniStatusFrom(active_loan_status);
   return {
-    ...row,
+    ...rest,
     price: Number(row.price),
     tags: row.tags ? row.tags.split(',') : [],
     images: row.images ? row.images.split(',') : [],
+    status,
+    available: status === 'available',
   };
 }
 
@@ -403,7 +411,8 @@ router.delete('/:id', async (req: CollectionRequest, res: Response): Promise<voi
 
   try {
     const [ownerRows] = await pool.execute<OwnerRow[]>(
-      'SELECT owner_id FROM minis WHERE id = ? AND collection_id = ?',
+      `SELECT m.owner_id, ${activeLoanStatusSql('m')} AS active_loan_status
+       FROM minis m WHERE m.id = ? AND m.collection_id = ?`,
       [miniId, req.collectionId!]
     );
 
@@ -416,6 +425,12 @@ router.delete('/:id', async (req: CollectionRequest, res: Response): Promise<voi
     const isAdmin = req.user!.role === 'admin';
     if (!isOwner && !isAdmin) {
       res.status(403).json({ error: 'You can only delete your own minis' });
+      return;
+    }
+
+    // Deleting would cascade away someone's in-progress request or loan.
+    if (ownerRows[0].active_loan_status) {
+      res.status(409).json({ error: 'This mini has an active request or loan — finish or cancel it first' });
       return;
     }
 
