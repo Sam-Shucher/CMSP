@@ -1,8 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, Routes, Route } from 'react-router-dom';
 import ProfilePage from './ProfilePage';
+import { AuthContext } from '../App';
 
 const PROFILE = {
   id: 1,
@@ -50,6 +51,83 @@ describe('ProfilePage', () => {
     expect(url).toBe('/api/users/me');
     expect(options?.method).toBe('PATCH');
     expect(await screen.findByText(/profile updated/i)).toBeInTheDocument();
+  });
+
+  it('shows an error instead of loading forever when the profile cannot be loaded', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce({ ok: false, json: async () => ({ error: 'Invalid or expired session' }) } as Response);
+
+    render(<MemoryRouter><ProfilePage /></MemoryRouter>);
+
+    expect(await screen.findByText(/invalid or expired session/i)).toBeInTheDocument();
+    expect(screen.queryByText(/loading/i)).not.toBeInTheDocument();
+  });
+
+  it('shows the server\'s error when saving fails, and no success message', async () => {
+    vi.mocked(fetch)
+      .mockResolvedValueOnce({ ok: true, json: async () => PROFILE } as Response)
+      .mockResolvedValueOnce({ ok: false, json: async () => ({ error: 'Server error' }) } as Response);
+
+    render(<MemoryRouter><ProfilePage /></MemoryRouter>);
+    await screen.findByDisplayValue('Owner Name');
+    await userEvent.click(screen.getByRole('button', { name: /save/i }));
+
+    expect(await screen.findByText('Server error')).toBeInTheDocument();
+    expect(screen.queryByText(/profile updated/i)).not.toBeInTheDocument();
+  });
+
+  it('sends the phone and neighborhood too', async () => {
+    vi.mocked(fetch)
+      .mockResolvedValueOnce({ ok: true, json: async () => PROFILE } as Response)
+      .mockResolvedValueOnce({ ok: true, json: async () => PROFILE } as Response);
+
+    render(<MemoryRouter><ProfilePage /></MemoryRouter>);
+    const phone = await screen.findByDisplayValue('555-1234');
+    await userEvent.clear(phone);
+    await userEvent.type(phone, '555-9999');
+    await userEvent.click(screen.getByRole('button', { name: /save/i }));
+
+    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
+    expect(JSON.parse(String(vi.mocked(fetch).mock.calls[1][1]?.body))).toEqual({
+      displayName: 'Owner Name', phone: '555-9999', neighborhood: 'Riverside',
+    });
+  });
+
+  it('logs out everywhere after confirming, then returns to sign in', async () => {
+    vi.mocked(fetch)
+      .mockResolvedValueOnce({ ok: true, json: async () => PROFILE } as Response)
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ message: 'Logged out everywhere' }) } as Response);
+    const setUser = vi.fn();
+    render(
+      <MemoryRouter initialEntries={['/profile']}>
+        <AuthContext.Provider value={{ user: { userId: 1, username: 'owner', role: 'user' }, loading: false, setUser, collections: [], selectCollection: vi.fn(), refreshSession: vi.fn() }}>
+          <Routes>
+            <Route path="/profile" element={<ProfilePage />} />
+            <Route path="/login" element={<div>Sign in page</div>} />
+          </Routes>
+        </AuthContext.Provider>
+      </MemoryRouter>
+    );
+    await screen.findByDisplayValue('Owner Name');
+
+    await userEvent.click(screen.getByRole('button', { name: /log out everywhere/i }));
+    expect(fetch).toHaveBeenCalledTimes(1); // asks first
+    await userEvent.click(screen.getByRole('button', { name: /yes, log out everywhere/i }));
+
+    expect(await screen.findByText('Sign in page')).toBeInTheDocument();
+    expect(fetch).toHaveBeenCalledWith('/api/auth/logout-all', expect.objectContaining({ method: 'POST' }));
+    expect(setUser).toHaveBeenCalledWith(null);
+  });
+
+  it('can back out of logging out everywhere', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce({ ok: true, json: async () => PROFILE } as Response);
+    render(<MemoryRouter><ProfilePage /></MemoryRouter>);
+    await screen.findByDisplayValue('Owner Name');
+
+    await userEvent.click(screen.getByRole('button', { name: /log out everywhere/i }));
+    await userEvent.click(screen.getByRole('button', { name: /keep me signed in/i }));
+
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole('button', { name: /log out everywhere/i })).toBeInTheDocument();
   });
 
   it('rejects a blank display name and does not call the API to save', async () => {

@@ -28,12 +28,24 @@ export async function api<T = unknown>(
   const data: unknown = await res.json().catch(() => ({ error: res.statusText }));
 
   if (!res.ok) {
+    const message = (data as { error?: string }).error ?? 'Request failed';
+    // A 401 anywhere except the sign-in forms means the session is over
+    // (logged out elsewhere, idle too long, or expired). App listens for this
+    // and sends the user back to sign in with an explanation.
+    if (res.status === 401 && !SIGN_IN_FORMS.includes(path)) {
+      window.dispatchEvent(new CustomEvent(SESSION_ENDED_EVENT, { detail: message }));
+    }
     // Throw with the server's error message so callers can display it directly
-    throw new Error((data as { error: string }).error ?? 'Request failed');
+    throw new Error(message);
   }
 
   return data as T;
 }
+
+export const SESSION_ENDED_EVENT = 'mini-library:session-ended';
+
+// Where a 401 just means "wrong email or password", not an ended session.
+const SIGN_IN_FORMS = ['/api/auth/login', '/api/auth/register'];
 
 // ---------------------------------------------------------------------------
 // Shared types used by multiple pages
@@ -43,14 +55,18 @@ export async function api<T = unknown>(
 export type User = {
   userId: number;
   username: string;
-  role: string;      // 'user' | 'admin'
+  role: string;      // 'user' | 'admin' — the role in the ACTIVE collection; 'user' until one is chosen
   collectionId?: number; // absent until a collection is selected — see /api/auth/select-collection
 };
 
-// One row from GET /api/auth/collections — the collections the current user belongs to
+export type CollectionRole = 'user' | 'admin';
+
+// One row from GET /api/auth/collections — the collections the current user
+// belongs to, and their role in each.
 export type Collection = {
   id: number;
   name: string;
+  role?: CollectionRole;
 };
 
 // requested = checked out and being negotiated; adventuring = handed off to a borrower

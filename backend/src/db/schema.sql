@@ -37,22 +37,35 @@ CREATE TABLE IF NOT EXISTS users (
   display_name  VARCHAR(100) NOT NULL,
   phone         VARCHAR(20)  NULL,
   neighborhood  VARCHAR(100) NULL,
-  role          ENUM('user', 'admin') DEFAULT 'user',
+  role          ENUM('user', 'admin') DEFAULT 'user', -- legacy, unused: roles are per collection (collection_memberships.role)
   created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- Which collections a user belongs to (many-to-many). This is the only
--- thing that grants access to a collection's minis or admin panel — a role
--- of 'admin' above is site-wide capability, but an admin still can't touch
--- a collection they aren't a member of.
+-- Which collections a user belongs to (many-to-many), and their role in each.
+-- This is the only thing that grants access to a collection's minis or admin
+-- panel — an admin of one collection has no special powers in another.
 CREATE TABLE IF NOT EXISTS collection_memberships (
   id            INT PRIMARY KEY AUTO_INCREMENT,
   user_id       INT NOT NULL,
   collection_id INT NOT NULL,
   joined_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  role          ENUM('user', 'admin') NOT NULL DEFAULT 'user',
   UNIQUE (user_id, collection_id),
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
   FOREIGN KEY (collection_id) REFERENCES collections(id) ON DELETE CASCADE
+);
+
+-- Server-side login sessions. The cookie holds only the session id; a session
+-- ends when revoked (logout), after a stretch of inactivity, or at expires_at.
+CREATE TABLE IF NOT EXISTS sessions (
+  id           CHAR(64) PRIMARY KEY,
+  user_id      INT NOT NULL,
+  created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  last_seen_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  expires_at   DATETIME NOT NULL,
+  revoked_at   DATETIME NULL,
+  INDEX idx_sessions_user (user_id),
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS minis (
@@ -137,5 +150,7 @@ CREATE TABLE IF NOT EXISTS loans (
 -- invite list so you can be the first to register into it:
 -- INSERT INTO collections (name) VALUES ('Chicago');
 -- INSERT INTO approved_emails (email, collection_id) VALUES ('your@email.com', (SELECT id FROM collections WHERE name = 'Chicago'));
--- After registering, promote yourself to (site-wide) admin:
--- UPDATE users SET role = 'admin' WHERE email = 'your@email.com';
+-- After registering, make yourself an admin of that collection:
+-- UPDATE collection_memberships SET role = 'admin'
+--   WHERE user_id = (SELECT id FROM users WHERE email = 'your@email.com')
+--     AND collection_id = (SELECT id FROM collections WHERE name = 'Chicago');

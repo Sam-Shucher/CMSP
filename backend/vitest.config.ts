@@ -1,3 +1,5 @@
+import os from 'os';
+import path from 'path';
 import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
@@ -7,5 +9,10 @@ export default defineConfig({
     // Integration tests need a live database (see vitest.integration.config.ts)
     // and are excluded from the regular unit test run.
     exclude: ['**/node_modules/**', '**/dist/**', '**/*.integration.test.ts'],
+    setupFiles: ['./src/test/unitSetup.ts'],
+    env: {
+      // Upload tests write real files — keep them out of backend/uploads.
+      UPLOADS_DIR: path.join(os.tmpdir(), 'mini-library-unit-test-uploads'),
+    },
   },
 });

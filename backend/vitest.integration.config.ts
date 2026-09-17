@@ -1,3 +1,5 @@
+import os from 'os';
+import path from 'path';
 import { defineConfig } from 'vitest/config';
 
 // Runs tests against the real MariaDB container started by
@@ -22,6 +24,7 @@ export default defineConfig({
       DB_NAME: 'mini_library',
       JWT_SECRET: 'integration-test-secret',
       NODE_ENV: 'test',
+      UPLOADS_DIR: path.join(os.tmpdir(), 'mini-library-integration-test-uploads'),
     },
   },
 });

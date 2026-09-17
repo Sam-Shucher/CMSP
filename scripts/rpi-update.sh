@@ -23,6 +23,27 @@ SERVICE_NAME=mini-library
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_DIR"
 
+ENV_FILE="$REPO_DIR/backend/.env"
+if [ -f "$ENV_FILE" ]; then
+  # The server refuses to start with a missing, placeholder, or short
+  # JWT_SECRET (anyone who knew it could forge an admin login). Replace a weak
+  # one here instead of letting the deploy take the site down. Side effect:
+  # everyone is logged out once and signs in again.
+  CURRENT_SECRET="$(grep '^JWT_SECRET=' "$ENV_FILE" | cut -d= -f2- || true)"
+  if [ "${#CURRENT_SECRET}" -lt 32 ] \
+     || [ "$CURRENT_SECRET" = "change-me-in-production" ] \
+     || [ "$CURRENT_SECRET" = "change_this_to_a_long_random_string" ]; then
+    echo "==> JWT_SECRET in backend/.env is missing or weak — generating a strong one (everyone will need to sign in again)"
+    NEW_SECRET="$(openssl rand -hex 32)"
+    if grep -q '^JWT_SECRET=' "$ENV_FILE"; then
+      sed -i "s/^JWT_SECRET=.*/JWT_SECRET=${NEW_SECRET}/" "$ENV_FILE"
+    else
+      echo "JWT_SECRET=${NEW_SECRET}" >> "$ENV_FILE"
+    fi
+  fi
+  chmod 600 "$ENV_FILE" # secrets file: readable by the app's user only
+fi
+
 echo "==> Installing dependencies (root, backend, frontend)"
 npm run install:all
 

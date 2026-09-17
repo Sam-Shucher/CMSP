@@ -49,6 +49,45 @@ describe('ImageDropzone', () => {
     expect(screen.getByText(/only image files are allowed/i)).toBeInTheDocument();
   });
 
+  it('ignores a drop with no files in it', () => {
+    const onSelect = vi.fn();
+    render(<ImageDropzone file={null} previewUrl={null} onSelect={onSelect} onClear={vi.fn()} />);
+
+    fireEvent.drop(screen.getByTestId('image-dropzone'), { dataTransfer: { files: [] } });
+
+    expect(onSelect).not.toHaveBeenCalled();
+    expect(screen.queryByText(/only image files/i)).not.toBeInTheDocument();
+  });
+
+  it('clears the error once a valid image is picked after a bad one', () => {
+    const onSelect = vi.fn();
+    render(<ImageDropzone file={null} previewUrl={null} onSelect={onSelect} onClear={vi.fn()} />);
+    const zone = screen.getByTestId('image-dropzone');
+
+    fireEvent.drop(zone, { dataTransfer: { files: [makeFile('notes.txt', 'text/plain')] } });
+    expect(screen.getByText(/only image files/i)).toBeInTheDocument();
+
+    fireEvent.drop(zone, { dataTransfer: { files: [makeFile('mini.png', 'image/png')] } });
+    expect(screen.queryByText(/only image files/i)).not.toBeInTheDocument();
+    expect(onSelect).toHaveBeenCalledTimes(1);
+  });
+
+  it('highlights the box while a file is dragged over it', () => {
+    render(<ImageDropzone file={null} previewUrl={null} onSelect={vi.fn()} onClear={vi.fn()} />);
+    const zone = screen.getByTestId('image-dropzone');
+
+    fireEvent.dragOver(zone);
+    expect(zone.style.border).toContain('rgb(201, 168, 76)');
+
+    fireEvent.dragLeave(zone);
+    expect(zone.style.border).not.toContain('rgb(201, 168, 76)');
+  });
+
+  it('only offers image types in the file browser', () => {
+    render(<ImageDropzone file={null} previewUrl={null} onSelect={vi.fn()} onClear={vi.fn()} />);
+    expect(screen.getByTestId('image-input')).toHaveAttribute('accept', 'image/*');
+  });
+
   it('shows a preview image and a Remove button once a file is selected', () => {
     const onClear = vi.fn();
     render(

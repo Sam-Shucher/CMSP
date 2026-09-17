@@ -7,9 +7,12 @@
     "start": "node dist/index.js",
     "seed": "ts-node --transpile-only src/db/seed.ts",
     "migrate": "ts-node --transpile-only src/db/runMigrations.ts",
+    "cleanup": "node dist/maintenance/cleanup.js",
+    "cleanup:dev": "ts-node --transpile-only src/maintenance/cleanup.ts",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:integration": "vitest run --config vitest.integration.config.ts"
+    "test:integration": "vitest run --config vitest.integration.config.ts",
+    "test:coverage": "vitest run --coverage --coverage.include=src/**/*.ts --coverage.exclude=src/**/*.test.ts"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
@@ -18,7 +21,7 @@
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
     "jsonwebtoken": "^9.0.2",
-    "multer": "^1.4.5-lts.1",
+    "multer": "^2.4.0",
     "mysql2": "^3.9.7"
   },
   "devDependencies": {
@@ -30,6 +33,7 @@
     "@types/multer": "^1.4.11",
     "@types/node": "^22.0.0",
     "@types/supertest": "^6.0.2",
+    "@vitest/coverage-v8": "^2.1.9",
     "supertest": "^7.0.0",
     "ts-node-dev": "^2.0.0",
     "typescript": "^5.5.0",

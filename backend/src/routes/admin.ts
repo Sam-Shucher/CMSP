@@ -4,15 +4,16 @@ import { pool } from '../db/connection';
 import { requireAuth } from '../middleware/requireAuth';
 import { requireAdmin } from '../middleware/requireAdmin';
 import { requireCollectionMembership, CollectionRequest } from '../middleware/requireCollectionMembership';
+import { emailAddress } from '../utils/inputs';
 
 const router = Router();
 
-// Every route in this file requires the user to be logged in, be a
-// (site-wide) admin, AND be a verified member of their active collection —
-// an admin can never administer a collection they don't belong to, and
-// there is no cross-collection admin view: everything below is scoped to
-// req.collectionId.
-router.use(requireAuth, requireAdmin, requireCollectionMembership);
+// Every route in this file requires the user to be logged in AND be an admin
+// of their active collection (a per-collection role). There is no
+// cross-collection admin view: everything below is scoped to req.collectionId.
+// Order matters: requireCollectionMembership loads the user's CURRENT role
+// from the database, which requireAdmin then checks (never the cookie's copy).
+router.use(requireAuth, requireCollectionMembership, requireAdmin);
 
 // ---------------------------------------------------------------------------
 // Row types — shape of each SELECT result we work with in this file
@@ -81,19 +82,19 @@ router.get('/approved-emails', async (req: CollectionRequest, res: Response): Pr
 // same email can be invited into a different collection separately — the
 // uniqueness constraint is on (email, collection), not email alone.
 router.post('/approved-emails', async (req: CollectionRequest, res: Response): Promise<void> => {
-  const { email } = req.body as { email: string };
-
-  if (!email?.trim()) {
-    res.status(400).json({ error: 'Email required' });
+  const check = emailAddress((req.body as { email?: unknown } | undefined)?.email);
+  if (!check.ok) {
+    res.status(400).json({ error: check.error });
     return;
   }
+  const email = check.value;
 
   try {
     await pool.execute<ResultSetHeader>(
       'INSERT INTO approved_emails (email, collection_id, added_by) VALUES (?, ?, ?)',
-      [email.toLowerCase().trim(), req.collectionId!, req.user!.userId]
+      [email, req.collectionId!, req.user!.userId]
     );
-    res.status(201).json({ message: 'Email approved', email: email.toLowerCase().trim() });
+    res.status(201).json({ message: 'Email approved', email });
   } catch (err: unknown) {
     // ER_DUP_ENTRY means the email is already invited to this collection — friendly message
     if (isMySqlError(err) && err.code === 'ER_DUP_ENTRY') {
@@ -135,7 +136,7 @@ router.delete('/approved-emails/:id', async (req: CollectionRequest, res: Respon
 router.get('/users', async (req: CollectionRequest, res: Response): Promise<void> => {
   try {
     const [rows] = await pool.execute<UserAdminRow[]>(
-      `SELECT u.id, u.email, u.username, u.display_name, u.phone, u.neighborhood, u.role, u.created_at
+      `SELECT u.id, u.email, u.username, u.display_name, u.phone, u.neighborhood, cm.role, u.created_at
        FROM users u
        JOIN collection_memberships cm ON cm.user_id = u.id
        WHERE cm.collection_id = ?
@@ -150,29 +151,31 @@ router.get('/users', async (req: CollectionRequest, res: Response): Promise<void
 });
 
 // PATCH /api/admin/users/:id/role
-// Promotes a user to (site-wide) admin or demotes them back to a regular
-// user. Only accepts the two valid role values, and only for someone who is
-// actually a member of the admin's active collection — role is a global
-// flag, but an admin's authority to change it is still collection-scoped.
+// Makes a member an admin of the active collection, or back to a regular
+// member — in THIS collection only. Their role in any other collection is
+// untouched. You can't change your own role: that prevents locking yourself
+// out, and guarantees the collection always keeps at least one admin (you).
 router.patch('/users/:id/role', async (req: CollectionRequest, res: Response): Promise<void> => {
-  const { role } = req.body as { role: string };
+  const role = (req.body as { role?: unknown } | undefined)?.role;
 
-  if (!['user', 'admin'].includes(role)) {
+  if (role !== 'user' && role !== 'admin') {
     res.status(400).json({ error: 'Role must be "user" or "admin"' });
+    return;
+  }
+  if (Number(req.params.id) === req.user!.userId) {
+    res.status(400).json({ error: 'You cannot change your own role' });
     return;
   }
 
   try {
-    const [membershipRows] = await pool.execute<RowDataPacket[]>(
-      'SELECT id FROM collection_memberships WHERE user_id = ? AND collection_id = ?',
-      [req.params.id, req.collectionId!]
+    const [result] = await pool.execute<ResultSetHeader>(
+      'UPDATE collection_memberships SET role = ? WHERE user_id = ? AND collection_id = ?',
+      [role, req.params.id, req.collectionId!]
     );
-    if (membershipRows.length === 0) {
+    if (result.affectedRows === 0) {
       res.status(404).json({ error: 'User not found' });
       return;
     }
-
-    await pool.execute<ResultSetHeader>('UPDATE users SET role = ? WHERE id = ?', [role, req.params.id]);
     res.json({ message: 'Role updated' });
   } catch (err: unknown) {
     console.error(err);

@@ -154,7 +154,8 @@ cat <<EOF
 
 ==============================================================================
 Setup complete. The app is listening on http://localhost:${APP_PORT}
-(and on http://$(hostname -I | awk '{print $1}'):${APP_PORT} from your LAN).
+(this machine only — reach it from outside through the Cloudflare Tunnel below;
+set HOST=0.0.0.0 in backend/.env if you really need direct LAN access).
 
 To expose it through Cloudflare, run these once (login opens a browser link):
 

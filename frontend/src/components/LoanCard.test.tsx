@@ -130,6 +130,36 @@ describe('LoanCard — negotiating terms', () => {
     expect(lastRequest()).toMatchObject({ url: '/api/loans/7/approve', method: 'POST' });
   });
 
+  it('cannot approve while you have unproposed edits — you\'d be approving the old terms', async () => {
+    renderCard(makeLoan({ ...COMPLETE_TERMS }));
+    const approve = screen.getByRole('button', { name: /approve terms/i });
+    expect(approve).toBeEnabled();
+
+    await userEvent.clear(screen.getByLabelText(/where/i));
+    await userEvent.type(screen.getByLabelText(/where/i), 'Somewhere else');
+
+    expect(approve).toBeDisabled();
+    expect(approve).toHaveAttribute('title', expect.stringMatching(/propose your changes first/i));
+  });
+
+  it('does not count an unchanged handoff time as an edit', async () => {
+    renderCard(makeLoan({ ...COMPLETE_TERMS }));
+
+    expect(screen.getByRole('button', { name: /propose terms/i })).toBeDisabled();
+  });
+
+  it('shows the mini\'s photo when it has one', () => {
+    const { container } = render(
+      <LoanCard loan={makeLoan({ miniImage: '/uploads/wolf.png' })} now={new Date()} otherOpenRequests={0} onUpdated={vi.fn()} />
+    );
+    expect(container.querySelector('img')).toHaveAttribute('src', '/uploads/wolf.png');
+  });
+
+  it('shows the duration the owner set to the borrower, read-only', () => {
+    renderCard(makeLoan({ durationDays: 1 }));
+    expect(screen.getByText(/loan length: 1 day \(set by alice\)/i)).toBeInTheDocument();
+  });
+
   it('does not offer to approve again once you have — it waits on the other side', () => {
     renderCard(makeLoan({ ...COMPLETE_TERMS, borrowerApproved: true }));
 

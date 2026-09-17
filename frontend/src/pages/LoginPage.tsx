@@ -4,7 +4,7 @@ import { api } from '../api/client';
 import { useAuth } from '../App';
 
 export default function LoginPage(): React.ReactElement {
-  const { refreshSession } = useAuth();
+  const { refreshSession, sessionNotice } = useAuth();
   const navigate = useNavigate();
 
   // Controlled inputs — each has its own state string
@@ -45,12 +45,16 @@ export default function LoginPage(): React.ReactElement {
         </p>
 
         <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+          {/* Why they were signed out (e.g. logged out on another device), unless a newer error replaced it */}
+          {sessionNotice && !error && <div className="error-msg" role="status">{sessionNotice}</div>}
+
           {/* Show the server error message if login failed */}
           {error && <div className="error-msg">{error}</div>}
 
           <div>
-            <label style={labelStyle}>Email</label>
+            <label htmlFor="login-email" style={labelStyle}>Email</label>
             <input
+              id="login-email"
               type="email"
               value={email}
               onChange={(e: React.ChangeEvent<HTMLInputElement>) => setEmail(e.target.value)}
@@ -61,8 +65,9 @@ export default function LoginPage(): React.ReactElement {
           </div>
 
           <div>
-            <label style={labelStyle}>Password</label>
+            <label htmlFor="login-password" style={labelStyle}>Password</label>
             <input
+              id="login-password"
               type="password"
               value={password}
               onChange={(e: React.ChangeEvent<HTMLInputElement>) => setPassword(e.target.value)}

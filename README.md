@@ -17,13 +17,15 @@ full-time on a Raspberry Pi.
 The app supports any number of separate collections (shown to users as
 "groups" — e.g. "Chicago", "Coast2Coast", "dojo"). Each is fully isolated:
 its minis, invite list, and admin panel are invisible to anyone who isn't a
-member. A person can belong to more than one; after login they pick which
-one to enter, and can switch from the nav.
+member. Someone in exactly one collection goes straight into it; someone in
+several picks which one to enter (and can switch from the nav).
 
 - Invites (`approved_emails`) are scoped per collection. Registering joins
   every collection whose invite list contains that email.
-- Admins are site-wide (`users.role`), but an admin's panel only ever shows
-  the collection they're currently in — there's no cross-collection view.
+- Roles are per collection (`collection_memberships.role`): you can be an
+  admin of Chicago and a regular member of dojo. What you see — including the
+  admin panel — depends on your role in the collection you've entered.
+  Admins can't change their own role, so every collection keeps an admin.
   Adding someone to a *second* collection they're already registered in is
   a manual `INSERT INTO collection_memberships (user_id, collection_id) …`
   for now (no dedicated UI yet).
@@ -64,11 +66,26 @@ npm run install:all        # installs root, backend, and frontend deps
    The frontend runs at `http://localhost:5173` and proxies API requests to
    the backend on `http://localhost:3001`.
 
-After registering your first account, promote yourself to admin:
+After registering your first account, make yourself an admin of that collection:
 
 ```sql
-UPDATE users SET role = 'admin' WHERE email = 'your@email.com';
+UPDATE collection_memberships SET role = 'admin'
+  WHERE user_id = (SELECT id FROM users WHERE email = 'your@email.com')
+    AND collection_id = (SELECT id FROM collections WHERE name = 'Chicago');
 ```
+
+## Sessions and cleanup
+
+- Logins are server-side sessions: they end after **2 days unused** or **7 days**
+  total (`SESSION_IDLE_DAYS` / `SESSION_LIFETIME_DAYS` in `backend/src/config.ts`).
+  Logging out — or "Log out everywhere" on the profile page — ends them immediately.
+- Photos from rejected uploads are deleted straight away. Every hour the server
+  also removes photo files no mini uses any more (older than an hour) and old
+  ended sessions. To preview or run that by hand on the Pi:
+  ```bash
+  npm --prefix backend run cleanup -- --dry-run   # list what would be removed
+  npm --prefix backend run cleanup                # remove it
+  ```
 
 ## Testing
 

@@ -66,6 +66,255 @@ describe('App nav — username link', () => {
   });
 });
 
+type Routes = Record<string, unknown | ((init?: RequestInit) => Response)>;
+
+// Serves the given URL → body map; anything unlisted gets a 401, like a logged-out server.
+function mockServer(routes: Routes) {
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+    const key = Object.keys(routes).find(k => url === k || (k.endsWith('*') && url.startsWith(k.slice(0, -1))));
+    if (!key) return { ok: false, status: 401, statusText: 'Unauthorized', json: async () => ({ error: 'Authentication required' }) } as Response;
+    const value = routes[key];
+    return typeof value === 'function' ? (value as (i?: RequestInit) => Response)(init) : jsonResponse(value);
+  }));
+}
+
+const LOGGED_IN_ROUTES: Routes = {
+  '/api/auth/me': USER,
+  '/api/auth/collections': MY_COLLECTIONS,
+  '/api/minis*': [],
+  '/api/cart': [],
+  '/api/loans': [],
+  '/api/users/me': PROFILE,
+  '/api/auth/logout': { message: 'Logged out' },
+};
+
+describe('App — logged out', () => {
+  it.each(['/', '/cart', '/loans', '/upload', '/profile', '/admin'])('sends a logged-out visitor from %s to the login page', async (path) => {
+    window.history.pushState({}, '', path);
+    mockServer({});
+
+    render(<App />);
+
+    expect(await screen.findByRole('button', { name: /sign in/i })).toBeInTheDocument();
+    expect(window.location.pathname).toBe('/login');
+  });
+
+  it('shows no nav bar on the login page', async () => {
+    window.history.pushState({}, '', '/login');
+    mockServer({});
+
+    render(<App />);
+
+    await screen.findByRole('button', { name: /sign in/i });
+    expect(screen.queryByRole('link', { name: 'Cart' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /logout/i })).not.toBeInTheDocument();
+  });
+
+  it('sends an unknown URL to the dashboard (and so to login when logged out)', async () => {
+    window.history.pushState({}, '', '/no/such/page');
+    mockServer({});
+
+    render(<App />);
+
+    await screen.findByRole('button', { name: /sign in/i });
+    expect(window.location.pathname).toBe('/login');
+  });
+});
+
+describe('App — nav bar', () => {
+  it('logs out: tells the server, clears the session, and returns to login', async () => {
+    mockServer(LOGGED_IN_ROUTES);
+    render(<App />);
+
+    await userEvent.click(await screen.findByRole('button', { name: /logout/i }));
+
+    expect(await screen.findByRole('button', { name: /sign in/i })).toBeInTheDocument();
+    expect(fetch).toHaveBeenCalledWith('/api/auth/logout', expect.objectContaining({ method: 'POST' }));
+    expect(screen.queryByRole('link', { name: 'owner' })).not.toBeInTheDocument();
+  });
+
+  it('shows the Admin link only to admins', async () => {
+    mockServer(LOGGED_IN_ROUTES);
+    const { unmount } = render(<App />);
+    await screen.findByRole('link', { name: 'owner' });
+    expect(screen.queryByRole('link', { name: 'Admin' })).not.toBeInTheDocument();
+    unmount();
+
+    mockServer({ ...LOGGED_IN_ROUTES, '/api/auth/me': { ...USER, role: 'admin' } });
+    render(<App />);
+    expect(await screen.findByRole('link', { name: 'Admin' })).toHaveAttribute('href', '/admin');
+  });
+
+  it('shows the active group\'s name with no switch option when you belong to only one', async () => {
+    mockServer(LOGGED_IN_ROUTES);
+    render(<App />);
+
+    expect(await screen.findByText('Chicago')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /switch/i })).not.toBeInTheDocument();
+  });
+
+  it('lets someone in several groups switch, going back through the group picker', async () => {
+    const collections = [{ id: 5, name: 'Chicago' }, { id: 6, name: 'dojo' }];
+    mockServer({
+      ...LOGGED_IN_ROUTES,
+      '/api/auth/collections': collections,
+      '/api/auth/select-collection': (init?: RequestInit) => jsonResponse({ ...USER, ...JSON.parse(String(init?.body)) }),
+    });
+    render(<App />);
+
+    await userEvent.click(await screen.findByRole('button', { name: /chicago \(switch\)/i }));
+    await userEvent.click(await screen.findByRole('button', { name: /^dojo/i }));
+
+    expect(await screen.findByRole('button', { name: /dojo \(switch\)/i })).toBeInTheDocument();
+    expect(fetch).toHaveBeenCalledWith('/api/auth/select-collection', expect.objectContaining({
+      body: JSON.stringify({ collectionId: 6 }),
+    }));
+  });
+});
+
+describe('App — your role depends on the group you enter', () => {
+  const collections = [{ id: 5, name: 'Chicago', role: 'admin' }, { id: 6, name: 'dojo', role: 'user' }];
+  const selectReturnsRole = (init?: RequestInit) => {
+    const { collectionId } = JSON.parse(String(init?.body));
+    const picked = collections.find(c => c.id === collectionId)!;
+    return jsonResponse({ userId: 1, username: 'owner', collectionId, collectionName: picked.name, role: picked.role });
+  };
+
+  it('shows the admin view after entering a group where you are an admin', async () => {
+    mockServer({
+      ...LOGGED_IN_ROUTES,
+      '/api/auth/me': { userId: 1, username: 'owner', role: 'user' },
+      '/api/auth/collections': collections,
+      '/api/auth/select-collection': selectReturnsRole,
+    });
+    render(<App />);
+
+    await userEvent.click(await screen.findByRole('button', { name: /^chicago/i }));
+
+    expect(await screen.findByRole('link', { name: 'Admin' })).toBeInTheDocument();
+  });
+
+  it('shows the member view after entering a group where you are a member', async () => {
+    mockServer({
+      ...LOGGED_IN_ROUTES,
+      '/api/auth/me': { userId: 1, username: 'owner', role: 'user' },
+      '/api/auth/collections': collections,
+      '/api/auth/select-collection': selectReturnsRole,
+    });
+    render(<App />);
+
+    await userEvent.click(await screen.findByRole('button', { name: /^dojo/i }));
+
+    expect(await screen.findByRole('button', { name: /dojo \(switch\)/i })).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Admin' })).not.toBeInTheDocument();
+  });
+
+  it('drops admin controls when switching from an admin group to a member group', async () => {
+    mockServer({
+      ...LOGGED_IN_ROUTES,
+      '/api/auth/me': { userId: 1, username: 'owner', role: 'admin', collectionId: 5 },
+      '/api/auth/collections': collections,
+      '/api/auth/select-collection': selectReturnsRole,
+    });
+    render(<App />);
+    expect(await screen.findByRole('link', { name: 'Admin' })).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole('button', { name: /chicago \(switch\)/i }));
+    expect(screen.queryByRole('link', { name: 'Admin' })).not.toBeInTheDocument(); // not while choosing, either
+    await userEvent.click(await screen.findByRole('button', { name: /^dojo/i }));
+
+    await screen.findByRole('button', { name: /dojo \(switch\)/i });
+    expect(screen.queryByRole('link', { name: 'Admin' })).not.toBeInTheDocument();
+  });
+});
+
+describe('App — when a session ends', () => {
+  it('sends you back to sign in with an explanation when the server says your session is over', async () => {
+    let sessionAlive = true;
+    mockServer({
+      ...LOGGED_IN_ROUTES,
+      '/api/loans': () => sessionAlive
+        ? jsonResponse([])
+        : ({ ok: false, status: 401, statusText: 'Unauthorized', json: async () => ({ error: 'Your session has ended. Please sign in again.' }) } as Response),
+    });
+    render(<App />);
+    await screen.findByRole('link', { name: 'owner' });
+
+    sessionAlive = false; // e.g. "log out everywhere" was used on another device
+    await userEvent.click(screen.getByRole('link', { name: 'Loans' }));
+
+    expect(await screen.findByRole('button', { name: /sign in/i })).toBeInTheDocument();
+    expect(screen.getByText(/your session has ended/i)).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'owner' })).not.toBeInTheDocument();
+  });
+
+  it('does not show that message to someone who simply isn\'t logged in', async () => {
+    window.history.pushState({}, '', '/login');
+    mockServer({});
+
+    render(<App />);
+
+    await screen.findByRole('button', { name: /sign in/i });
+    expect(screen.queryByText(/your session has ended/i)).not.toBeInTheDocument();
+  });
+});
+
+describe('App — admin page access', () => {
+  it('redirects a non-admin away from /admin to the dashboard', async () => {
+    window.history.pushState({}, '', '/admin');
+    mockServer(LOGGED_IN_ROUTES);
+
+    render(<App />);
+
+    expect(await screen.findByText(/the collection/i)).toBeInTheDocument();
+    expect(window.location.pathname).toBe('/');
+    expect(fetch).not.toHaveBeenCalledWith('/api/admin/users', expect.anything());
+  });
+
+  it('lets an admin open /admin', async () => {
+    window.history.pushState({}, '', '/admin');
+    mockServer({
+      ...LOGGED_IN_ROUTES,
+      '/api/auth/me': { ...USER, role: 'admin' },
+      '/api/admin/approved-emails': [],
+      '/api/admin/users': [],
+    });
+
+    render(<App />);
+
+    expect(await screen.findByText(/admin panel/i)).toBeInTheDocument();
+  });
+});
+
+describe('App — restoring the session', () => {
+  it('automatically enters the only group a user belongs to when none is selected yet', async () => {
+    mockServer({
+      ...LOGGED_IN_ROUTES,
+      '/api/auth/me': { userId: 1, username: 'owner', role: 'user' },
+      '/api/auth/select-collection': { ...USER, collectionId: 5 },
+    });
+
+    render(<App />);
+
+    expect(await screen.findByText(/the collection/i)).toBeInTheDocument();
+    expect(fetch).toHaveBeenCalledWith('/api/auth/select-collection', expect.objectContaining({
+      body: JSON.stringify({ collectionId: 5 }),
+    }));
+  });
+
+  it('still logs in if the group list fails to load (just without a group name)', async () => {
+    mockServer({
+      ...LOGGED_IN_ROUTES,
+      '/api/auth/collections': () => ({ ok: false, statusText: 'Error', json: async () => ({ error: 'Server error' }) } as Response),
+    });
+
+    render(<App />);
+
+    expect(await screen.findByRole('link', { name: 'owner' })).toBeInTheDocument();
+    expect(screen.queryByText('Chicago')).not.toBeInTheDocument();
+  });
+});
+
 describe('App — group selection gate', () => {
   it('shows a picker and enters the dashboard once a group is chosen, when the user belongs to more than one', async () => {
     const userNoGroup = { userId: 1, username: 'owner', role: 'user' }; // no collectionId yet
@@ -85,8 +334,8 @@ describe('App — group selection gate', () => {
 
     render(<App />);
 
-    expect(await screen.findByRole('button', { name: 'dojo' })).toBeInTheDocument();
-    await userEvent.click(screen.getByRole('button', { name: 'dojo' }));
+    expect(await screen.findByRole('button', { name: /^dojo/i })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: /^dojo/i }));
 
     await waitFor(() => expect(screen.getByText(/The Collection/i)).toBeInTheDocument());
     expect(screen.getByText(/dojo \(switch\)/i)).toBeInTheDocument();

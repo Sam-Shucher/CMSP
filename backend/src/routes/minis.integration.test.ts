@@ -5,6 +5,7 @@ import { ResultSetHeader, RowDataPacket } from 'mysql2';
 import { createApp } from '../app';
 import { pool } from '../db/connection';
 import { authCookie } from '../test/helpers';
+import { createTestSession } from '../test/dbHelpers';
 
 // These tests hit a real MariaDB (see ../../../docker-compose.test.yml) instead
 // of a mocked pool, so they catch SQL that only breaks against a real server —
@@ -37,6 +38,7 @@ beforeEach(async () => {
   await pool.query('DELETE FROM tags');
   await pool.query('DELETE FROM approved_emails');
   await pool.query('DELETE FROM collection_memberships');
+  await pool.query('DELETE FROM sessions');
   await pool.query('DELETE FROM users');
   await pool.query('DELETE FROM collections');
 });
@@ -54,19 +56,23 @@ async function createTestUser(
 ): Promise<{ userId: number; collectionId: number }> {
   const passwordHash = await bcrypt.hash('irrelevant-password', 4); // low rounds — speed, not security, in tests
   const [result] = await pool.execute<ResultSetHeader>(
-    'INSERT INTO users (email, username, password_hash, display_name, role) VALUES (?, ?, ?, ?, ?)',
+    'INSERT INTO users (email, username, password_hash, display_name) VALUES (?, ?, ?, ?)',
     [
       overrides.email ?? 'owner@example.com',
       overrides.username ?? 'owner',
       passwordHash,
       'Owner Name',
-      overrides.role ?? 'user',
     ]
   );
   const userId = result.insertId;
 
+  // `role` is the user's role in this collection.
   const collectionId = overrides.collectionId ?? (await createCollection(`${overrides.username ?? 'owner'}'s collection`));
-  await pool.execute('INSERT INTO collection_memberships (user_id, collection_id) VALUES (?, ?)', [userId, collectionId]);
+  await pool.execute(
+    'INSERT INTO collection_memberships (user_id, collection_id, role) VALUES (?, ?, ?)',
+    [userId, collectionId, overrides.role ?? 'user']
+  );
+  await createTestSession(userId);
 
   return { userId, collectionId };
 }
@@ -119,21 +125,46 @@ describe('GET /api/minis (real database)', () => {
 });
 
 describe('Collection isolation (real database)', () => {
-  it('never returns another collection\'s minis in the list, even to a site-wide admin', async () => {
+  it('never returns another collection\'s minis in the list, even to an admin of their own collection', async () => {
     const chicago = await createTestUser({ username: 'chicago-owner', email: 'chicago@example.com' });
-    const dojo = await createTestUser({ username: 'dojo-owner', email: 'dojo@example.com' });
+    const dojo = await createTestUser({ username: 'dojo-owner', email: 'dojo@example.com', role: 'admin' });
 
     await pool.execute('INSERT INTO minis (name, owner_id, collection_id) VALUES (?, ?, ?)', ['Chicago Wolf', chicago.userId, chicago.collectionId]);
     await pool.execute('INSERT INTO minis (name, owner_id, collection_id) VALUES (?, ?, ?)', ['Dojo Wolf', dojo.userId, dojo.collectionId]);
-
-    // Promote the dojo user to site-wide admin — role alone must not grant access to Chicago's data.
-    await pool.execute('UPDATE users SET role = ? WHERE id = ?', ['admin', dojo.userId]);
 
     const dojoAdminCookie = authCookie({ userId: dojo.userId, username: 'dojo-owner', role: 'admin', collectionId: dojo.collectionId });
     const listRes = await request(app).get('/api/minis').set('Cookie', dojoAdminCookie);
 
     expect(listRes.status).toBe(200);
     expect(listRes.body.map((m: { name: string }) => m.name)).toEqual(['Dojo Wolf']);
+  });
+
+  it('never leaks another collection\'s tag names into the tag filter list', async () => {
+    const chicago = await createTestUser({ username: 'chicago-owner', email: 'chicago@example.com' });
+    const dojo = await createTestUser({ username: 'dojo-owner', email: 'dojo@example.com' });
+
+    const chicagoCookie = authCookie({ userId: chicago.userId, username: 'chicago-owner', role: 'user', collectionId: chicago.collectionId });
+    const dojoCookie = authCookie({ userId: dojo.userId, username: 'dojo-owner', role: 'user', collectionId: dojo.collectionId });
+
+    await request(app).post('/api/minis').set('Cookie', chicagoCookie).field('name', 'Chicago Wolf').field('tags', 'painted,secret-project');
+    await request(app).post('/api/minis').set('Cookie', dojoCookie).field('name', 'Dojo Wolf').field('tags', 'painted,unpainted');
+
+    const chicagoTags = await request(app).get('/api/minis/tags').set('Cookie', chicagoCookie);
+    const dojoTags = await request(app).get('/api/minis/tags').set('Cookie', dojoCookie);
+
+    expect(chicagoTags.body).toEqual(['painted', 'secret-project']);
+    expect(dojoTags.body).toEqual(['painted', 'unpainted']);
+  });
+
+  it('does not show tags that no mini uses any more', async () => {
+    const { userId, collectionId } = await createTestUser();
+    const cookie = authCookie({ userId, username: 'owner', role: 'user', collectionId });
+
+    const created = await request(app).post('/api/minis').set('Cookie', cookie).field('name', 'Dire Wolf').field('tags', 'old-tag');
+    await request(app).patch(`/api/minis/${created.body.miniId}`).set('Cookie', cookie).field('name', 'Dire Wolf').field('tags', 'new-tag');
+
+    const tags = await request(app).get('/api/minis/tags').set('Cookie', cookie);
+    expect(tags.body).toEqual(['new-tag']);
   });
 
   it('returns 404 (not the other collection\'s data) when fetching a mini by id across collections', async () => {

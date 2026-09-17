@@ -8,6 +8,8 @@ import { requireAuth } from '../middleware/requireAuth';
 import { requireCollectionMembership, CollectionRequest } from '../middleware/requireCollectionMembership';
 import { matchesSearch } from '../utils/search';
 import { activeLoanStatusSql, miniStatusFrom } from '../utils/miniStatus';
+import { requiredText, optionalText, tagList, LIMITS, Check } from '../utils/inputs';
+import { uploadsDir as configuredUploadsDir } from '../config';
 
 const router = Router();
 const MAX_IMAGES = 3;
@@ -20,29 +22,61 @@ router.use(requireAuth, requireCollectionMembership);
 
 // Ensure the uploads directory exists when the server starts.
 // Uploaded images live here and are served as static files by index.ts.
-const uploadsDir = path.join(__dirname, '../../uploads');
+const uploadsDir = configuredUploadsDir();
 if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
+
+// Must run BEFORE multer. Photos are written to disk as the request arrives,
+// before we know whether the request will be accepted — so if the response
+// ends up being an error (not your mini, bad input, too many photos, a server
+// error), delete whatever this request saved instead of leaving it behind.
+function discardUploadsIfRejected(req: Request, res: Response, next: NextFunction): void {
+  res.on('finish', () => {
+    if (res.statusCode < 400) return;
+    const files = (req.files as Express.Multer.File[] | undefined) ?? [];
+    for (const file of files) {
+      fs.rmSync(file.path, { force: true });
+    }
+  });
+  next();
+}
 
 // ---------------------------------------------------------------------------
 // File upload configuration (multer)
 // ---------------------------------------------------------------------------
 
+// The only file types accepted, and the extension each is saved with. SVG is
+// deliberately absent — it's an "image" that can carry scripts.
+const IMAGE_EXTENSIONS: Record<string, string> = {
+  'image/jpeg': '.jpg',
+  'image/jpg': '.jpg',
+  'image/png': '.png',
+  'image/gif': '.gif',
+  'image/webp': '.webp',
+};
+
 // diskStorage tells multer to save files to disk (vs keeping them in memory).
 const storage = multer.diskStorage({
   destination: uploadsDir,
-  // Generate a unique filename so two users can upload "front.jpg" without colliding
+  // A unique, server-generated name. The extension comes from the checked
+  // image type — NEVER the uploader's filename, or "evil.html" labelled as a
+  // PNG would be saved as .html and served back as a live web page.
   filename: (_req, file, cb) => {
     const unique = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    cb(null, `${unique}${path.extname(file.originalname)}`);
+    cb(null, `${unique}${IMAGE_EXTENSIONS[file.mimetype.toLowerCase()]}`);
   },
 });
 
 const upload = multer({
   storage,
-  limits: { fileSize: 10 * 1024 * 1024 }, // 10 MB cap — large enough for camera photos
+  limits: {
+    fileSize: 10 * 1024 * 1024, // 10 MB cap — large enough for camera photos
+    files: MAX_IMAGES,
+    fields: 20,
+    fieldSize: 100 * 1024,
+  },
   fileFilter: (_req, file, cb) => {
-    // Only accept images — reject PDFs, executables, etc.
-    if (/^image\/(jpeg|jpg|png|gif|webp)$/i.test(file.mimetype)) {
+    // Only accept images — reject PDFs, executables, SVGs, etc.
+    if (IMAGE_EXTENSIONS[file.mimetype.toLowerCase()]) {
       cb(null, true);
     } else {
       cb(new Error('Only image files are allowed (jpg, png, gif, webp)'));
@@ -56,7 +90,12 @@ const upload = multer({
 // middleware calls next(err).
 function handleUploadError(err: unknown, _req: Request, res: Response, next: NextFunction): void {
   if (err instanceof multer.MulterError) {
-    res.status(400).json({ error: `You can have at most ${MAX_IMAGES} photos per mini` });
+    const tooMany = err.code === 'LIMIT_FILE_COUNT' || err.code === 'LIMIT_UNEXPECTED_FILE';
+    res.status(400).json({
+      error: tooMany ? `You can have at most ${MAX_IMAGES} photos per mini`
+        : err.code === 'LIMIT_FILE_SIZE' ? 'Each photo must be 10 MB or smaller'
+        : 'Invalid upload',
+    });
     return;
   }
   if (err instanceof Error) {
@@ -139,19 +178,48 @@ function serializeMini(row: MiniRow) {
   };
 }
 
-// Replaces all of a mini's tags with the given comma-separated list —
+// The most a mini's price column (DECIMAL(6,2)) can hold.
+const MAX_PRICE = 9999.99;
+
+interface MiniFields {
+  name: string;
+  description: string | null;
+  tags: string[];
+  price: number;
+}
+
+// Validates the text fields shared by POST / and PATCH /:id.
+function parseMiniFields(body: Record<string, unknown>): Check<MiniFields> {
+  const name = requiredText(body.name, 'Name', LIMITS.miniName);
+  if (!name.ok) return name;
+  const description = optionalText(body.description, 'Description', LIMITS.description);
+  if (!description.ok) return description;
+  const tags = tagList(body.tags);
+  if (!tags.ok) return tags;
+
+  // price arrives as a string from multipart form-data — default to 0 when omitted,
+  // and reject anything that isn't a non-negative number the column can hold
+  const rawPrice = typeof body.price === 'string' ? body.price.trim() : '';
+  const price = rawPrice ? Number(rawPrice) : 0;
+  if (body.price !== undefined && typeof body.price !== 'string') {
+    return { ok: false, error: 'Price must be a non-negative number' };
+  }
+  if (!Number.isFinite(price) || price < 0) {
+    return { ok: false, error: 'Price must be a non-negative number' };
+  }
+  if (price > MAX_PRICE) {
+    return { ok: false, error: `Price must be ${MAX_PRICE} or less` };
+  }
+
+  return { ok: true, value: { name: name.value, description: description.value, tags: tags.value, price } };
+}
+
+// Replaces all of a mini's tags with the given (already validated) list —
 // shared by POST / and PATCH /:id so the upsert logic only lives in one place.
-async function setTags(miniId: number, tagsInput: string | undefined): Promise<void> {
+async function setTags(miniId: number, tagNames: string[]): Promise<void> {
   await pool.execute<ResultSetHeader>('DELETE FROM mini_tags WHERE mini_id = ?', [miniId]);
 
-  if (!tagsInput) return;
-
-  const tagList: string[] = tagsInput
-    .split(',')
-    .map((t: string) => t.trim().toLowerCase())
-    .filter(Boolean); // remove empty strings from trailing commas
-
-  for (const tagName of tagList) {
+  for (const tagName of tagNames) {
     // INSERT IGNORE skips silently if the tag name already exists (avoids duplicate key error)
     await pool.execute<ResultSetHeader>('INSERT IGNORE INTO tags (name) VALUES (?)', [tagName]);
 
@@ -192,8 +260,19 @@ async function setImages(miniId: number, keptPaths: string[], newFiles: Express.
 // invisible here, full stop — the collection_id filter below is mandatory,
 // not optional like q/tag.
 router.get('/', async (req: CollectionRequest, res: Response): Promise<void> => {
-  // Pull optional query params — both default to undefined if not provided
-  const { q, tag } = req.query as Record<string, string | undefined>;
+  // Query strings can arrive as arrays (?q=a&q=b) or objects (?tag[x]=y), and
+  // typo-tolerant search costs CPU in proportion to its length — so only
+  // short, plain text is accepted.
+  const q = optionalText(req.query.q, 'Search', LIMITS.search);
+  const tagFilter = optionalText(req.query.tag, 'Tag', 100);
+  for (const check of [q, tagFilter]) {
+    if (!check.ok) {
+      res.status(400).json({ error: check.error });
+      return;
+    }
+  }
+  const search = (q as { value: string | null }).value;
+  const tag = (tagFilter as { value: string | null }).value;
 
   try {
     // The collection filter is always present; tag (a controlled pill, not
@@ -217,8 +296,8 @@ router.get('/', async (req: CollectionRequest, res: Response): Promise<void> => 
     );
 
     let minis = rows.map(serializeMini);
-    if (q) {
-      minis = minis.filter(m => matchesSearch([m.name, m.description, m.tags], q));
+    if (search) {
+      minis = minis.filter(m => matchesSearch([m.name, m.description, m.tags], search));
     }
 
     res.json(minis);
@@ -276,28 +355,21 @@ router.get('/:id', async (req: CollectionRequest, res: Response): Promise<void> 
 // POST /api/minis
 // Creates a new mini in the caller's active collection. Expects multipart/form-data.
 // Fields: name (required), description, tags (comma-separated), images (0-3 files).
-router.post('/', upload.array('images', MAX_IMAGES), handleUploadError, async (req: CollectionRequest, res: Response): Promise<void> => {
-  const { name, description, tags, price } = req.body as Record<string, string>;
+router.post('/', discardUploadsIfRejected, upload.array('images', MAX_IMAGES), handleUploadError, async (req: CollectionRequest, res: Response): Promise<void> => {
   const files = (req.files as Express.Multer.File[] | undefined) ?? [];
 
-  if (!name?.trim()) {
-    res.status(400).json({ error: 'Name is required' });
+  const fields = parseMiniFields((req.body ?? {}) as Record<string, unknown>);
+  if (!fields.ok) {
+    res.status(400).json({ error: fields.error });
     return;
   }
-
-  // price arrives as a string from multipart form-data — default to 0 when omitted,
-  // and reject anything that isn't a non-negative number (NaN, negative, garbage text)
-  const priceValue: number = price?.trim() ? Number(price) : 0;
-  if (Number.isNaN(priceValue) || priceValue < 0) {
-    res.status(400).json({ error: 'Price must be a non-negative number' });
-    return;
-  }
+  const { name, description, tags, price } = fields.value;
 
   try {
     // Insert the mini itself — req.user! is safe here because requireAuth ran first
     const [result] = await pool.execute<ResultSetHeader>(
       'INSERT INTO minis (name, description, owner_id, collection_id, price) VALUES (?, ?, ?, ?, ?)',
-      [name.trim(), description?.trim() || null, req.user!.userId, req.collectionId!, priceValue]
+      [name, description, req.user!.userId, req.collectionId!, price]
     );
     const miniId: number = result.insertId;
 
@@ -318,9 +390,9 @@ router.post('/', upload.array('images', MAX_IMAGES), handleUploadError, async (r
 // Expects multipart/form-data. `existingImages` is a JSON array of image
 // paths (from the mini's current photos) to keep; any new files in the
 // `images` field are appended after them, capped at MAX_IMAGES total.
-router.patch('/:id', upload.array('images', MAX_IMAGES), handleUploadError, async (req: CollectionRequest, res: Response): Promise<void> => {
+router.patch('/:id', discardUploadsIfRejected, upload.array('images', MAX_IMAGES), handleUploadError, async (req: CollectionRequest, res: Response): Promise<void> => {
   const miniId = req.params.id;
-  const { name, description, tags, price, existingImages } = req.body as Record<string, string>;
+  const existingImages = (req.body as Record<string, unknown> | undefined)?.existingImages;
   const newFiles = (req.files as Express.Multer.File[] | undefined) ?? [];
 
   try {
@@ -341,44 +413,47 @@ router.patch('/:id', upload.array('images', MAX_IMAGES), handleUploadError, asyn
       return;
     }
 
-    let keptPaths: string[] = [];
-    if (existingImages) {
+    const [currentImageRows] = await pool.execute<ImagePathRow[]>(
+      'SELECT image_path FROM mini_images WHERE mini_id = ? ORDER BY position',
+      [miniId]
+    );
+    const currentPaths = currentImageRows.map(r => r.image_path);
+
+    // existingImages comes from the browser, so it can name anything. Only
+    // photos this mini ALREADY has can be kept — otherwise someone could
+    // attach another member's photo (or an outside tracking URL) to their own
+    // mini, and deleting their mini would then delete that member's file.
+    let requested: unknown = [];
+    if (typeof existingImages === 'string' && existingImages) {
       try {
-        keptPaths = JSON.parse(existingImages);
+        requested = JSON.parse(existingImages);
       } catch {
-        keptPaths = [];
+        requested = [];
       }
     }
+    const keptPaths = Array.isArray(requested)
+      ? [...new Set(requested.filter((p): p is string => typeof p === 'string' && currentPaths.includes(p)))]
+      : [];
 
     if (keptPaths.length + newFiles.length > MAX_IMAGES) {
       res.status(400).json({ error: `You can have at most ${MAX_IMAGES} photos per mini` });
       return;
     }
 
-    if (!name?.trim()) {
-      res.status(400).json({ error: 'Name is required' });
+    const fields = parseMiniFields((req.body ?? {}) as Record<string, unknown>);
+    if (!fields.ok) {
+      res.status(400).json({ error: fields.error });
       return;
     }
+    const { name, description, tags, price } = fields.value;
 
-    const priceValue: number = price?.trim() ? Number(price) : 0;
-    if (Number.isNaN(priceValue) || priceValue < 0) {
-      res.status(400).json({ error: 'Price must be a non-negative number' });
-      return;
-    }
-
-    // Figure out which of the mini's current photos are being dropped, so we
-    // can clean up their files from disk once the DB is updated.
-    const [currentImageRows] = await pool.execute<ImagePathRow[]>(
-      'SELECT image_path FROM mini_images WHERE mini_id = ? ORDER BY position',
-      [miniId]
-    );
-    const droppedPaths = currentImageRows
-      .map(r => r.image_path)
-      .filter(p => !keptPaths.includes(p));
+    // Which of the mini's current photos are being dropped, so we can clean
+    // up their files from disk once the DB is updated.
+    const droppedPaths = currentPaths.filter(p => !keptPaths.includes(p));
 
     await pool.execute<ResultSetHeader>(
       'UPDATE minis SET name = ?, description = ?, price = ? WHERE id = ?',
-      [name.trim(), description?.trim() || null, priceValue, miniId]
+      [name, description, price, miniId]
     );
 
     await setTags(Number(miniId), tags);

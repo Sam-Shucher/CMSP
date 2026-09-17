@@ -159,6 +159,51 @@ describe('apply terms to all requests with the same person', () => {
     });
   });
 
+  it('never touches the same borrower\'s requests with a different owner', async () => {
+    const secondOwner = await createUser('second-owner', owner.collectionId);
+    const wolfLoan = await requestMini(borrower, await createMini(owner, 'Dire Wolf'));
+    const otherOwnersLoan = await requestMini(borrower, await createMini(secondOwner, 'Owlbear'));
+
+    await proposeTerms(borrower, wolfLoan, { when: WHEN, where: 'Game store', how: 'In person' });
+    const res = await act(borrower, wolfLoan, 'apply-terms-to-all');
+
+    expect(res.body.updated).toBe(0);
+    const view = (await request(app).get('/api/loans').set('Cookie', borrower.cookie)).body;
+    expect(view.find((l: { id: number }) => l.id === otherOwnersLoan)).toMatchObject({ handoffWhere: null });
+  });
+
+  it('refuses with 400 when there are no terms on this request to copy yet', async () => {
+    const wolfLoan = await requestMini(borrower, await createMini(owner, 'Dire Wolf'));
+    await requestMini(borrower, await createMini(owner, 'Beholder'));
+
+    const res = await act(owner, wolfLoan, 'apply-terms-to-all');
+    expect(res.status).toBe(400);
+  });
+
+  it('refuses with 409 from a request that is no longer being negotiated', async () => {
+    const wolfLoan = await requestMini(borrower, await createMini(owner, 'Dire Wolf'));
+    await requestMini(borrower, await createMini(owner, 'Beholder'));
+    await proposeTerms(owner, wolfLoan, { where: 'Game store' });
+    await act(owner, wolfLoan, 'cancel');
+
+    const res = await act(owner, wolfLoan, 'apply-terms-to-all');
+    expect(res.status).toBe(409);
+  });
+
+  it('skips the other person\'s requests that already moved past negotiation', async () => {
+    const wolfLoan = await requestMini(borrower, await createMini(owner, 'Dire Wolf'));
+    const adventuringLoan = await requestMini(borrower, await createMini(owner, 'Beholder'));
+    await agreeOnTerms(adventuringLoan, 7);
+    await act(owner, adventuringLoan, 'handoff');
+
+    await proposeTerms(owner, wolfLoan, { where: 'Somewhere new', durationDays: 30 });
+    const res = await act(owner, wolfLoan, 'apply-terms-to-all');
+
+    expect(res.body.updated).toBe(0);
+    const view = (await request(app).get('/api/loans').set('Cookie', owner.cookie)).body;
+    expect(view.find((l: { id: number }) => l.id === adventuringLoan)).toMatchObject({ handoffWhere: 'Game store', durationDays: 7 });
+  });
+
   it('never carries a duration across when the borrower applies terms', async () => {
     const wolfLoan = await requestMini(borrower, await createMini(owner, 'Dire Wolf'));
     const beholderLoan = await requestMini(borrower, await createMini(owner, 'Beholder'));
@@ -215,6 +260,54 @@ describe('handoff and return', () => {
     const loanId = await requestMini(borrower, await createMini(owner, 'Dire Wolf'));
     expect((await act(owner, loanId, 'return')).status).toBe(409);
   });
+
+  it('refuses a second handoff or a second return', async () => {
+    const loanId = await requestMini(borrower, await createMini(owner, 'Dire Wolf'));
+    await agreeOnTerms(loanId);
+    await act(owner, loanId, 'handoff');
+
+    expect((await act(owner, loanId, 'handoff')).status).toBe(409);
+    await act(owner, loanId, 'return');
+    expect((await act(owner, loanId, 'return')).status).toBe(409);
+  });
+
+  it('locks the terms once the mini is adventuring', async () => {
+    const loanId = await requestMini(borrower, await createMini(owner, 'Dire Wolf'));
+    await agreeOnTerms(loanId, 14);
+    await act(owner, loanId, 'handoff');
+
+    expect((await proposeTerms(owner, loanId, { durationDays: 60 })).status).toBe(409);
+    expect((await act(borrower, loanId, 'approve')).status).toBe(409);
+  });
+
+  it('shows the loan as overdue to both sides once the due date passes, without returning it', async () => {
+    const miniId = await createMini(owner, 'Dire Wolf');
+    const loanId = await requestMini(borrower, miniId);
+    await agreeOnTerms(loanId);
+    await act(owner, loanId, 'handoff');
+    await pool.execute('UPDATE loans SET due_at = ? WHERE id = ?', [new Date(Date.now() - DAY_MS), loanId]);
+
+    for (const who of [owner, borrower]) {
+      const view = (await request(app).get('/api/loans').set('Cookie', who.cookie)).body;
+      expect(view.find((l: { id: number }) => l.id === loanId)).toMatchObject({ status: 'adventuring', stage: 'overdue' });
+    }
+    const mini = await request(app).get(`/api/minis/${miniId}`).set('Cookie', bystander.cookie);
+    expect(mini.body.status).toBe('adventuring');
+  });
+
+  it('lets someone else request the mini once it is back, and lets the owner delete it', async () => {
+    const miniId = await createMini(owner, 'Dire Wolf');
+    const loanId = await requestMini(borrower, miniId);
+    await agreeOnTerms(loanId);
+    await act(owner, loanId, 'handoff');
+    await act(owner, loanId, 'return');
+
+    const nextLoan = await requestMini(bystander, miniId);
+    expect(nextLoan).toBeGreaterThan(loanId);
+
+    await act(bystander, nextLoan, 'cancel');
+    expect((await request(app).delete(`/api/minis/${miniId}`).set('Cookie', owner.cookie)).status).toBe(200);
+  });
 });
 
 describe('cancelling', () => {
@@ -242,6 +335,32 @@ describe('cancelling', () => {
     const loanId = await requestMini(borrower, await createMini(owner, 'Dire Wolf'));
     await act(owner, loanId, 'cancel');
     expect((await proposeTerms(borrower, loanId, { where: 'Game store' })).status).toBe(409);
+  });
+
+  it('refuses approving, handing off, or cancelling again after a cancel', async () => {
+    const loanId = await requestMini(borrower, await createMini(owner, 'Dire Wolf'));
+    await agreeOnTerms(loanId);
+    await act(borrower, loanId, 'cancel');
+
+    expect((await act(owner, loanId, 'approve')).status).toBe(409);
+    expect((await act(owner, loanId, 'handoff')).status).toBe(409);
+    expect((await act(owner, loanId, 'cancel')).status).toBe(409);
+  });
+
+  it('records who cancelled', async () => {
+    const loanId = await requestMini(borrower, await createMini(owner, 'Dire Wolf'));
+    await act(owner, loanId, 'cancel');
+
+    const [[row]] = await pool.query<import('mysql2').RowDataPacket[]>('SELECT cancelled_by FROM loans WHERE id = ?', [loanId]);
+    expect(row.cancelled_by).toBe(owner.userId);
+  });
+
+  it('frees the mini for someone else to check out', async () => {
+    const miniId = await createMini(owner, 'Dire Wolf');
+    const loanId = await requestMini(borrower, miniId);
+    await act(owner, loanId, 'cancel');
+
+    expect(await requestMini(bystander, miniId)).toBeGreaterThan(loanId);
   });
 });
 

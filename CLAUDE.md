@@ -48,6 +48,33 @@ Migrations apply automatically on every deploy via `scripts/rpi-update.sh`
 (and on first-time setup via `scripts/rpi-setup.sh`) — there's no manual
 SQL step for the person deploying this.
 
+## Security rules — follow these for every new route or field
+
+- **SQL:** placeholders (`?`) only. Never build SQL from request values.
+- **Access:** collection-scoped routers use `requireAuth, requireCollectionMembership`
+  (admin routes add `requireAdmin` *after* it). Roles are **per collection**
+  (`collection_memberships.role`); `users.role` is legacy and unused. The cookie
+  holds no role — `requireCollectionMembership` loads it from the database.
+  Things in another collection return **404**, not 403.
+- **Sessions:** `requireAuth` checks the signed cookie *and* its row in `sessions`
+  (`db/sessions.ts`). Unit tests replace that module with an always-live stand-in
+  (`src/test/unitSetup.ts`); integration tests use real session rows via
+  `test/dbHelpers.ts`.
+- **Input:** validate every body/query value with `backend/src/utils/inputs.ts`
+  (type + length) before it reaches the database. Query strings can be arrays or
+  objects; JSON can be any type.
+- **Uploads:** saved names come from the checked image type, never the uploader's
+  filename. Photos are served only to members of the mini's collection
+  (`requireImageAccess`). Client-supplied image paths must be checked against
+  what the mini already has. Any error response deletes that request's uploaded
+  files; `maintenance/housekeeping.ts` sweeps unreferenced files hourly — if you
+  add a new place that stores upload paths, add it to the sweep's in-use query.
+- **Secrets:** `JWT_SECRET` comes from `config.ts` (no fallback). Nothing secret
+  goes in git; `backend/.env` is ignored.
+- `backend/src/accessControl.test.ts` reads every route from the live app and
+  checks it rejects anonymous, forged, non-member, and non-admin callers. A new
+  public route must be added to its `PUBLIC` list deliberately.
+
 ## Testing approach
 
 This project is built test-driven: write the test (mocked unit test for

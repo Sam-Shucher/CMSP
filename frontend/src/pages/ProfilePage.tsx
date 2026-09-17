@@ -1,5 +1,7 @@
 import React, { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { api } from '../api/client';
+import { useAuth } from '../App';
 
 type Profile = {
   id: number;
@@ -8,13 +10,15 @@ type Profile = {
   display_name: string;
   phone: string | null;
   neighborhood: string | null;
-  role: string;
 };
 
 // Lets a user view their account info and edit their own display name,
 // phone, and neighborhood. Reached by clicking your username in the nav bar.
 export default function ProfilePage(): React.ReactElement {
+  const { setUser } = useAuth();
+  const navigate = useNavigate();
   const [profile, setProfile] = useState<Profile | null>(null);
+  const [confirmingLogoutAll, setConfirmingLogoutAll] = useState<boolean>(false);
 
   const [displayName, setDisplayName]   = useState<string>('');
   const [phone, setPhone]               = useState<string>('');
@@ -24,13 +28,17 @@ export default function ProfilePage(): React.ReactElement {
   const [success, setSuccess] = useState<string>('');
   const [loading, setLoading] = useState<boolean>(false);
 
+  const [loadError, setLoadError] = useState<string>('');
+
   useEffect(() => {
-    api<Profile>('/api/users/me').then((p: Profile) => {
-      setProfile(p);
-      setDisplayName(p.display_name);
-      setPhone(p.phone ?? '');
-      setNeighborhood(p.neighborhood ?? '');
-    });
+    api<Profile>('/api/users/me')
+      .then((p: Profile) => {
+        setProfile(p);
+        setDisplayName(p.display_name);
+        setPhone(p.phone ?? '');
+        setNeighborhood(p.neighborhood ?? '');
+      })
+      .catch((err: unknown) => setLoadError(err instanceof Error ? err.message : 'Failed to load your profile'));
   }, []);
 
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>): Promise<void> {
@@ -56,6 +64,28 @@ export default function ProfilePage(): React.ReactElement {
     } finally {
       setLoading(false);
     }
+  }
+
+  // Ends every session this account has — use it after signing in on a
+  // shared computer, or if a device was lost.
+  async function logOutEverywhere(): Promise<void> {
+    setError('');
+    try {
+      await api('/api/auth/logout-all', { method: 'POST' });
+      setUser(null);
+      navigate('/login');
+    } catch (err: unknown) {
+      setConfirmingLogoutAll(false);
+      setError(err instanceof Error ? err.message : 'Failed to log out everywhere');
+    }
+  }
+
+  if (loadError) {
+    return (
+      <div style={{ padding: '28px 32px', maxWidth: '480px', margin: '0 auto' }}>
+        <div className="error-msg">{loadError}</div>
+      </div>
+    );
   }
 
   if (!profile) {
@@ -114,6 +144,27 @@ export default function ProfilePage(): React.ReactElement {
           {loading ? 'Saving…' : 'Save'}
         </button>
       </form>
+
+      <div style={{ marginTop: '32px', paddingTop: '20px', borderTop: '1px solid #3d3629' }}>
+        <h3 style={{ fontSize: '15px', color: '#c9a84c', marginBottom: '6px' }}>Sessions</h3>
+        <p style={{ fontSize: '13px', color: '#8a7d6a', marginBottom: '12px' }}>
+          Sign out on every phone and computer where you're signed in, including this one.
+        </p>
+        {confirmingLogoutAll ? (
+          <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+            <button type="button" className="btn-danger" onClick={() => void logOutEverywhere()}>
+              Yes, log out everywhere
+            </button>
+            <button type="button" className="btn-secondary" onClick={() => setConfirmingLogoutAll(false)}>
+              Keep me signed in
+            </button>
+          </div>
+        ) : (
+          <button type="button" className="btn-secondary" onClick={() => setConfirmingLogoutAll(true)}>
+            Log out everywhere
+          </button>
+        )}
+      </div>
     </div>
   );
 }

@@ -125,6 +125,120 @@ describe('DashboardPage — mini detail overlay', () => {
   });
 });
 
+describe('DashboardPage — browsing, search, and tags', () => {
+  function mockBrowse({ minis = [MINI_OWNED_BY_1], tags = ['boss', 'painted'], minisOk = true }: { minis?: Mini[]; tags?: string[]; minisOk?: boolean } = {}) {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.startsWith('/api/minis/tags')) return jsonResponse(tags);
+      if (url.startsWith('/api/minis')) return minisOk ? jsonResponse(minis) : jsonResponse({ error: 'Server error' }, false);
+      if (url === '/api/cart') return jsonResponse([]);
+      return jsonResponse({}, false);
+    }));
+  }
+
+  function minisUrls(): string[] {
+    return vi.mocked(fetch).mock.calls.map(([u]) => String(u)).filter(u => u.startsWith('/api/minis?'));
+  }
+
+  it('searches as you type, sending the text to the server', async () => {
+    mockBrowse();
+    renderDashboard({ userId: 2, username: 'other', role: 'user' });
+    await screen.findByText('Dire Wolf');
+
+    await userEvent.type(screen.getByPlaceholderText(/search/i), 'wolf');
+
+    await waitFor(() => expect(minisUrls().at(-1)).toBe('/api/minis?q=wolf'));
+  });
+
+  it('filters by a tag pill, and clicking it again clears the filter', async () => {
+    mockBrowse();
+    renderDashboard({ userId: 2, username: 'other', role: 'user' });
+    await screen.findByText('Dire Wolf');
+
+    await userEvent.click(screen.getByRole('button', { name: 'boss' }));
+    await waitFor(() => expect(minisUrls().at(-1)).toBe('/api/minis?tag=boss'));
+
+    await userEvent.click(screen.getByRole('button', { name: 'boss' }));
+    await waitFor(() => expect(minisUrls().at(-1)).toBe('/api/minis?'));
+  });
+
+  it('"All" clears the tag filter', async () => {
+    mockBrowse();
+    renderDashboard({ userId: 2, username: 'other', role: 'user' });
+    await screen.findByText('Dire Wolf');
+
+    await userEvent.click(screen.getByRole('button', { name: 'painted' }));
+    await waitFor(() => expect(minisUrls().at(-1)).toBe('/api/minis?tag=painted'));
+    await userEvent.click(screen.getByRole('button', { name: 'All' }));
+
+    await waitFor(() => expect(minisUrls().at(-1)).toBe('/api/minis?'));
+  });
+
+  it('hides the tag bar when there are no tags', async () => {
+    mockBrowse({ tags: [] });
+    renderDashboard({ userId: 2, username: 'other', role: 'user' });
+    await screen.findByText('Dire Wolf');
+
+    expect(screen.queryByRole('button', { name: 'All' })).not.toBeInTheDocument();
+  });
+
+  it('invites adding the first mini when the collection is empty', async () => {
+    mockBrowse({ minis: [], tags: [] });
+    renderDashboard({ userId: 2, username: 'other', role: 'user' });
+
+    expect(await screen.findByText(/no minis found/i)).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /add the first one/i })).toHaveAttribute('href', '/upload');
+  });
+
+  it('suggests a different search when a search finds nothing', async () => {
+    mockBrowse({ minis: [] });
+    renderDashboard({ userId: 2, username: 'other', role: 'user' });
+    await screen.findByText(/no minis found/i);
+
+    await userEvent.type(screen.getByPlaceholderText(/search/i), 'zzz');
+
+    expect(await screen.findByText(/try a different search or tag/i)).toBeInTheDocument();
+  });
+
+  it('shows an error when the minis fail to load', async () => {
+    mockBrowse({ minisOk: false });
+    renderDashboard({ userId: 2, username: 'other', role: 'user' });
+
+    expect(await screen.findByText('Server error')).toBeInTheDocument();
+  });
+
+  it('shows the cover photo, a count of extra photos, the price, and tags on the card', async () => {
+    mockBrowse({
+      minis: [{ ...MINI_OWNED_BY_1, images: ['/uploads/a.png', '/uploads/b.png', '/uploads/c.png'], price: 12.5, tags: ['boss'] }],
+    });
+    renderDashboard({ userId: 2, username: 'other', role: 'user' });
+
+    const cover = await screen.findByRole('img', { name: 'Dire Wolf' });
+    expect(cover).toHaveAttribute('src', '/uploads/a.png');
+    expect(screen.getByText('+2')).toBeInTheDocument();
+    expect(screen.getByText('$12.50')).toBeInTheDocument();
+    expect(screen.getByText('boss', { selector: '.tag' })).toBeInTheDocument();
+  });
+
+  it('shows no price for a free mini', async () => {
+    mockBrowse();
+    renderDashboard({ userId: 2, username: 'other', role: 'user' });
+    await screen.findByText('Dire Wolf');
+
+    expect(screen.queryByText(/\$/)).not.toBeInTheDocument();
+  });
+
+  it('closes the overlay', async () => {
+    mockBrowse();
+    renderDashboard({ userId: 2, username: 'other', role: 'user' });
+    await userEvent.click(await screen.findByText('Dire Wolf'));
+
+    await userEvent.click(screen.getByRole('button', { name: /close/i }));
+
+    expect(screen.queryByRole('button', { name: /close/i })).not.toBeInTheDocument();
+  });
+});
+
 describe('DashboardPage — status badges and the cart', () => {
   beforeEach(() => {
     vi.stubGlobal('fetch', vi.fn());

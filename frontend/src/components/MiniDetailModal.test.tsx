@@ -79,6 +79,55 @@ describe('MiniDetailModal', () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
+  it('moves between photos with the left and right arrow keys', () => {
+    render(
+      <MiniDetailModal
+        mini={makeMini({ images: ['/uploads/a.png', '/uploads/b.png'] })}
+        onClose={vi.fn()}
+      />
+    );
+    const image = screen.getByRole('img', { name: /dire wolf/i });
+
+    fireEvent.keyDown(window, { key: 'ArrowRight' });
+    expect(image).toHaveAttribute('src', '/uploads/b.png');
+
+    fireEvent.keyDown(window, { key: 'ArrowLeft' });
+    expect(image).toHaveAttribute('src', '/uploads/a.png');
+  });
+
+  it('ignores arrow keys when there is only one photo', () => {
+    render(<MiniDetailModal mini={makeMini({ images: ['/uploads/a.png'] })} onClose={vi.fn()} />);
+
+    fireEvent.keyDown(window, { key: 'ArrowRight' });
+
+    expect(screen.getByRole('img', { name: /dire wolf/i })).toHaveAttribute('src', '/uploads/a.png');
+  });
+
+  it('stops listening for keys once closed', () => {
+    const onClose = vi.fn();
+    const { unmount } = render(<MiniDetailModal mini={makeMini()} onClose={onClose} />);
+    unmount();
+
+    fireEvent.keyDown(window, { key: 'Escape' });
+
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it('shows a placeholder when the mini has no photos, and no description block when there is none', () => {
+    render(<MiniDetailModal mini={makeMini({ description: null, tags: [], price: 0 })} onClose={vi.fn()} />);
+
+    expect(screen.queryByRole('img')).not.toBeInTheDocument();
+    expect(screen.getByText('⚔')).toBeInTheDocument();
+    expect(screen.queryByText(/\$/)).not.toBeInTheDocument();
+  });
+
+  it('does not show cart controls when no add-to-cart handler is given', () => {
+    render(<MiniDetailModal mini={makeMini()} onClose={vi.fn()} />);
+
+    expect(screen.queryByRole('button', { name: /add to cart/i })).not.toBeInTheDocument();
+    expect(screen.queryByText(/this is your mini/i)).not.toBeInTheDocument();
+  });
+
   it('calls onClose when Escape is pressed', () => {
     const onClose = vi.fn();
     render(<MiniDetailModal mini={makeMini()} onClose={onClose} />);
@@ -131,6 +180,18 @@ describe('MiniDetailModal — adding to the cart', () => {
     fireEvent.click(unavailable);
     expect(onAddToCart).not.toHaveBeenCalled();
     expect(screen.getAllByText(label).length).toBeGreaterThan(0);
+  });
+
+  it('disables the button while adding, so it can\'t be added twice', async () => {
+    let finish!: () => void;
+    const onAddToCart = vi.fn(() => new Promise<void>(resolve => { finish = resolve; }));
+    render(<MiniDetailModal mini={makeMini()} onClose={vi.fn()} isOwn={false} inCart={false} onAddToCart={onAddToCart} />);
+
+    fireEvent.click(screen.getByRole('button', { name: /add to cart/i }));
+
+    expect(await screen.findByRole('button', { name: /adding/i })).toBeDisabled();
+    finish();
+    await waitFor(() => expect(screen.getByRole('button', { name: /add to cart/i })).toBeEnabled());
   });
 
   it('shows the server\'s message if adding fails', async () => {

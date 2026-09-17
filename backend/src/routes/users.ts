@@ -2,6 +2,7 @@ import { Router, Response } from 'express';
 import { RowDataPacket, ResultSetHeader } from 'mysql2';
 import { pool } from '../db/connection';
 import { requireAuth, AuthRequest } from '../middleware/requireAuth';
+import { requiredText, optionalText, LIMITS } from '../utils/inputs';
 
 const router = Router();
 
@@ -12,7 +13,6 @@ interface ProfileRow extends RowDataPacket {
   display_name: string;
   phone: string | null;
   neighborhood: string | null;
-  role: string;
 }
 
 // GET /api/users/me
@@ -20,7 +20,7 @@ interface ProfileRow extends RowDataPacket {
 router.get('/me', requireAuth, async (req: AuthRequest, res: Response): Promise<void> => {
   try {
     const [rows] = await pool.execute<ProfileRow[]>(
-      'SELECT id, email, username, display_name, phone, neighborhood, role FROM users WHERE id = ?',
+      'SELECT id, email, username, display_name, phone, neighborhood FROM users WHERE id = ?',
       [req.user!.userId]
     );
     res.json(rows[0]);
@@ -34,21 +34,30 @@ router.get('/me', requireAuth, async (req: AuthRequest, res: Response): Promise<
 // Lets a user update their own display name, phone, and neighborhood.
 // Email, username, and role are not editable here.
 router.patch('/me', requireAuth, async (req: AuthRequest, res: Response): Promise<void> => {
-  const { displayName, phone, neighborhood } = req.body as Record<string, string | undefined>;
-
-  if (!displayName?.trim()) {
-    res.status(400).json({ error: 'Display name is required' });
-    return;
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const displayName = requiredText(body.displayName, 'Display name', LIMITS.displayName);
+  const phone = optionalText(body.phone, 'Phone', LIMITS.phone);
+  const neighborhood = optionalText(body.neighborhood, 'Neighborhood', LIMITS.neighborhood);
+  for (const check of [displayName, phone, neighborhood]) {
+    if (!check.ok) {
+      res.status(400).json({ error: check.error });
+      return;
+    }
   }
 
   try {
     await pool.execute<ResultSetHeader>(
       'UPDATE users SET display_name = ?, phone = ?, neighborhood = ? WHERE id = ?',
-      [displayName.trim(), phone?.trim() || null, neighborhood?.trim() || null, req.user!.userId]
+      [
+        (displayName as { value: string }).value,
+        (phone as { value: string | null }).value,
+        (neighborhood as { value: string | null }).value,
+        req.user!.userId,
+      ]
     );
 
     const [rows] = await pool.execute<ProfileRow[]>(
-      'SELECT id, email, username, display_name, phone, neighborhood, role FROM users WHERE id = ?',
+      'SELECT id, email, username, display_name, phone, neighborhood FROM users WHERE id = ?',
       [req.user!.userId]
     );
     res.json(rows[0]);

@@ -71,6 +71,20 @@ describe('parseTermsPatch', () => {
     expect(parseTermsPatch({ when: 'next tuesday-ish' }, 'owner')).toMatchObject({ ok: false, status: 400 });
   });
 
+  it('rejects a date that is not a string at all', () => {
+    expect(parseTermsPatch({ when: 1760000000000 }, 'owner')).toMatchObject({ ok: false, status: 400 });
+    expect(parseTermsPatch({ when: null }, 'owner')).toMatchObject({ ok: false, status: 400 });
+  });
+
+  it('rejects where/how that are not strings', () => {
+    expect(parseTermsPatch({ where: 42 }, 'owner')).toMatchObject({ ok: false, status: 400 });
+    expect(parseTermsPatch({ how: ['in', 'person'] }, 'owner')).toMatchObject({ ok: false, status: 400 });
+  });
+
+  it('accepts where/how at exactly 255 characters', () => {
+    expect(parseTermsPatch({ where: 'x'.repeat(255) }, 'owner')).toMatchObject({ ok: true });
+  });
+
   it('rejects durations that are not a whole number of days between 1 and 365', () => {
     expect(parseTermsPatch({ durationDays: 0 }, 'owner')).toMatchObject({ ok: false, status: 400 });
     expect(parseTermsPatch({ durationDays: 366 }, 'owner')).toMatchObject({ ok: false, status: 400 });
@@ -110,6 +124,13 @@ describe('applyTermsEdit — the two-key rule', () => {
     expect(result.borrowerApproved).toBe(false);
   });
 
+  it('keeps the fields the patch doesn\'t mention', () => {
+    const current = loan(COMPLETE);
+    const result = applyTermsEdit(current, 'borrower', { handoffHow: 'Mailed' });
+
+    expect(result).toMatchObject({ handoffWhen: WHEN, handoffWhere: 'Game store', handoffHow: 'Mailed', durationDays: 14 });
+  });
+
   it('leaves approvals alone when the "edit" doesn\'t actually change anything', () => {
     const current = loan({ ...COMPLETE, borrowerApproved: true, ownerApproved: true });
     const result = applyTermsEdit(current, 'owner', { durationDays: 14, handoffWhen: new Date(WHEN.getTime()) });
@@ -123,6 +144,11 @@ describe('approveTerms', () => {
   it('turns the caller\'s key on complete terms', () => {
     const result = approveTerms(loan({ ...COMPLETE, ownerApproved: true }), 'borrower');
     expect(result).toEqual({ ok: true, borrowerApproved: true, ownerApproved: true });
+  });
+
+  it('only turns the caller\'s own key — never the other side\'s', () => {
+    expect(approveTerms(loan(COMPLETE), 'owner')).toEqual({ ok: true, borrowerApproved: false, ownerApproved: true });
+    expect(approveTerms(loan(COMPLETE), 'borrower')).toEqual({ ok: true, borrowerApproved: true, ownerApproved: false });
   });
 
   it('refuses to approve incomplete terms', () => {
@@ -143,6 +169,10 @@ describe('stageOf', () => {
 
   it('is "agreed" once both keys are turned', () => {
     expect(stageOf(loan({ ...COMPLETE, ownerApproved: true, borrowerApproved: true }), now)).toBe('agreed');
+  });
+
+  it('is still "negotiating" if both keys are somehow turned on incomplete terms', () => {
+    expect(stageOf(loan({ handoffWhere: 'Game store', ownerApproved: true, borrowerApproved: true }), now)).toBe('negotiating');
   });
 
   it('is "adventuring" before the due date and "overdue" after it', () => {

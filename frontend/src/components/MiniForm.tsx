@@ -1,6 +1,14 @@
 import React, { useState } from 'react';
 import MultiImagePicker from './MultiImagePicker';
 
+// Same limits the server enforces (backend/src/utils/inputs.ts and the price
+// column) — checked here too so people see the problem before uploading.
+const MAX_NAME_LENGTH = 255;
+const MAX_DESCRIPTION_LENGTH = 5000;
+const MAX_TAGS = 20;
+const MAX_TAG_LENGTH = 50;
+const MAX_PRICE = 9999.99;
+
 export type MiniFormValues = {
   name: string;
   description: string;
@@ -50,6 +58,19 @@ export default function MiniForm({
       setError('Price must be a non-negative number');
       return;
     }
+    if (price.trim() && Number(price) > MAX_PRICE) {
+      setError(`Price must be ${MAX_PRICE} or less`);
+      return;
+    }
+    const tagNames = new Set(tags.split(',').map(t => t.trim().toLowerCase()).filter(Boolean));
+    if (tagNames.size > MAX_TAGS) {
+      setError(`A mini can have at most ${MAX_TAGS} tags`);
+      return;
+    }
+    if ([...tagNames].some(t => t.length > MAX_TAG_LENGTH)) {
+      setError(`Each tag must be ${MAX_TAG_LENGTH} characters or fewer`);
+      return;
+    }
     setError('');
     setLoading(true);
 
@@ -75,6 +96,7 @@ export default function MiniForm({
           value={name}
           onChange={(e: React.ChangeEvent<HTMLInputElement>) => setName(e.target.value)}
           placeholder="e.g. Human Paladin, Beholder, Dire Wolf"
+          maxLength={MAX_NAME_LENGTH}
           required
           autoFocus
         />
@@ -89,6 +111,7 @@ export default function MiniForm({
           onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setDescription(e.target.value)}
           placeholder="Scale, manufacturer, paint job notes…"
           rows={5}
+          maxLength={MAX_DESCRIPTION_LENGTH}
           spellCheck
           style={{ resize: 'vertical' }}
         />
@@ -132,6 +155,7 @@ export default function MiniForm({
           id="mini-price"
           type="number"
           min="0"
+          max={MAX_PRICE}
           step="0.01"
           value={price}
           onChange={(e: React.ChangeEvent<HTMLInputElement>) => setPrice(e.target.value)}

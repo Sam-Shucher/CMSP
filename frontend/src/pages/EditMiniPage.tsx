@@ -12,6 +12,7 @@ export default function EditMiniPage(): React.ReactElement {
   const [mini, setMini]           = useState<Mini | null>(null);
   const [loadError, setLoadError] = useState<string>('');
   const [confirmingDelete, setConfirmingDelete] = useState<boolean>(false);
+  const [deleteError, setDeleteError] = useState<string>('');
 
   useEffect(() => {
     api<Mini>(`/api/minis/${id}`)
@@ -33,8 +34,15 @@ export default function EditMiniPage(): React.ReactElement {
   }
 
   async function handleDelete(): Promise<void> {
-    await api(`/api/minis/${id}`, { method: 'DELETE' });
-    navigate('/'); // back to the dashboard after a successful delete
+    setDeleteError('');
+    try {
+      await api(`/api/minis/${id}`, { method: 'DELETE' });
+      navigate('/'); // back to the dashboard after a successful delete
+    } catch (err: unknown) {
+      // e.g. 409 while the mini is requested or out adventuring
+      setConfirmingDelete(false);
+      setDeleteError(err instanceof Error ? err.message : 'Failed to delete mini');
+    }
   }
 
   if (loadError) {
@@ -69,6 +77,7 @@ export default function EditMiniPage(): React.ReactElement {
       {/* Kept separate from the form's own buttons so a mistaken click while
           editing doesn't land anywhere near "delete this permanently". */}
       <div style={{ marginTop: '32px', paddingTop: '20px', borderTop: '1px solid #3d3629' }}>
+        {deleteError && <div className="error-msg" style={{ marginBottom: '12px' }}>{deleteError}</div>}
         <button type="button" className="btn-danger" onClick={() => setConfirmingDelete(true)}>
           Delete Mini
         </button>

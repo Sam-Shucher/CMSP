@@ -16,7 +16,7 @@ export default function CollectionPicker({ collections, onSelect }: CollectionPi
       <div style={cardStyle}>
         <h1 style={{ fontSize: '20px', color: '#c9a84c', marginBottom: '8px' }}>Select a Group</h1>
         <p style={{ color: '#8a7d6a', marginBottom: '24px', fontSize: '13px' }}>
-          Choose which group you want to browse and manage.
+          You're in more than one group. Choose which one to enter — what you can do depends on your role there.
         </p>
         <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
           {collections.map((c: Collection) => (
@@ -25,9 +25,13 @@ export default function CollectionPicker({ collections, onSelect }: CollectionPi
               type="button"
               className="btn-primary"
               onClick={() => onSelect(c.id)}
-              style={{ padding: '14px' }}
+              style={{ padding: '14px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px' }}
             >
-              {c.name}
+              <span>{c.name}</span>
+              {/* Your role is per group — an admin in one can be a member in another */}
+              <span style={{ fontSize: '11px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', opacity: 0.75 }}>
+                {c.role === 'admin' ? 'Admin' : 'Member'}
+              </span>
             </button>
           ))}
         </div>

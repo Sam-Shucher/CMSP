@@ -33,6 +33,35 @@ describe('MultiImagePicker', () => {
     expect(onChange).toHaveBeenCalledWith(['/uploads/a.png'], [file]);
   });
 
+  it('lets you remove a newly added photo before saving, keeping the others', () => {
+    const onChange = vi.fn();
+    render(<MultiImagePicker existingPaths={['/uploads/a.png']} onChange={onChange} />);
+
+    const first = makeFile('first.png');
+    const second = makeFile('second.png');
+    fireEvent.drop(screen.getByTestId('image-dropzone'), { dataTransfer: { files: [first] } });
+    fireEvent.drop(screen.getByTestId('image-dropzone'), { dataTransfer: { files: [second] } });
+    expect(screen.getAllByAltText('Preview')).toHaveLength(2);
+
+    fireEvent.click(screen.getAllByRole('button', { name: /remove/i })[1]); // first new photo
+
+    expect(onChange).toHaveBeenLastCalledWith(['/uploads/a.png'], [second]);
+    expect(screen.getAllByAltText('Preview')).toHaveLength(1);
+  });
+
+  it('brings the dropzone back after removing a photo at the cap', () => {
+    render(
+      <MultiImagePicker
+        existingPaths={['/uploads/a.png', '/uploads/b.png', '/uploads/c.png']}
+        onChange={vi.fn()}
+      />
+    );
+
+    fireEvent.click(screen.getAllByRole('button', { name: /remove/i })[0]);
+
+    expect(screen.getByTestId('image-dropzone')).toBeInTheDocument();
+  });
+
   it('hides the add dropzone once 3 images are already selected', () => {
     render(
       <MultiImagePicker

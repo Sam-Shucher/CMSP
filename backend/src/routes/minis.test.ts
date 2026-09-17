@@ -1,6 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import request from 'supertest';
+import fs from 'fs';
+import path from 'path';
 import { authCookie } from '../test/helpers';
+import { uploadsDir } from '../config';
 
 // Mock the DB layer entirely — these are route/permission tests, not DB integration tests.
 vi.mock('../db/connection', () => ({
@@ -27,7 +30,9 @@ const NOT_A_MEMBER = { userId: 4, username: 'outsider', role: 'user', collection
 // The requireCollectionMembership middleware's DB check, confirming the
 // caller really belongs to the collection their JWT claims — this is always
 // the first execute() call on every route in this file.
-const MEMBERSHIP_CONFIRMED = [[{ id: 1 }]];
+const MEMBERSHIP_CONFIRMED = [[{ role: 'user' }]];
+// An admin's membership row — the middleware takes the role from here, not the cookie.
+const ADMIN_MEMBERSHIP = [[{ role: 'admin' }]];
 const NOT_A_MEMBER_ROW = [[]];
 
 function tinyPng(): Buffer {
@@ -46,7 +51,7 @@ function miniRow(overrides: Partial<Record<string, unknown>> = {}) {
     name: 'Dire Wolf',
     description: 'A wolf',
     price: '0.00',
-    available: 1,
+    active_loan_status: null,
     owner_name: 'Owner Name',
     owner_username: 'owner',
     owner_id: 1,
@@ -179,6 +184,408 @@ describe('GET /api/minis/:id', () => {
   });
 });
 
+describe('mini status in responses', () => {
+  it.each([
+    [null, 'available', true],
+    ['negotiating', 'requested', false],
+    ['adventuring', 'adventuring', false],
+  ])('turns an active loan status of %s into status "%s"', async (loanStatus, status, available) => {
+    execute
+      .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
+      .mockResolvedValueOnce([[miniRow({ active_loan_status: loanStatus, price: '12.50', tags: 'boss,painted' })]]);
+
+    const res = await request(app).get('/api/minis/42').set('Cookie', authCookie(OWNER));
+
+    expect(res.body).toMatchObject({ status, available, price: 12.5, tags: ['boss', 'painted'] });
+    expect(res.body).not.toHaveProperty('active_loan_status');
+  });
+});
+
+describe('GET /api/minis — tag filter', () => {
+  it('passes the tag to the query as a parameter alongside the collection', async () => {
+    execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED).mockResolvedValueOnce([[]]);
+
+    await request(app).get('/api/minis?tag=dragon').set('Cookie', authCookie(OWNER));
+
+    expect(execute).toHaveBeenCalledWith(expect.stringContaining('t2.name = ?'), [COLLECTION_A, 'dragon']);
+  });
+});
+
+describe('hostile or oversized input', () => {
+  it.each([
+    ['a search over 100 characters (typo-matching huge text would tie up the Pi)', '/api/minis?q=' + 'a'.repeat(101)],
+    ['a search sent twice (arrives as an array)', '/api/minis?q=wolf&q=bear'],
+    ['a tag filter over 100 characters', '/api/minis?tag=' + 'a'.repeat(101)],
+    ['a tag filter sent as an object', '/api/minis?tag[$ne]=x'],
+  ])('rejects %s with 400', async (_why, url) => {
+    execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED);
+
+    const res = await request(app).get(url).set('Cookie', authCookie(OWNER));
+
+    expect(res.status).toBe(400);
+    expect(execute).toHaveBeenCalledTimes(1); // membership only
+  });
+
+  it('passes a search full of SQL straight through as plain text', async () => {
+    execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED).mockResolvedValueOnce([[miniRow({ name: "Robert'); DROP TABLE minis;--" })]]);
+
+    const res = await request(app).get("/api/minis?tag=x' OR '1'='1").set('Cookie', authCookie(OWNER));
+
+    expect(res.status).toBe(200);
+    expect(execute).toHaveBeenCalledWith(expect.not.stringContaining("OR '1'='1"), [COLLECTION_A, "x' OR '1'='1"]);
+  });
+
+  const createWith = (fields: Record<string, string>) => {
+    let req = request(app).post('/api/minis').set('Cookie', authCookie(OWNER));
+    for (const [k, v] of Object.entries(fields)) req = req.field(k, v);
+    return req;
+  };
+
+  it.each([
+    ['a name over 255 characters', { name: 'x'.repeat(256) }],
+    ['a description over 5000 characters', { name: 'Wolf', description: 'x'.repeat(5001) }],
+    ['more than 20 tags', { name: 'Wolf', tags: Array.from({ length: 21 }, (_, i) => `tag${i}`).join(',') }],
+    ['a tag over 50 characters', { name: 'Wolf', tags: 'x'.repeat(51) }],
+    ['a price above what the database can store', { name: 'Wolf', price: '10000' }],
+  ])('rejects creating a mini with %s', async (_why, fields) => {
+    execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED);
+
+    const res = await createWith(fields);
+
+    expect(res.status).toBe(400);
+    expect(execute).not.toHaveBeenCalledWith(expect.stringContaining('INSERT INTO minis'), expect.anything());
+  });
+
+  it('rejects editing a mini with an over-long name', async () => {
+    execute
+      .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
+      .mockResolvedValueOnce([[{ owner_id: 1 }]])
+      .mockResolvedValueOnce([[]]);
+
+    const res = await request(app).patch('/api/minis/42').set('Cookie', authCookie(OWNER)).field('name', 'x'.repeat(256));
+
+    expect(res.status).toBe(400);
+    expect(execute).not.toHaveBeenCalledWith(expect.stringContaining('UPDATE minis'), expect.anything());
+  });
+});
+
+describe('GET /api/minis/tags', () => {
+  it('returns tag names used in the caller\'s active collection only', async () => {
+    execute
+      .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
+      .mockResolvedValueOnce([[{ name: 'boss' }, { name: 'painted' }]]);
+
+    const res = await request(app).get('/api/minis/tags').set('Cookie', authCookie(OWNER));
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual(['boss', 'painted']);
+    expect(execute).toHaveBeenCalledWith(expect.stringContaining('m.collection_id = ?'), [COLLECTION_A]);
+  });
+
+  it('is not swallowed by the /:id route', async () => {
+    execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED).mockResolvedValueOnce([[]]);
+
+    await request(app).get('/api/minis/tags').set('Cookie', authCookie(OWNER));
+
+    expect(execute).not.toHaveBeenCalledWith(expect.stringContaining('WHERE m.id = ?'), expect.anything());
+  });
+});
+
+describe('POST /api/minis — validation', () => {
+  it('rejects a non-image upload (e.g. a script) with 400 and creates nothing', async () => {
+    execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED);
+
+    const res = await request(app)
+      .post('/api/minis')
+      .set('Cookie', authCookie(OWNER))
+      .field('name', 'Dire Wolf')
+      .attach('images', Buffer.from('<script>alert(1)</script>'), { filename: 'evil.html', contentType: 'text/html' });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/only image files/i);
+    expect(execute).not.toHaveBeenCalledWith(expect.stringContaining('INSERT INTO minis'), expect.anything());
+  });
+
+  it.each([
+    ['missing', undefined],
+    ['blank', '   '],
+  ])('rejects a %s name with 400', async (_why, name) => {
+    execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED);
+
+    let req = request(app).post('/api/minis').set('Cookie', authCookie(OWNER)).field('price', '5');
+    if (name !== undefined) req = req.field('name', name);
+    const res = await req;
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/name is required/i);
+  });
+
+  it.each(['-1', 'twelve'])('rejects a price of "%s" with 400', async (price) => {
+    execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED);
+
+    const res = await request(app)
+      .post('/api/minis')
+      .set('Cookie', authCookie(OWNER))
+      .field('name', 'Dire Wolf')
+      .field('price', price);
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/price/i);
+  });
+
+  it('saves a trimmed name, a missing price as 0, and normalized tags', async () => {
+    execute
+      .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
+      .mockResolvedValueOnce([{ insertId: 42 }])  // INSERT INTO minis
+      .mockResolvedValueOnce([{}])                // DELETE mini_tags
+      .mockResolvedValueOnce([{}])                // INSERT IGNORE tags (boss)
+      .mockResolvedValueOnce([[{ id: 7 }]])       // SELECT tag id
+      .mockResolvedValueOnce([{}])                // INSERT IGNORE mini_tags
+      .mockResolvedValueOnce([{}])                // INSERT IGNORE tags (painted)
+      .mockResolvedValueOnce([[{ id: 8 }]])
+      .mockResolvedValueOnce([{}])
+      .mockResolvedValueOnce([{}]);               // DELETE mini_images
+
+    const res = await request(app)
+      .post('/api/minis')
+      .set('Cookie', authCookie(OWNER))
+      .field('name', '  Dire Wolf  ')
+      .field('tags', ' Boss, painted ,, ');
+
+    expect(res.status).toBe(201);
+    expect(execute).toHaveBeenCalledWith(expect.stringContaining('INSERT INTO minis'), ['Dire Wolf', null, OWNER.userId, COLLECTION_A, 0]);
+    expect(execute).toHaveBeenCalledWith(expect.stringContaining('INSERT IGNORE INTO tags'), ['boss']);
+    expect(execute).toHaveBeenCalledWith(expect.stringContaining('INSERT IGNORE INTO tags'), ['painted']);
+    expect(execute).toHaveBeenCalledWith(expect.stringContaining('INSERT IGNORE INTO mini_tags'), [42, 7]);
+    expect(execute).toHaveBeenCalledWith(expect.stringContaining('INSERT IGNORE INTO mini_tags'), [42, 8]);
+  });
+
+  it('creates the mini as the logged-in user, ignoring any owner sent in the form', async () => {
+    execute
+      .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
+      .mockResolvedValueOnce([{ insertId: 42 }])
+      .mockResolvedValueOnce([{}])
+      .mockResolvedValueOnce([{}]);
+
+    await request(app)
+      .post('/api/minis')
+      .set('Cookie', authCookie(OWNER))
+      .field('name', 'Dire Wolf')
+      .field('owner_id', '999')
+      .field('collection_id', String(COLLECTION_B));
+
+    expect(execute).toHaveBeenCalledWith(expect.stringContaining('INSERT INTO minis'), ['Dire Wolf', null, OWNER.userId, COLLECTION_A, 0]);
+  });
+});
+
+describe('upload hardening', () => {
+  function savedImagePaths(): string[] {
+    return execute.mock.calls
+      .filter(([sql]) => String(sql).includes('INSERT INTO mini_images'))
+      .map(([, params]) => (params as unknown[])[1] as string);
+  }
+
+  // A file named evil.html that merely CLAIMS to be image/png would otherwise
+  // be saved as .html and served back as a live web page on this site.
+  it('names saved files by the image type, never by the uploader\'s filename', async () => {
+    execute
+      .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
+      .mockResolvedValueOnce([{ insertId: 42 }])
+      .mockResolvedValueOnce([{}])
+      .mockResolvedValueOnce([{}])
+      .mockResolvedValue([{}]);
+
+    const res = await request(app)
+      .post('/api/minis')
+      .set('Cookie', authCookie(OWNER))
+      .field('name', 'Dire Wolf')
+      .attach('images', tinyPng(), { filename: 'evil.html', contentType: 'image/png' })
+      .attach('images', tinyPng(), { filename: 'photo', contentType: 'image/jpeg' })
+      .attach('images', tinyPng(), { filename: 'x.php.webp', contentType: 'image/webp' });
+
+    expect(res.status).toBe(201);
+    const [png, jpeg, webp] = savedImagePaths();
+    expect(png).toMatch(/^\/uploads\/[a-z0-9-]+\.png$/);
+    expect(jpeg).toMatch(/^\/uploads\/[a-z0-9-]+\.jpg$/);
+    expect(webp).toMatch(/^\/uploads\/[a-z0-9-]+\.webp$/);
+  });
+
+  it.each([
+    ['an SVG (can contain scripts)', 'image/svg+xml', 'x.svg'],
+    ['HTML pretending to be an image', 'text/html', 'x.png'],
+    ['a JavaScript file', 'application/javascript', 'x.jpg'],
+  ])('rejects %s', async (_why, contentType, filename) => {
+    execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED);
+
+    const res = await request(app)
+      .post('/api/minis')
+      .set('Cookie', authCookie(OWNER))
+      .field('name', 'Dire Wolf')
+      .attach('images', Buffer.from('<svg onload="alert(1)"/>'), { filename, contentType });
+
+    expect(res.status).toBe(400);
+  });
+
+  // existingImages is supplied by the browser. Trusting it would let someone
+  // "keep" another member's photo on their own mini — and then deleting their
+  // mini would delete that other member's photo file from disk.
+  it('only keeps photos that already belong to this mini, ignoring any others named in the request', async () => {
+    execute
+      .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
+      .mockResolvedValueOnce([[{ owner_id: 1 }]])
+      .mockResolvedValueOnce([[{ image_path: '/uploads/mine.png' }]])  // this mini's current photos
+      .mockResolvedValueOnce([{}])                                     // UPDATE minis
+      .mockResolvedValueOnce([{}])                                     // DELETE mini_tags
+      .mockResolvedValueOnce([{}])                                     // DELETE mini_images
+      .mockResolvedValueOnce([{}])                                     // INSERT kept photo
+      .mockResolvedValueOnce([[miniRow()]]);
+
+    const res = await request(app)
+      .patch('/api/minis/42')
+      .set('Cookie', authCookie(OWNER))
+      .field('name', 'Dire Wolf')
+      .field('existingImages', JSON.stringify([
+        '/uploads/mine.png',
+        '/uploads/someone-elses.png',
+        'https://tracker.example/pixel.gif',
+        '/uploads/../.env',
+      ]));
+
+    expect(res.status).toBe(200);
+    expect(savedImagePaths()).toEqual(['/uploads/mine.png']);
+  });
+
+  it('does not let foreign "kept" photos count toward (or dodge) the 3-photo cap', async () => {
+    execute
+      .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
+      .mockResolvedValueOnce([[{ owner_id: 1 }]])
+      .mockResolvedValueOnce([[]]) // no current photos
+      .mockResolvedValue([{}]); // remaining calls resolve generically
+
+    const res = await request(app)
+      .patch('/api/minis/42')
+      .set('Cookie', authCookie(OWNER))
+      .field('name', 'Dire Wolf')
+      .field('existingImages', JSON.stringify(['/uploads/a.png', '/uploads/b.png', '/uploads/c.png']))
+      .attach('images', tinyPng(), 'new.png');
+
+    expect(res.status).not.toBe(400);
+    expect(savedImagePaths()).toHaveLength(1);
+    expect(savedImagePaths()[0]).toMatch(/\.png$/);
+  });
+
+  it('ignores a non-array existingImages value', async () => {
+    execute
+      .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
+      .mockResolvedValueOnce([[{ owner_id: 1 }]])
+      .mockResolvedValueOnce([[{ image_path: '/uploads/mine.png' }]])
+      .mockResolvedValueOnce([{}])
+      .mockResolvedValueOnce([{}])
+      .mockResolvedValueOnce([{}])
+      .mockResolvedValueOnce([[miniRow()]]);
+
+    const res = await request(app)
+      .patch('/api/minis/42')
+      .set('Cookie', authCookie(OWNER))
+      .field('name', 'Dire Wolf')
+      .field('existingImages', JSON.stringify({ length: 5, 0: '/uploads/x.png' }));
+
+    expect(res.status).toBe(200);
+    expect(savedImagePaths()).toEqual([]);
+  });
+});
+
+describe('photos from rejected requests are deleted, not left on disk', () => {
+  const filesOnDisk = () => new Set(fs.existsSync(uploadsDir()) ? fs.readdirSync(uploadsDir()) : []);
+  const newFilesSince = (before: Set<string>) => [...filesOnDisk()].filter(f => !before.has(f));
+
+  it('uses a scratch folder in tests, never the real backend/uploads', () => {
+    expect(uploadsDir()).not.toBe(path.resolve(__dirname, '../../uploads'));
+  });
+
+  it('removes the photo when creating a mini is rejected (e.g. blank name)', async () => {
+    execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED);
+    const before = filesOnDisk();
+
+    const res = await request(app).post('/api/minis').set('Cookie', authCookie(OWNER))
+      .field('name', '   ')
+      .attach('images', tinyPng(), 'wolf.png');
+
+    expect(res.status).toBe(400);
+    expect(newFilesSince(before)).toEqual([]);
+  });
+
+  it('removes photos someone uploads to a mini they don\'t own', async () => {
+    execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED).mockResolvedValueOnce([[{ owner_id: 1 }]]);
+    const before = filesOnDisk();
+
+    const res = await request(app).patch('/api/minis/42').set('Cookie', authCookie(OTHER))
+      .field('name', 'Stolen Wolf')
+      .attach('images', tinyPng(), 'a.png')
+      .attach('images', tinyPng(), 'b.png');
+
+    expect(res.status).toBe(403);
+    expect(newFilesSince(before)).toEqual([]);
+  });
+
+  it('removes photos from an edit that would go over the 3-photo limit', async () => {
+    execute
+      .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
+      .mockResolvedValueOnce([[{ owner_id: 1 }]])
+      .mockResolvedValueOnce([[{ image_path: '/uploads/a.png' }, { image_path: '/uploads/b.png' }, { image_path: '/uploads/c.png' }]]);
+    const before = filesOnDisk();
+
+    const res = await request(app).patch('/api/minis/42').set('Cookie', authCookie(OWNER))
+      .field('name', 'Dire Wolf')
+      .field('existingImages', JSON.stringify(['/uploads/a.png', '/uploads/b.png', '/uploads/c.png']))
+      .attach('images', tinyPng(), 'd.png');
+
+    expect(res.status).toBe(400);
+    expect(newFilesSince(before)).toEqual([]);
+  });
+
+  it('removes photos when saving fails partway with a server error', async () => {
+    execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED).mockRejectedValue(new Error('connection lost'));
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const before = filesOnDisk();
+
+    const res = await request(app).post('/api/minis').set('Cookie', authCookie(OWNER))
+      .field('name', 'Dire Wolf')
+      .attach('images', tinyPng(), 'wolf.png');
+
+    expect(res.status).toBe(500);
+    expect(newFilesSince(before)).toEqual([]);
+  });
+
+  it('removes already-received photos when a later file in the same request is rejected', async () => {
+    execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED);
+    const before = filesOnDisk();
+
+    const res = await request(app).post('/api/minis').set('Cookie', authCookie(OWNER))
+      .field('name', 'Dire Wolf')
+      .attach('images', tinyPng(), 'good.png')
+      .attach('images', Buffer.from('not an image'), { filename: 'bad.txt', contentType: 'text/plain' });
+
+    expect(res.status).toBe(400);
+    expect(newFilesSince(before)).toEqual([]);
+  });
+
+  it('keeps the photos of a mini that saved successfully', async () => {
+    execute
+      .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
+      .mockResolvedValueOnce([{ insertId: 42 }])
+      .mockResolvedValue([{}]);
+    const before = filesOnDisk();
+
+    const res = await request(app).post('/api/minis').set('Cookie', authCookie(OWNER))
+      .field('name', 'Dire Wolf')
+      .attach('images', tinyPng(), 'wolf.png');
+
+    expect(res.status).toBe(201);
+    expect(newFilesSince(before)).toHaveLength(1);
+  });
+});
+
 describe('POST /api/minis — photos', () => {
   it('accepts up to 3 images and stores one mini_images row per photo', async () => {
     execute
@@ -284,9 +691,20 @@ describe('PATCH /api/minis/:id — photos', () => {
     expect(res.status).toBe(403);
   });
 
+  it('does not let a demoted admin (old "admin" cookie) edit someone else\'s mini', async () => {
+    execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED).mockResolvedValueOnce([[{ owner_id: 1 }]]);
+
+    const res = await request(app)
+      .patch('/api/minis/42')
+      .set('Cookie', authCookie(ADMIN))
+      .field('name', 'Dire Wolf');
+
+    expect(res.status).toBe(403);
+  });
+
   it('lets an admin edit someone else\'s mini in the SAME collection', async () => {
     execute
-      .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
+      .mockResolvedValueOnce(ADMIN_MEMBERSHIP)
       .mockResolvedValueOnce([[{ owner_id: 1 }]])
       .mockResolvedValueOnce([[]])
       .mockResolvedValueOnce([{}])
@@ -358,6 +776,54 @@ describe('PATCH /api/minis/:id — photos', () => {
     expect(res.status).toBe(400);
   });
 
+  it('treats malformed existingImages as keeping no photos, rather than erroring', async () => {
+    execute
+      .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
+      .mockResolvedValueOnce([[{ owner_id: 1 }]])
+      .mockResolvedValueOnce([[{ image_path: '/uploads/old1.png' }]]) // current images
+      .mockResolvedValueOnce([{}])                                   // UPDATE minis
+      .mockResolvedValueOnce([{}])                                   // DELETE mini_tags
+      .mockResolvedValueOnce([{}])                                   // DELETE mini_images
+      .mockResolvedValueOnce([[miniRow()]]);
+
+    const res = await request(app)
+      .patch('/api/minis/42')
+      .set('Cookie', authCookie(OWNER))
+      .field('name', 'Dire Wolf')
+      .field('existingImages', '{not json');
+
+    expect(res.status).toBe(200);
+    expect(execute).not.toHaveBeenCalledWith(expect.stringContaining('INSERT INTO mini_images'), expect.anything());
+  });
+
+  it('rejects a non-numeric price with 400', async () => {
+    execute
+      .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
+      .mockResolvedValueOnce([[{ owner_id: 1 }]])
+      .mockResolvedValueOnce([[]]); // current photos
+
+    const res = await request(app)
+      .patch('/api/minis/42')
+      .set('Cookie', authCookie(OWNER))
+      .field('name', 'Dire Wolf')
+      .field('price', 'free');
+
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects a non-image upload with 400', async () => {
+    execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED);
+
+    const res = await request(app)
+      .patch('/api/minis/42')
+      .set('Cookie', authCookie(OWNER))
+      .field('name', 'Dire Wolf')
+      .attach('images', Buffer.from('%PDF-1.4'), { filename: 'doc.pdf', contentType: 'application/pdf' });
+
+    expect(res.status).toBe(400);
+    expect(execute).not.toHaveBeenCalledWith(expect.stringContaining('UPDATE minis'), expect.anything());
+  });
+
   it('returns 401 with no auth cookie', async () => {
     const res = await request(app).patch('/api/minis/42').field('name', 'Wolf');
     expect(res.status).toBe(401);
@@ -380,9 +846,18 @@ describe('DELETE /api/minis/:id', () => {
     expect(execute).toHaveBeenCalledWith(expect.stringContaining('DELETE FROM minis'), ['42']);
   });
 
+  it('does not let a demoted admin (old "admin" cookie) delete someone else\'s mini', async () => {
+    execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED).mockResolvedValueOnce([[{ owner_id: 1 }]]);
+
+    const res = await request(app).delete('/api/minis/42').set('Cookie', authCookie(ADMIN));
+
+    expect(res.status).toBe(403);
+    expect(execute).not.toHaveBeenCalledWith(expect.stringContaining('DELETE FROM minis'), expect.anything());
+  });
+
   it('lets an admin delete someone else\'s mini in the SAME collection', async () => {
     execute
-      .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
+      .mockResolvedValueOnce(ADMIN_MEMBERSHIP)
       .mockResolvedValueOnce([[{ owner_id: 1 }]])
       .mockResolvedValueOnce([[]])
       .mockResolvedValueOnce([{}]);
@@ -424,8 +899,48 @@ describe('DELETE /api/minis/:id', () => {
     expect(res.status).toBe(404);
   });
 
+  it.each(['negotiating', 'adventuring'])('refuses with 409 while the mini has a %s loan, and deletes nothing', async (loanStatus) => {
+    execute
+      .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
+      .mockResolvedValueOnce([[{ owner_id: 1, active_loan_status: loanStatus }]]);
+
+    const res = await request(app).delete('/api/minis/42').set('Cookie', authCookie(OWNER));
+
+    expect(res.status).toBe(409);
+    expect(execute).not.toHaveBeenCalledWith(expect.stringContaining('DELETE FROM minis'), expect.anything());
+  });
+
+  it('checks ownership before revealing whether someone else\'s mini is on loan', async () => {
+    execute
+      .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
+      .mockResolvedValueOnce([[{ owner_id: 1, active_loan_status: 'adventuring' }]]);
+
+    const res = await request(app).delete('/api/minis/42').set('Cookie', authCookie(OTHER));
+
+    expect(res.status).toBe(403);
+  });
+
   it('returns 401 with no auth cookie', async () => {
     const res = await request(app).delete('/api/minis/42');
     expect(res.status).toBe(401);
+  });
+});
+
+describe('database failures', () => {
+  it.each([
+    ['GET /api/minis', () => request(app).get('/api/minis').set('Cookie', authCookie(OWNER))],
+    ['GET /api/minis/tags', () => request(app).get('/api/minis/tags').set('Cookie', authCookie(OWNER))],
+    ['GET /api/minis/:id', () => request(app).get('/api/minis/42').set('Cookie', authCookie(OWNER))],
+    ['POST /api/minis', () => request(app).post('/api/minis').set('Cookie', authCookie(OWNER)).field('name', 'Dire Wolf')],
+    ['PATCH /api/minis/:id', () => request(app).patch('/api/minis/42').set('Cookie', authCookie(OWNER)).field('name', 'Dire Wolf')],
+    ['DELETE /api/minis/:id', () => request(app).delete('/api/minis/42').set('Cookie', authCookie(OWNER))],
+  ])('%s returns a generic 500', async (_route, send) => {
+    execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED).mockRejectedValue(new Error('connection lost'));
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const res = await send();
+
+    expect(res.status).toBe(500);
+    expect(res.body).toEqual({ error: 'Server error' });
   });
 });

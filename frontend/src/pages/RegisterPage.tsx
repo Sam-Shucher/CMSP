@@ -127,12 +127,12 @@ export default function RegisterPage(): React.ReactElement {
 
           <div>
             <label style={labelStyle} htmlFor="password">Password</label>
-            <input id="password" type="password" value={form.password} onChange={set('password')} placeholder="At least 8 characters" required maxLength={32} />
+            <input id="password" type="password" value={form.password} onChange={set('password')} placeholder="At least 8 characters, any kind" required maxLength={72} />
           </div>
 
           <div>
             <label style={labelStyle} htmlFor="confirm">Confirm Password</label>
-            <input id="confirm" type="password" value={form.confirm} onChange={set('confirm')} placeholder="••••••••" required maxLength={32} />
+            <input id="confirm" type="password" value={form.confirm} onChange={set('confirm')} placeholder="••••••••" required maxLength={72} />
           </div>
 
           <button className="btn-primary" type="submit" disabled={loading} style={{ marginTop: '6px', padding: '12px' }}>

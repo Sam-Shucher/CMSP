@@ -17,6 +17,12 @@ describe('levenshteinDistance', () => {
   it('is large for unrelated words', () => {
     expect(levenshteinDistance('tabaxi', 'goblin')).toBeGreaterThan(3);
   });
+
+  it('is the other string\'s length when one side is empty', () => {
+    expect(levenshteinDistance('', 'wolf')).toBe(4);
+    expect(levenshteinDistance('wolf', '')).toBe(4);
+    expect(levenshteinDistance('', '')).toBe(0);
+  });
 });
 
 describe('fuzzyIncludes', () => {
@@ -57,5 +63,14 @@ describe('matchesSearch', () => {
 
   it('ignores null/undefined fields', () => {
     expect(matchesSearch([null, undefined, 'Dire Wolf'], 'wolf')).toBe(true);
+  });
+
+  it('treats a blank query as matching everything, even with no fields', () => {
+    expect(matchesSearch([], '   ')).toBe(true);
+    expect(matchesSearch([null], '')).toBe(true);
+  });
+
+  it('does not match a typo that is too far off for a short word', () => {
+    expect(fuzzyIncludes('Orc', 'elf')).toBe(false);
   });
 });

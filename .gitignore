@@ -5,6 +5,8 @@ dist/
 backend/dist/
 frontend/dist/
 backend/uploads/
+coverage/
+*.tsbuildinfo
 backend/.env
 .env
 *.log

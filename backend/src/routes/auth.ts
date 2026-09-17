@@ -4,40 +4,76 @@ import jwt from 'jsonwebtoken';
 import { RowDataPacket, ResultSetHeader } from 'mysql2';
 import { pool } from '../db/connection';
 import { requireAuth, AuthRequest, JwtPayload } from '../middleware/requireAuth';
+import { validateUsername, validatePassword } from '../utils/validation';
+import { jwtSecret, SESSION_LIFETIME_DAYS } from '../config';
+import { rateLimit } from '../middleware/rateLimit';
+import { emailAddress, optionalText, positiveId, LIMITS } from '../utils/inputs';
+import { createSession, revokeSession, revokeAllSessions } from '../db/sessions';
 
 const router = Router();
-const JWT_SECRET  = process.env.JWT_SECRET ?? 'change-me-in-production';
-const COOKIE_MAX_AGE = 7 * 24 * 60 * 60 * 1000; // 7 days in milliseconds
 
-// Typed shape of the row we SELECT when logging in
+const FIFTEEN_MINUTES = 15 * 60 * 1000;
+const ONE_HOUR = 60 * 60 * 1000;
+
+// Slow down password guessing: per account (so one password can't be guessed
+// slowly from many addresses) and per address (so one attacker can't spray a
+// common password across every account).
+const loginLimitByAccount = rateLimit({
+  windowMs: FIFTEEN_MINUTES,
+  max: 10,
+  key: req => {
+    const email = (req.body as { email?: unknown })?.email;
+    return typeof email === 'string' && email.trim() ? `login:${email.trim().toLowerCase()}` : undefined;
+  },
+});
+const loginLimitByAddress = rateLimit({ windowMs: FIFTEEN_MINUTES, max: 30, key: req => `login-ip:${req.ip}` });
+const registerLimitByAddress = rateLimit({ windowMs: ONE_HOUR, max: 10, key: req => `register-ip:${req.ip}` });
+
+// A real bcrypt hash (cost 12, same as account passwords) of a throwaway value.
+// Logging in with an unknown email still runs a full comparison against this,
+// so the reply takes as long as for a real account and can't reveal which
+// emails have accounts.
+const TIMING_EQUALIZER_HASH = '$2a$12$XJBk3T0MREeco56ZpDVDuOCuiX9O1I9W0cTEAPLrUOziiddPMhTTu';
+
 interface UserRow extends RowDataPacket {
   id: number;
   username: string;
   password_hash: string;
-  role: string;
   display_name: string;
 }
 
-interface CollectionIdRow extends RowDataPacket {
+interface MembershipRow extends RowDataPacket {
   collection_id: number;
+  role: string | null;
 }
 
 interface CollectionRow extends RowDataPacket {
   id: number;
   name: string;
+  role: string;
 }
 
-// Signs a JWT with the given payload and writes it as an httpOnly cookie.
-// httpOnly = the browser's JavaScript can never read this cookie, which blocks
-// XSS attacks from stealing the token. The cookie is sent automatically on
-// every request to this domain, so the frontend doesn't need to manage it.
+function roleName(role: unknown): 'admin' | 'user' {
+  return role === 'admin' ? 'admin' : 'user';
+}
+
+// Signs the login cookie: who you are, your server-side session id, and your
+// selected collection. httpOnly = page JavaScript can never read it, so an
+// injected script can't steal it.
 function setAuthCookie(res: Response, payload: JwtPayload): void {
-  const token = jwt.sign(payload, JWT_SECRET, { expiresIn: '7d' });
+  const { sid, userId, username, collectionId } = payload;
+  const token = jwt.sign(
+    { sid, userId, username, ...(collectionId ? { collectionId } : {}) },
+    jwtSecret(),
+    { algorithm: 'HS256', expiresIn: `${SESSION_LIFETIME_DAYS}d` }
+  );
   res.cookie('token', token, {
     httpOnly: true,
     secure: process.env.NODE_ENV === 'production', // HTTPS only in prod
-    sameSite: 'lax',
-    maxAge: COOKIE_MAX_AGE,
+    // Strict: the cookie is never attached to a request started by another
+    // website. Safe for this app — every authenticated call is a same-site fetch.
+    sameSite: 'strict',
+    maxAge: SESSION_LIFETIME_DAYS * 24 * 60 * 60 * 1000,
   });
 }
 
@@ -45,20 +81,50 @@ function setAuthCookie(res: Response, payload: JwtPayload): void {
 // Creates a new user account. The email MUST already be on at least one
 // collection's invite list. Registering joins every collection whose invite
 // list contains the email — so someone pre-invited to two collections at
-// once only has to sign up once.
-router.post('/register', async (req: Request, res: Response): Promise<void> => {
-  const { email, username, password, displayName, phone, neighborhood } = req.body as Record<string, string>;
+// once only has to sign up once. New members start as regular users.
+router.post('/register', registerLimitByAddress, async (req: Request, res: Response): Promise<void> => {
+  const body = (req.body ?? {}) as Record<string, unknown>;
 
-  if (!email || !username || !password) {
+  if (!body.email || !body.username || !body.password) {
     res.status(400).json({ error: 'Email, username, and password are required' });
     return;
   }
+  if (typeof body.username !== 'string' || typeof body.password !== 'string') {
+    res.status(400).json({ error: 'Username and password must be text' });
+    return;
+  }
+
+  // Same rules the register page checks — enforced here too, since the API
+  // can be called directly without going through the page.
+  for (const result of [validateUsername(body.username), validatePassword(body.password)]) {
+    if (!result.valid) {
+      res.status(400).json({ error: result.error });
+      return;
+    }
+  }
+
+  const emailCheck = emailAddress(body.email);
+  const displayNameCheck = optionalText(body.displayName, 'Display name', LIMITS.displayName);
+  const phoneCheck = optionalText(body.phone, 'Phone', LIMITS.phone);
+  const neighborhoodCheck = optionalText(body.neighborhood, 'Neighborhood', LIMITS.neighborhood);
+  for (const check of [emailCheck, displayNameCheck, phoneCheck, neighborhoodCheck]) {
+    if (!check.ok) {
+      res.status(400).json({ error: check.error });
+      return;
+    }
+  }
+
+  const username = body.username;
+  const password = body.password;
+  const email = (emailCheck as { value: string }).value;
+  const displayName = (displayNameCheck as { value: string | null }).value ?? username;
+  const phone = (phoneCheck as { value: string | null }).value;
+  const neighborhood = (neighborhoodCheck as { value: string | null }).value;
 
   try {
-    // Check the invite lists — RowDataPacket is mysql2's type for SELECT rows
-    const [approved] = await pool.execute<CollectionIdRow[]>(
+    const [approved] = await pool.execute<MembershipRow[]>(
       'SELECT collection_id FROM approved_emails WHERE email = ?',
-      [email.toLowerCase()]
+      [email]
     );
     if (approved.length === 0) {
       res.status(403).json({ error: 'This email is not on the invite list. Ask an admin to add you.' });
@@ -68,7 +134,7 @@ router.post('/register', async (req: Request, res: Response): Promise<void> => {
     // Make sure nobody has already claimed this email or username
     const [existing] = await pool.execute<RowDataPacket[]>(
       'SELECT id FROM users WHERE email = ? OR username = ?',
-      [email.toLowerCase(), username]
+      [email, username]
     );
     if (existing.length > 0) {
       res.status(409).json({ error: 'Email or username already taken' });
@@ -79,10 +145,9 @@ router.post('/register', async (req: Request, res: Response): Promise<void> => {
     // but fast enough that users don't notice the delay at login
     const passwordHash = await bcrypt.hash(password, 12);
 
-    // ResultSetHeader is mysql2's type for INSERT/UPDATE/DELETE results — gives us insertId
     const [result] = await pool.execute<ResultSetHeader>(
       'INSERT INTO users (email, username, password_hash, display_name, phone, neighborhood) VALUES (?, ?, ?, ?, ?, ?)',
-      [email.toLowerCase(), username, passwordHash, displayName || username, phone?.trim() || null, neighborhood?.trim() || null]
+      [email, username, passwordHash, displayName, phone, neighborhood]
     );
     const userId: number = result.insertId;
 
@@ -98,14 +163,9 @@ router.post('/register', async (req: Request, res: Response): Promise<void> => {
     // frontend sends them to the picker before they can do anything else.
     const collectionId = approved.length === 1 ? approved[0].collection_id : undefined;
 
-    setAuthCookie(res, { userId, username, role: 'user', ...(collectionId ? { collectionId } : {}) });
-    res.status(201).json({
-      message: 'Account created',
-      username,
-      role: 'user',
-      displayName: displayName || username,
-      collectionId,
-    });
+    const sid = await createSession(userId);
+    setAuthCookie(res, { sid, userId, username, collectionId });
+    res.status(201).json({ message: 'Account created', username, role: 'user', displayName, collectionId });
   } catch (err: unknown) {
     console.error(err);
     res.status(500).json({ error: 'Server error' });
@@ -113,42 +173,56 @@ router.post('/register', async (req: Request, res: Response): Promise<void> => {
 });
 
 // POST /api/auth/login
-// Verifies email + password and issues an auth cookie on success.
-router.post('/login', async (req: Request, res: Response): Promise<void> => {
-  const { email, password } = req.body as Record<string, string>;
+// Verifies email + password, starts a server-side session, and issues the cookie.
+router.post('/login', loginLimitByAddress, loginLimitByAccount, async (req: Request, res: Response): Promise<void> => {
+  const { email, password } = (req.body ?? {}) as Record<string, unknown>;
 
   if (!email || !password) {
     res.status(400).json({ error: 'Email and password are required' });
     return;
   }
+  // Wrong types (objects, arrays) or absurd lengths are never a real login.
+  if (typeof email !== 'string' || typeof password !== 'string'
+      || email.length > LIMITS.email || password.length > LIMITS.password) {
+    res.status(400).json({ error: 'Invalid email or password format' });
+    return;
+  }
 
   try {
     const [rows] = await pool.execute<UserRow[]>(
-      'SELECT id, username, password_hash, role, display_name FROM users WHERE email = ?',
-      [email.toLowerCase()]
+      'SELECT id, username, password_hash, display_name FROM users WHERE email = ?',
+      [email.trim().toLowerCase()]
     );
 
-    // Compare the submitted password against the stored hash.
-    // We check length first to short-circuit — bcrypt.compare still runs in constant
-    // time on valid hashes, but there's no hash to compare if the user doesn't exist.
-    if (rows.length === 0 || !(await bcrypt.compare(password, rows[0].password_hash))) {
-      // Return the same error for both "user not found" and "wrong password"
-      // so attackers can't use the error message to enumerate valid emails
+    // Always run exactly one full bcrypt comparison — against the dummy hash
+    // when the email has no account — so both cases take the same time.
+    const passwordMatches = await bcrypt.compare(password, rows[0]?.password_hash ?? TIMING_EQUALIZER_HASH);
+    if (rows.length === 0 || !passwordMatches) {
+      // Same error for "no such user" and "wrong password", so the message
+      // can't be used to find out which emails have accounts.
       res.status(401).json({ error: 'Invalid email or password' });
       return;
     }
 
-    const { id, username, role, display_name } = rows[0];
+    const { id, username, display_name } = rows[0];
 
-    // Auto-select the collection only when it's unambiguous — same rule as registration.
-    const [memberships] = await pool.execute<CollectionIdRow[]>(
-      'SELECT collection_id FROM collection_memberships WHERE user_id = ?',
+    // Enter the collection automatically only when there's exactly one;
+    // otherwise the app asks which one first.
+    const [memberships] = await pool.execute<MembershipRow[]>(
+      'SELECT collection_id, role FROM collection_memberships WHERE user_id = ?',
       [id]
     );
-    const collectionId = memberships.length === 1 ? memberships[0].collection_id : undefined;
+    const only = memberships.length === 1 ? memberships[0] : undefined;
 
-    setAuthCookie(res, { userId: id, username, role, ...(collectionId ? { collectionId } : {}) });
-    res.json({ message: 'Logged in', username, role, displayName: display_name, collectionId });
+    const sid = await createSession(id);
+    setAuthCookie(res, { sid, userId: id, username, collectionId: only?.collection_id });
+    res.json({
+      message: 'Logged in',
+      username,
+      role: roleName(only?.role),
+      displayName: display_name,
+      collectionId: only?.collection_id,
+    });
   } catch (err: unknown) {
     console.error(err);
     res.status(500).json({ error: 'Server error' });
@@ -156,33 +230,81 @@ router.post('/login', async (req: Request, res: Response): Promise<void> => {
 });
 
 // POST /api/auth/logout
-// Clears the auth cookie. The token isn't revoked on the server
-// (we're stateless), but with a 7-day expiry and httpOnly the risk is low.
-router.post('/logout', (_req: Request, res: Response): void => {
+// Ends this session on the server — so even a copy of the cookie stops
+// working — and clears the cookie. Always succeeds, even with a bad cookie.
+router.post('/logout', async (req: Request, res: Response): Promise<void> => {
+  const token: string | undefined = req.cookies?.token;
+  if (token) {
+    try {
+      const payload = jwt.verify(token, jwtSecret(), { algorithms: ['HS256'], ignoreExpiration: true }) as Partial<JwtPayload>;
+      if (typeof payload.sid === 'string') await revokeSession(payload.sid);
+    } catch {
+      // Not a cookie we issued, or the database is unreachable — nothing to revoke.
+    }
+  }
   res.clearCookie('token');
   res.json({ message: 'Logged out' });
 });
 
+// POST /api/auth/logout-all
+// "Log out everywhere": ends every session this user has, on every device.
+router.post('/logout-all', requireAuth, async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    await revokeAllSessions(req.user!.userId);
+    res.clearCookie('token');
+    res.json({ message: 'Logged out everywhere' });
+  } catch (err: unknown) {
+    console.error(err);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 // GET /api/auth/me
-// Returns the current user's info from the JWT. Used by the frontend on page
-// load to restore the logged-in state without a full DB round-trip.
-router.get('/me', requireAuth, (req: AuthRequest, res: Response): void => {
-  res.json(req.user);
+// Restores the logged-in state on page load: who you are, which collection
+// you're in, and your role IN that collection (read fresh from the database).
+// If you've been removed from that collection, it's dropped so the app sends
+// you back to the group picker; a deleted account is logged out.
+router.get('/me', requireAuth, async (req: AuthRequest, res: Response): Promise<void> => {
+  const { userId, collectionId } = req.user!;
+  try {
+    const [rows] = await pool.execute<RowDataPacket[]>(
+      `SELECT u.username, cm.role AS collection_role
+       FROM users u
+       LEFT JOIN collection_memberships cm ON cm.user_id = u.id AND cm.collection_id = ?
+       WHERE u.id = ?`,
+      [collectionId ?? null, userId]
+    );
+    if (rows.length === 0) {
+      res.clearCookie('token');
+      res.status(401).json({ error: 'Invalid or expired session' });
+      return;
+    }
+    const stillMember = collectionId !== undefined && rows[0].collection_role != null;
+    res.json({
+      userId,
+      username: rows[0].username,
+      role: stillMember ? roleName(rows[0].collection_role) : 'user',
+      ...(stillMember ? { collectionId } : {}),
+    });
+  } catch (err: unknown) {
+    console.error(err);
+    res.status(500).json({ error: 'Server error' });
+  }
 });
 
 // GET /api/auth/collections
-// Returns the collections the current user belongs to — used to render the
-// "select a collection" picker after login/registration.
+// The collections the current user belongs to, with their role in each —
+// used to render the group picker.
 router.get('/collections', requireAuth, async (req: AuthRequest, res: Response): Promise<void> => {
   try {
     const [rows] = await pool.execute<CollectionRow[]>(
-      `SELECT c.id, c.name FROM collections c
+      `SELECT c.id, c.name, cm.role FROM collections c
        JOIN collection_memberships cm ON cm.collection_id = c.id
        WHERE cm.user_id = ?
        ORDER BY c.name`,
       [req.user!.userId]
     );
-    res.json(rows);
+    res.json(rows.map(r => ({ id: r.id, name: r.name, role: roleName(r.role) })));
   } catch (err: unknown) {
     console.error(err);
     res.status(500).json({ error: 'Server error' });
@@ -192,18 +314,19 @@ router.get('/collections', requireAuth, async (req: AuthRequest, res: Response):
 // POST /api/auth/select-collection
 // Switches the active collection. Re-verifies membership against the
 // database (never trusts the request body alone) before re-issuing the
-// auth cookie with the new collectionId baked in.
+// cookie for the same session with the new collection, and reports the
+// user's role there so the app can show the right view.
 router.post('/select-collection', requireAuth, async (req: AuthRequest, res: Response): Promise<void> => {
-  const { collectionId } = req.body as { collectionId?: number };
-
-  if (!collectionId) {
+  const idCheck = positiveId((req.body as { collectionId?: unknown } | undefined)?.collectionId);
+  if (!idCheck.ok) {
     res.status(400).json({ error: 'collectionId is required' });
     return;
   }
+  const collectionId = idCheck.value;
 
   try {
     const [rows] = await pool.execute<CollectionRow[]>(
-      `SELECT c.id, c.name FROM collections c
+      `SELECT c.id, c.name, cm.role FROM collections c
        JOIN collection_memberships cm ON cm.collection_id = c.id
        WHERE cm.user_id = ? AND c.id = ?`,
       [req.user!.userId, collectionId]
@@ -214,16 +337,9 @@ router.post('/select-collection', requireAuth, async (req: AuthRequest, res: Res
       return;
     }
 
-    // Built explicitly (not spread from req.user) — the decoded JWT also carries
-    // exp/iat claims that would collide with the expiresIn option when re-signing.
-    const updatedPayload: JwtPayload = {
-      userId: req.user!.userId,
-      username: req.user!.username,
-      role: req.user!.role,
-      collectionId: rows[0].id,
-    };
-    setAuthCookie(res, updatedPayload);
-    res.json({ ...updatedPayload, collectionName: rows[0].name });
+    const { sid, userId, username } = req.user!;
+    setAuthCookie(res, { sid, userId, username, collectionId: rows[0].id });
+    res.json({ userId, username, collectionId: rows[0].id, collectionName: rows[0].name, role: roleName(rows[0].role) });
   } catch (err: unknown) {
     console.error(err);
     res.status(500).json({ error: 'Server error' });

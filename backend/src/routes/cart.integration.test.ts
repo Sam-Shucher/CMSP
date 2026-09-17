@@ -131,6 +131,27 @@ describe('viewing and removing', () => {
     const cart = await request(app).get('/api/cart').set('Cookie', borrower.cookie);
     expect(cart.body).toHaveLength(0);
   });
+
+  it('removing a mini from your cart never touches anyone else\'s cart', async () => {
+    const miniId = await createMini(owner, 'Dire Wolf');
+    await addToCart(borrower, miniId);
+    await addToCart(otherBorrower, miniId);
+
+    await request(app).delete(`/api/cart/${miniId}`).set('Cookie', borrower.cookie);
+
+    const otherCart = await request(app).get('/api/cart').set('Cookie', otherBorrower.cookie);
+    expect(otherCart.body.map((i: { miniId: number }) => i.miniId)).toEqual([miniId]);
+  });
+
+  it('shows an item that became unavailable after it was added, flagged with its new status', async () => {
+    const miniId = await createMini(owner, 'Dire Wolf');
+    await addToCart(borrower, miniId);
+    await addToCart(otherBorrower, miniId);
+    await checkout(otherBorrower);
+
+    const cart = await request(app).get('/api/cart').set('Cookie', borrower.cookie);
+    expect(cart.body).toEqual([expect.objectContaining({ miniId, status: 'requested', ownerId: owner.userId })]);
+  });
 });
 
 describe('checkout', () => {

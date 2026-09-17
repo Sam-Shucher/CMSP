@@ -63,16 +63,79 @@ describe('RegisterPage validation', () => {
     renderRegisterPage();
     await fillForm({ password: 'short1', confirm: 'short1' });
 
-    expect(await screen.findByText(/password must be between/i)).toBeInTheDocument();
+    expect(await screen.findByText(/password must be at least 8/i)).toBeInTheDocument();
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it('rejects a password containing special characters', async () => {
+  it('accepts a password with spaces and symbols', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce({ ok: true, json: async () => ({}) } as Response);
     renderRegisterPage();
-    await fillForm({ password: 'valid pass1', confirm: 'valid pass1' });
+    await fillForm({ password: 'correct horse! battery#9', confirm: 'correct horse! battery#9' });
 
-    expect(await screen.findByText(/letters and numbers/i)).toBeInTheDocument();
+    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
+    expect(JSON.parse(String(vi.mocked(fetch).mock.calls[0][1]?.body)).password).toBe('correct horse! battery#9');
+  });
+
+  it('lets password managers fill in long passwords (up to 72 characters)', () => {
+    renderRegisterPage();
+
+    expect(screen.getByLabelText(/^password$/i)).toHaveAttribute('maxLength', '72');
+    expect(screen.getByLabelText(/confirm password/i)).toHaveAttribute('maxLength', '72');
+  });
+
+  it('rejects passwords that do not match, without calling the API', async () => {
+    renderRegisterPage();
+    await fillForm({ confirm: 'different1' });
+
+    expect(await screen.findByText(/passwords do not match/i)).toBeInTheDocument();
     expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('shows the server\'s error (e.g. not on the invite list) and does not log in', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce({
+      ok: false,
+      json: async () => ({ error: 'This email is not on the invite list. Ask an admin to add you.' }),
+    } as Response);
+
+    const { refreshSession } = renderRegisterPage();
+    await fillForm();
+
+    expect(await screen.findByText(/not on the invite list/i)).toBeInTheDocument();
+    expect(refreshSession).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: /create account/i })).toBeEnabled();
+  });
+
+  it('sends the optional fields when filled in, never the password confirmation', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce({ ok: true, json: async () => ({}) } as Response);
+    renderRegisterPage();
+
+    await userEvent.type(screen.getByLabelText(/display name/i), 'Merric');
+    await userEvent.type(screen.getByLabelText(/phone/i), '555-1234');
+    await userEvent.type(screen.getByLabelText(/neighborhood/i), 'Riverside');
+    await fillForm();
+
+    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
+    expect(JSON.parse(String(vi.mocked(fetch).mock.calls[0][1]?.body))).toEqual({
+      email: 'test@example.com',
+      username: 'valid_user',
+      displayName: 'Merric',
+      phone: '555-1234',
+      neighborhood: 'Riverside',
+      password: 'validpass1',
+    });
+  });
+
+  it('defaults the display name to the username and omits blank optional fields', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce({ ok: true, json: async () => ({}) } as Response);
+    renderRegisterPage();
+    await fillForm();
+
+    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
+    const body = JSON.parse(String(vi.mocked(fetch).mock.calls[0][1]?.body));
+    expect(body.displayName).toBe('valid_user');
+    expect(body).not.toHaveProperty('phone');
+    expect(body).not.toHaveProperty('neighborhood');
+    expect(body).not.toHaveProperty('confirm');
   });
 
   it('submits to the API when all fields are valid, then refreshes the session from the server', async () => {

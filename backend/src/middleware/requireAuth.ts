@@ -1,19 +1,23 @@
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
+import { jwtSecret } from '../config';
+import { touchSession } from '../db/sessions';
 
-const JWT_SECRET = process.env.JWT_SECRET ?? 'change-me-in-production';
-
-// The data we embed inside the JWT when a user logs in.
-// This is what gets decoded and attached to req.user on each request.
+// What's inside the signed login cookie. Deliberately minimal: who you are,
+// which server-side session this is, and which collection you've selected.
+// No role — roles live on collection memberships and are always read fresh
+// from the database (see requireCollectionMembership).
 export interface JwtPayload {
+  sid: string;
   userId: number;
   username: string;
-  role: string;
   // The collection the user most recently selected (see /api/auth/select-collection).
-  // Absent until they pick one. Never trust this alone for access control —
-  // requireCollectionMembership re-verifies it against the database on every
-  // request, since membership can be revoked after this token was issued.
+  // Absent until they pick one. Never trusted alone for access control —
+  // requireCollectionMembership re-verifies it on every request.
   collectionId?: number;
+  // Set by requireCollectionMembership from the database: the user's role in
+  // the active collection. Never read from the cookie.
+  role?: string;
 }
 
 // Express's Request type doesn't have a `user` field by default.
@@ -22,10 +26,11 @@ export interface AuthRequest extends Request {
   user?: JwtPayload;
 }
 
-// Middleware that protects routes. Attach it to any route that requires login.
-// Reads the JWT from the httpOnly cookie (set at login), verifies its signature,
-// and attaches the decoded payload to req.user so route handlers can use it.
-export function requireAuth(req: AuthRequest, res: Response, next: NextFunction): void {
+// Protects routes that need a logged-in user. Two checks, both required:
+//   1. the cookie's signature is ours and it hasn't expired, and
+//   2. its server-side session is still live — not logged out, not idle too
+//      long, not past its lifetime (db/sessions.ts).
+export async function requireAuth(req: AuthRequest, res: Response, next: NextFunction): Promise<void> {
   const token: string | undefined = req.cookies?.token;
 
   if (!token) {
@@ -33,11 +38,35 @@ export function requireAuth(req: AuthRequest, res: Response, next: NextFunction)
     return;
   }
 
+  let payload: JwtPayload;
   try {
-    // jwt.verify throws if the token is expired or the signature doesn't match our secret
-    req.user = jwt.verify(token, JWT_SECRET) as JwtPayload;
-    next(); // token is valid — let the request continue to the route handler
+    // Pinning the algorithm stops a token from choosing how it gets checked.
+    payload = jwt.verify(token, jwtSecret(), { algorithms: ['HS256'] }) as JwtPayload;
   } catch {
     res.status(401).json({ error: 'Invalid or expired session' });
+    return;
   }
+
+  // Cookies issued before server-side sessions existed have no session id —
+  // they can't be logged out, so they're no longer accepted.
+  if (typeof payload.sid !== 'string' || typeof payload.userId !== 'number') {
+    res.status(401).json({ error: 'Invalid or expired session' });
+    return;
+  }
+
+  try {
+    if (!(await touchSession(payload.sid, payload.userId))) {
+      res.clearCookie('token');
+      res.status(401).json({ error: 'Your session has ended. Please sign in again.' });
+      return;
+    }
+  } catch (err: unknown) {
+    console.error(err);
+    res.status(500).json({ error: 'Server error' });
+    return;
+  }
+
+  const { sid, userId, username, collectionId } = payload;
+  req.user = { sid, userId, username, ...(collectionId ? { collectionId } : {}) };
+  next();
 }

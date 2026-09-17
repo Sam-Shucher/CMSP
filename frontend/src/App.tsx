@@ -1,6 +1,6 @@
-import React, { createContext, useContext, useEffect, useState } from 'react';
+import React, { createContext, useContext, useEffect, useRef, useState } from 'react';
 import { BrowserRouter, Routes, Route, Navigate, Link, useNavigate } from 'react-router-dom';
-import { api, User, Collection } from './api/client';
+import { api, User, Collection, SESSION_ENDED_EVENT } from './api/client';
 import LoginPage from './pages/LoginPage';
 import RegisterPage from './pages/RegisterPage';
 import DashboardPage from './pages/DashboardPage';
@@ -25,6 +25,7 @@ type AuthContextType = {
   collections: Collection[]; // the groups the current user belongs to
   selectCollection: (id: number) => Promise<void>;
   refreshSession: () => Promise<void>; // re-fetches user + collections from the server
+  sessionNotice?: string; // why the user was just signed out, shown on the sign-in page
 };
 
 // Default context value — loading=true so pages don't flash the wrong state
@@ -66,8 +67,9 @@ function NavBar(): React.ReactElement | null {
   // POST /api/auth/select-collection, which re-verifies membership.
   function switchCollection(): void {
     // Safe to assert — this is only reachable from a button rendered below
-    // the `if (!user) return null;` guard above.
-    setUser({ ...user!, collectionId: undefined });
+    // the `if (!user) return null;` guard above. The role goes too: it
+    // belonged to the group being left.
+    setUser({ ...user!, collectionId: undefined, role: 'user' });
     navigate('/');
   }
 
@@ -195,6 +197,7 @@ export default function App(): React.ReactElement {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [collections, setCollections] = useState<Collection[]>([]);
+  const [sessionNotice, setSessionNotice] = useState<string | undefined>(undefined);
 
   // Loads the current session fresh from the server: who's logged in (from
   // the cookie) and which collections they belong to, auto-entering the one
@@ -207,6 +210,7 @@ export default function App(): React.ReactElement {
     try {
       const loadedUser = await api<User>('/api/auth/me');
       setUser(loadedUser);
+      setSessionNotice(undefined);
       try {
         const myCollections = await api<Collection[]>('/api/auth/collections');
         setCollections(myCollections);
@@ -215,11 +219,7 @@ export default function App(): React.ReactElement {
         // selected yet (covers a page refresh right after registering
         // into a single group, before the JWT picked one up).
         if (!loadedUser.collectionId && myCollections.length === 1) {
-          const updated = await api<{ collectionId: number }>('/api/auth/select-collection', {
-            method: 'POST',
-            json: { collectionId: myCollections[0].id },
-          });
-          setUser((prev: User | null) => prev ? { ...prev, collectionId: updated.collectionId } : prev);
+          await selectCollection(myCollections[0].id);
         }
       } catch {
         setCollections([]); // non-fatal — nav just won't show a group name
@@ -236,16 +236,33 @@ export default function App(): React.ReactElement {
     void refreshSession().finally(() => setLoading(false));
   }, []);
 
+  // Your role is per group, so entering a group also sets the role you hold
+  // there — that's what decides whether the admin view is shown.
   async function selectCollection(id: number): Promise<void> {
-    const updated = await api<{ collectionId: number }>('/api/auth/select-collection', {
+    const updated = await api<{ collectionId: number; role: string }>('/api/auth/select-collection', {
       method: 'POST',
       json: { collectionId: id },
     });
-    setUser((prev: User | null) => prev ? { ...prev, collectionId: updated.collectionId } : prev);
+    setUser((prev: User | null) => prev ? { ...prev, collectionId: updated.collectionId, role: updated.role } : prev);
   }
 
+  // When the server says the session is over (logged out on another device,
+  // idle too long, or expired), drop back to sign-in and say why — but only
+  // for someone who was actually signed in.
+  const userRef = useRef<User | null>(user);
+  userRef.current = user;
+  useEffect(() => {
+    function onSessionEnded(event: Event): void {
+      if (!userRef.current) return;
+      setSessionNotice((event as CustomEvent<string>).detail || 'Your session has ended. Please sign in again.');
+      setUser(null);
+    }
+    window.addEventListener(SESSION_ENDED_EVENT, onSessionEnded);
+    return () => window.removeEventListener(SESSION_ENDED_EVENT, onSessionEnded);
+  }, []);
+
   return (
-    <AuthContext.Provider value={{ user, loading, setUser, collections, selectCollection, refreshSession }}>
+    <AuthContext.Provider value={{ user, loading, setUser, collections, selectCollection, refreshSession, sessionNotice }}>
       <BrowserRouter>
         <AppBody />
       </BrowserRouter>

@@ -27,13 +27,24 @@ interface AppliedRow extends RowDataPacket {
   filename: string;
 }
 
-export async function runMigrations(): Promise<void> {
+// Both options exist so tests can point the runner at a scratch database and
+// a scratch migrations folder; a real deploy passes neither.
+export interface RunMigrationsOptions {
+  database?: string;
+  migrationsDir?: string;
+  log?: (line: string) => void;
+}
+
+// Returns the filenames it applied this run (empty when already up to date).
+export async function runMigrations(options: RunMigrationsOptions = {}): Promise<string[]> {
+  const migrationsDir = options.migrationsDir ?? MIGRATIONS_DIR;
+  const log = options.log ?? console.log;
   const connection = await mysql.createConnection({
     host: process.env.DB_HOST ?? 'localhost',
     port: Number(process.env.DB_PORT) || 3306,
     user: process.env.DB_USER ?? 'root',
     password: process.env.DB_PASS ?? '',
-    database: process.env.DB_NAME ?? 'mini_library',
+    database: options.database ?? process.env.DB_NAME ?? 'mini_library',
     // Migration files can contain several statements (ALTERs, then a
     // backfill UPDATE, etc.) — a single query() call runs all of them.
     multipleStatements: true,
@@ -51,23 +62,28 @@ export async function runMigrations(): Promise<void> {
     const [appliedRows] = await connection.query<AppliedRow[]>('SELECT filename FROM schema_migrations');
     const applied = new Set(appliedRows.map(r => r.filename));
 
-    const files = fs.existsSync(MIGRATIONS_DIR)
-      ? fs.readdirSync(MIGRATIONS_DIR).filter(f => f.endsWith('.sql')).sort()
+    const files = fs.existsSync(migrationsDir)
+      ? fs.readdirSync(migrationsDir).filter(f => f.endsWith('.sql')).sort()
       : [];
 
+    const appliedNow: string[] = [];
     for (const file of files) {
       if (applied.has(file)) {
-        console.log(`  skip   ${file} (already applied)`);
+        log(`  skip   ${file} (already applied)`);
         continue;
       }
 
-      console.log(`  apply  ${file}`);
-      const sql = fs.readFileSync(path.join(MIGRATIONS_DIR, file), 'utf8');
+      log(`  apply  ${file}`);
+      const sql = fs.readFileSync(path.join(migrationsDir, file), 'utf8');
+      // Recorded only after the SQL succeeds — a failing migration stops the
+      // run (so later ones don't apply on top of it) and gets retried next deploy.
       await connection.query(sql);
       await connection.execute('INSERT INTO schema_migrations (filename) VALUES (?)', [file]);
+      appliedNow.push(file);
     }
 
-    console.log('Migrations up to date.');
+    log('Migrations up to date.');
+    return appliedNow;
   } finally {
     await connection.end();
   }

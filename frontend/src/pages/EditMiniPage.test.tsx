@@ -45,6 +45,46 @@ describe('EditMiniPage', () => {
     expect(screen.getByLabelText(/price/i)).toHaveValue(12.5);
   });
 
+  it('shows the error instead of a form when the mini cannot be loaded (e.g. another collection\'s)', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce({ ok: false, json: async () => ({ error: 'Mini not found' }) } as Response);
+
+    renderEditPage();
+
+    expect(await screen.findByText('Mini not found')).toBeInTheDocument();
+    expect(screen.queryByLabelText(/name/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /delete mini/i })).not.toBeInTheDocument();
+  });
+
+  it('sends the kept photos and only the optional fields that are filled in', async () => {
+    vi.mocked(fetch)
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ ...MINI, description: null, tags: [], price: 0 }) } as Response)
+      .mockResolvedValueOnce({ ok: true, json: async () => MINI } as Response);
+
+    renderEditPage();
+    await screen.findByLabelText(/name/i);
+    await userEvent.clear(screen.getByLabelText(/price/i));
+    await userEvent.click(screen.getByRole('button', { name: /save changes/i }));
+
+    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
+    const body = vi.mocked(fetch).mock.calls[1][1]?.body as FormData;
+    expect(body.get('name')).toBe('Dire Wolf');
+    expect(body.get('existingImages')).toBe(JSON.stringify(['/uploads/wolf.png']));
+    expect(body.has('description')).toBe(false);
+    expect(body.has('tags')).toBe(false);
+    expect(body.has('price')).toBe(false);
+  });
+
+  it('goes back to the dashboard without saving when Cancel is clicked', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce({ ok: true, json: async () => MINI } as Response);
+
+    renderEditPage();
+    await screen.findByLabelText(/name/i);
+    await userEvent.click(screen.getByRole('button', { name: /^cancel$/i }));
+
+    expect(await screen.findByText('Dashboard')).toBeInTheDocument();
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
   it('submits changes as a PATCH request and navigates back to the dashboard', async () => {
     vi.mocked(fetch)
       .mockResolvedValueOnce({ ok: true, json: async () => MINI } as Response) // initial GET
@@ -102,6 +142,26 @@ describe('EditMiniPage — deleting the mini', () => {
       expect(fetch).toHaveBeenCalledWith('/api/minis/42', expect.objectContaining({ method: 'DELETE' }))
     );
     expect(await screen.findByText('Dashboard')).toBeInTheDocument();
+  });
+
+  it('explains why when the server refuses the delete (e.g. the mini is out on loan), instead of silently doing nothing', async () => {
+    vi.mocked(fetch)
+      .mockResolvedValueOnce({ ok: true, json: async () => MINI } as Response)
+      .mockResolvedValueOnce({
+        ok: false,
+        json: async () => ({ error: 'This mini has an active request or loan — finish or cancel it first' }),
+      } as Response);
+
+    renderEditPage();
+    await screen.findByLabelText(/name/i);
+
+    await userEvent.click(screen.getByRole('button', { name: /^delete mini$/i }));
+    await userEvent.type(await screen.findByLabelText(/type/i), 'Dire Wolf');
+    await userEvent.click(screen.getByRole('button', { name: /^confirm delete$/i }));
+
+    expect(await screen.findByText(/has an active request or loan/i)).toBeInTheDocument();
+    expect(screen.queryByTestId('confirm-delete-modal')).not.toBeInTheDocument();
+    expect(screen.queryByText('Dashboard')).not.toBeInTheDocument();
   });
 
   it('does not delete anything if the confirm modal is cancelled', async () => {

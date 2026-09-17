@@ -145,6 +145,49 @@ describe('CartPage', () => {
     expect(screen.getByText(/owlbear wasn't available/i)).toBeInTheDocument();
   });
 
+  it('shows an error if the cart fails to load', async () => {
+    vi.mocked(fetch).mockResolvedValue(jsonResponse({ error: 'Select a collection first' }, false));
+    renderCart();
+
+    expect(await screen.findByText(/select a collection first/i)).toBeInTheDocument();
+  });
+
+  it('shows an error and keeps the item if removing fails', async () => {
+    mockCartApi([item({ name: 'Dire Wolf' })], (url: string, method: string) =>
+      method === 'DELETE' ? jsonResponse({ error: 'Server error' }, false) : undefined);
+    renderCart();
+    await screen.findByText('Dire Wolf');
+
+    await userEvent.click(screen.getByRole('button', { name: /remove dire wolf/i }));
+
+    expect(await screen.findByText('Server error')).toBeInTheDocument();
+    expect(screen.getByText('Dire Wolf')).toBeInTheDocument();
+  });
+
+  it('shows each item\'s photo when it has one', async () => {
+    mockCartApi([item({ image: '/uploads/wolf.png' })]);
+    const { container } = renderCart();
+    await screen.findByText('Dire Wolf');
+
+    expect(container.querySelector('img')).toHaveAttribute('src', '/uploads/wolf.png');
+  });
+
+  it('disables checkout while it is in progress', async () => {
+    let finish!: (r: Response) => void;
+    mockCartApi([item()]);
+    const base = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation((input: RequestInfo | URL, init?: RequestInit) =>
+      String(input) === '/api/cart/checkout' ? new Promise<Response>(resolve => { finish = resolve; }) : base(input, init));
+    renderCart();
+    await screen.findByText('Dire Wolf');
+
+    await userEvent.click(screen.getByRole('button', { name: /check ?out/i }));
+
+    expect(screen.getByRole('button', { name: /checking out/i })).toBeDisabled();
+    finish(jsonResponse({ created: [{ loanId: 1, miniId: 1 }], unavailable: [] }));
+    expect(await screen.findByText(/sent 1 request\b/i)).toBeInTheDocument();
+  });
+
   it('shows the server\'s error when nothing in the cart could be requested', async () => {
     mockCartApi([item({ status: 'adventuring' })], (url: string, method: string) => {
       if (url === '/api/cart/checkout' && method === 'POST') {

@@ -55,45 +55,49 @@ describe('validateUsername', () => {
 describe('validatePassword', () => {
   it('rejects passwords shorter than 8 characters', () => {
     expect(validatePassword('abc123').valid).toBe(false);
-  });
-
-  it('rejects passwords longer than 32 characters', () => {
-    expect(validatePassword('a'.repeat(33)).valid).toBe(false);
+    expect(validatePassword('').valid).toBe(false);
   });
 
   it('accepts a password at the minimum length (8)', () => {
     expect(validatePassword('abcd1234').valid).toBe(true);
   });
 
-  it('accepts a password at the maximum length (32)', () => {
-    expect(validatePassword('a'.repeat(32)).valid).toBe(true);
-  });
-
-  it('accepts a purely alphanumeric password', () => {
-    expect(validatePassword('Password123').valid).toBe(true);
-  });
-
-  it('rejects an empty string', () => {
-    expect(validatePassword('').valid).toBe(false);
-  });
-
+  // Any character is allowed — passwords are only ever hashed, never put in
+  // SQL or shown on a page, so there's nothing to "escape". Symbols and
+  // spaces make passwords stronger and let password managers do their job.
   it.each([
-    ['a space', 'abcd 1234'],
-    ['an exclamation point', 'abcd1234!'],
-    ['a hyphen (SQL comment marker)', 'abcd1234--'],
-    ['a single quote', "abcd1234'"],
-    ['a semicolon', 'abcd1234;'],
-  ])('rejects passwords containing %s ("%s")', (_label, value) => {
-    expect(validatePassword(value).valid).toBe(false);
+    ['spaces (a passphrase)', 'correct horse battery staple'],
+    ['symbols', 'P@ssw0rd!#$%^&*()'],
+    ['quotes and SQL-looking text', "' OR '1'='1 --"],
+    ['non-English letters', 'contraseña-segura'],
+    ['emoji', 'dragon🐉hoard🐉'],
+    ['a password-manager style string', 'x9$Lq!m2#Vz@8pT&w4^Rk'],
+  ])('accepts passwords with %s', (_label, value) => {
+    expect(validatePassword(value)).toEqual({ valid: true });
   });
 
-  it('rejects a classic SQL injection payload', () => {
-    expect(validatePassword("' OR '1'='1").valid).toBe(false);
+  it('accepts up to 72 bytes', () => {
+    expect(validatePassword('a'.repeat(72)).valid).toBe(true);
+  });
+
+  // bcrypt, which hashes the password, silently ignores everything after the
+  // first 72 bytes. Longer passwords are refused rather than quietly shortened.
+  it('rejects anything longer than 72 bytes', () => {
+    expect(validatePassword('a'.repeat(73))).toEqual({ valid: false, error: expect.stringMatching(/too long/i) });
+  });
+
+  it('measures the limit in bytes, so multi-byte characters count for more', () => {
+    expect(validatePassword('🐉'.repeat(18)).valid).toBe(true);   // 72 bytes
+    expect(validatePassword('🐉'.repeat(19)).valid).toBe(false);  // 76 bytes
+  });
+
+  it('counts the 8-character minimum in characters, not bytes', () => {
+    expect(validatePassword('🐉🐉🐉🐉').valid).toBe(false); // 16 bytes, but only 4 characters
   });
 
   it('returns a human-readable error message when invalid', () => {
     const result = validatePassword('short');
     expect(result.valid).toBe(false);
-    expect(result.error).toBeTruthy();
+    expect(result.error).toMatch(/at least 8/i);
   });
 });

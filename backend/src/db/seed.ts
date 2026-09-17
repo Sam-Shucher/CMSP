@@ -8,18 +8,21 @@ import 'dotenv/config';
 import bcrypt from 'bcryptjs';
 import { RowDataPacket, ResultSetHeader } from 'mysql2';
 import { pool } from './connection';
+import { assertSeedAllowed } from './seedGuard';
 
 // The passwords are intentionally simple and documented here — these accounts
 // only ever exist in your local/dev database, never in production data.
 const COLLECTIONS = ['Chicago', 'Coast2Coast', 'dojo'];
 
 const TEST_USERS = [
-  { email: 'alice@test.local', username: 'alice',   password: 'password123', displayName: 'Alice (test)',   phone: '555-000-0001', neighborhood: 'Riverside' },
+  { email: 'alice@test.local', username: 'alice',      password: 'password123', displayName: 'Alice (test)', phone: '555-000-0001', neighborhood: 'Riverside' },
   { email: 'bob@test.local',   username: 'bob',     password: 'password123', displayName: 'Bob (test)',     phone: '555-000-0002', neighborhood: 'Downtown' },
   { email: 'admin@test.local', username: 'admin_test', password: 'password123', displayName: 'Admin (test)', phone: '555-000-0003', neighborhood: 'Uptown' },
 ];
 
 async function seed(): Promise<void> {
+  assertSeedAllowed();
+
   for (const name of COLLECTIONS) {
     await pool.execute('INSERT IGNORE INTO collections (name) VALUES (?)', [name]);
   }
@@ -45,9 +48,12 @@ async function seed(): Promise<void> {
     console.log(`Created ${u.email} / ${u.username} — password: ${u.password} — joined Chicago`);
   }
 
-  // Give the first test account admin rights so you have something to test the panel with
-  await pool.execute("UPDATE users SET role = 'admin' WHERE email = ?", [TEST_USERS[2].email]);
-  console.log(`\nPromoted ${TEST_USERS[2].email} to admin`);
+  // Make the admin test account an admin of Chicago so there's something to test the panel with
+  await pool.execute(
+    "UPDATE collection_memberships SET role = 'admin' WHERE collection_id = ? AND user_id = (SELECT id FROM users WHERE email = ?)",
+    [chicagoId, TEST_USERS[2].email]
+  );
+  console.log(`\nMade ${TEST_USERS[2].email} an admin of Chicago`);
 
   console.log('\nDone. Log in with any of:');
   TEST_USERS.forEach(u => console.log(`  ${u.email} / ${u.password}`));
@@ -55,7 +61,8 @@ async function seed(): Promise<void> {
   await pool.end();
 }
 
-seed().catch((err: unknown) => {
-  console.error('Seed failed:', err);
+seed().catch(async (err: unknown) => {
+  console.error('Seed failed:', err instanceof Error ? err.message : err);
+  await pool.end();
   process.exit(1);
 });

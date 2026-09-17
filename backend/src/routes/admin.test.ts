@@ -19,7 +19,9 @@ const ADMIN = { userId: 1, username: 'boss', role: 'admin', collectionId: COLLEC
 const ADMIN_OTHER_COLLECTION = { userId: 1, username: 'boss', role: 'admin', collectionId: COLLECTION_B };
 const USER = { userId: 2, username: 'grunt', role: 'user', collectionId: COLLECTION_A };
 
-const MEMBERSHIP_CONFIRMED = [[{ id: 1 }]];
+// requireCollectionMembership's lookup — it also returns the member's CURRENT role.
+const MEMBERSHIP_CONFIRMED = [[{ role: 'admin' }]];
+const MEMBERSHIP_AS_USER = [[{ role: 'user' }]];
 
 beforeEach(() => {
   execute.mockReset();
@@ -27,11 +29,32 @@ beforeEach(() => {
 
 describe('Collection access control', () => {
   it('rejects a non-admin with 403 even if they are a member of the collection', async () => {
-    execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED);
+    execute.mockResolvedValueOnce(MEMBERSHIP_AS_USER);
 
     const res = await request(app).get('/api/admin/users').set('Cookie', authCookie(USER));
 
     expect(res.status).toBe(403);
+  });
+
+  it('rejects a demoted admin whose login cookie still says "admin"', async () => {
+    execute.mockResolvedValueOnce(MEMBERSHIP_AS_USER); // the database says they're a user now
+
+    const res = await request(app).get('/api/admin/users').set('Cookie', authCookie(ADMIN));
+
+    expect(res.status).toBe(403);
+    expect(execute).toHaveBeenCalledTimes(1); // no admin data was read
+  });
+
+  it('rejects a user who edited their cookie to say "admin" (only possible with the secret, but still checked)', async () => {
+    execute.mockResolvedValueOnce(MEMBERSHIP_AS_USER);
+
+    const res = await request(app)
+      .patch('/api/admin/users/2/role')
+      .set('Cookie', authCookie({ ...USER, role: 'admin' }))
+      .send({ role: 'admin' });
+
+    expect(res.status).toBe(403);
+    expect(execute).not.toHaveBeenCalledWith(expect.stringContaining('UPDATE users'), expect.anything());
   });
 
   it('rejects an admin who is not a member of their claimed collection with 403', async () => {
@@ -71,6 +94,72 @@ describe('POST /api/admin/approved-emails', () => {
       ['friend@example.com', COLLECTION_A, ADMIN.userId]
     );
   });
+
+  it('normalizes the email to trimmed lowercase, so it matches at registration', async () => {
+    execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED).mockResolvedValueOnce([{}]);
+
+    const res = await request(app)
+      .post('/api/admin/approved-emails')
+      .set('Cookie', authCookie(ADMIN))
+      .send({ email: '  Friend@Example.COM ' });
+
+    expect(res.body.email).toBe('friend@example.com');
+    expect(execute).toHaveBeenCalledWith(
+      expect.stringContaining('INSERT INTO approved_emails'),
+      ['friend@example.com', COLLECTION_A, ADMIN.userId]
+    );
+  });
+
+  it.each([
+    ['missing', {}],
+    ['blank', { email: '   ' }],
+  ])('rejects a %s email with 400', async (_why, body) => {
+    execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED);
+
+    const res = await request(app).post('/api/admin/approved-emails').set('Cookie', authCookie(ADMIN)).send(body);
+
+    expect(res.status).toBe(400);
+    expect(execute).toHaveBeenCalledTimes(1); // only the membership check
+  });
+
+  it.each([
+    ['not an email address', { email: 'not-an-email' }],
+    ['SQL pretending to be an email', { email: "x'; DROP TABLE approved_emails; --" }],
+    ['an object', { email: { $ne: null } }],
+    ['longer than the database allows', { email: `${'a'.repeat(250)}@example.com` }],
+  ])('rejects an email that is %s with 400', async (_why, body) => {
+    execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED);
+
+    const res = await request(app).post('/api/admin/approved-emails').set('Cookie', authCookie(ADMIN)).send(body);
+
+    expect(res.status).toBe(400);
+    expect(execute).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns 409 for an email already on this collection\'s invite list', async () => {
+    const duplicate = Object.assign(new Error('Duplicate entry'), { code: 'ER_DUP_ENTRY' });
+    execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED).mockRejectedValueOnce(duplicate);
+
+    const res = await request(app)
+      .post('/api/admin/approved-emails')
+      .set('Cookie', authCookie(ADMIN))
+      .send({ email: 'friend@example.com' });
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toMatch(/already on this collection/i);
+  });
+
+  it('rejects a non-admin with 403 without inserting anything', async () => {
+    execute.mockResolvedValueOnce(MEMBERSHIP_AS_USER);
+
+    const res = await request(app)
+      .post('/api/admin/approved-emails')
+      .set('Cookie', authCookie(USER))
+      .send({ email: 'friend@example.com' });
+
+    expect(res.status).toBe(403);
+    expect(execute).not.toHaveBeenCalledWith(expect.stringContaining('INSERT'), expect.anything());
+  });
 });
 
 describe('DELETE /api/admin/approved-emails/:id', () => {
@@ -107,14 +196,24 @@ describe('GET /api/admin/users', () => {
       [COLLECTION_A]
     );
   });
+
+  it('shows each member\'s role in THIS collection, not a site-wide role', async () => {
+    execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED).mockResolvedValueOnce([[]]);
+
+    await request(app).get('/api/admin/users').set('Cookie', authCookie(ADMIN));
+
+    const query = String(execute.mock.calls[1][0]);
+    expect(query).toMatch(/cm\.role/);
+    expect(query).not.toMatch(/u\.role/);
+  });
 });
 
 describe('PATCH /api/admin/users/:id/role', () => {
-  it('changes the role of a member of the admin\'s active collection', async () => {
+  // Roles belong to a membership: being an admin of Chicago says nothing about dojo.
+  it('changes the member\'s role in the admin\'s active collection only', async () => {
     execute
       .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
-      .mockResolvedValueOnce([[{ id: 1 }]]) // target is a member of this collection
-      .mockResolvedValueOnce([{}]);
+      .mockResolvedValueOnce([{ affectedRows: 1 }]);
 
     const res = await request(app)
       .patch('/api/admin/users/2/role')
@@ -122,10 +221,15 @@ describe('PATCH /api/admin/users/:id/role', () => {
       .send({ role: 'admin' });
 
     expect(res.status).toBe(200);
+    expect(execute).toHaveBeenCalledWith(
+      expect.stringContaining('UPDATE collection_memberships SET role = ?'),
+      ['admin', '2', COLLECTION_A]
+    );
+    expect(execute).not.toHaveBeenCalledWith(expect.stringContaining('UPDATE users'), expect.anything());
   });
 
   it('returns 404 for a user who is not a member of the admin\'s active collection', async () => {
-    execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED).mockResolvedValueOnce([[]]);
+    execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED).mockResolvedValueOnce([{ affectedRows: 0 }]);
 
     const res = await request(app)
       .patch('/api/admin/users/2/role')
@@ -133,6 +237,20 @@ describe('PATCH /api/admin/users/:id/role', () => {
       .send({ role: 'admin' });
 
     expect(res.status).toBe(404);
+  });
+
+  // Also guarantees a collection always keeps at least one admin: whoever
+  // demotes someone else is, by definition, still an admin themselves.
+  it('refuses to change your own role, so an admin can\'t accidentally lock themselves out', async () => {
+    execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED);
+
+    const res = await request(app)
+      .patch(`/api/admin/users/${ADMIN.userId}/role`)
+      .set('Cookie', authCookie(ADMIN))
+      .send({ role: 'user' });
+
+    expect(res.status).toBe(400);
+    expect(execute).toHaveBeenCalledTimes(1);
   });
 
   it('rejects an invalid role value with 400', async () => {
@@ -197,5 +315,34 @@ describe('DELETE /api/admin/users/:id (remove from collection)', () => {
       .set('Cookie', authCookie(ADMIN));
 
     expect(res.status).toBe(400);
+    expect(execute).toHaveBeenCalledTimes(1); // nothing deleted
+  });
+});
+
+describe('Requests with no login at all', () => {
+  it('returns 401 before touching the database', async () => {
+    const res = await request(app).get('/api/admin/users');
+
+    expect(res.status).toBe(401);
+    expect(execute).not.toHaveBeenCalled();
+  });
+});
+
+describe('database failures', () => {
+  it.each([
+    ['GET approved-emails', () => request(app).get('/api/admin/approved-emails').set('Cookie', authCookie(ADMIN))],
+    ['POST approved-emails', () => request(app).post('/api/admin/approved-emails').set('Cookie', authCookie(ADMIN)).send({ email: 'friend@example.com' })],
+    ['DELETE approved-emails/:id', () => request(app).delete('/api/admin/approved-emails/7').set('Cookie', authCookie(ADMIN))],
+    ['GET users', () => request(app).get('/api/admin/users').set('Cookie', authCookie(ADMIN))],
+    ['PATCH users/:id/role', () => request(app).patch('/api/admin/users/2/role').set('Cookie', authCookie(ADMIN)).send({ role: 'admin' })],
+    ['DELETE users/:id', () => request(app).delete('/api/admin/users/2').set('Cookie', authCookie(ADMIN))],
+  ])('%s returns a generic 500', async (_route, send) => {
+    execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED).mockRejectedValue(new Error('connection lost'));
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const res = await send();
+
+    expect(res.status).toBe(500);
+    expect(res.body).toEqual({ error: 'Server error' });
   });
 });

@@ -13,11 +13,12 @@ const USERNAME_MAX = 32;
 // ever reach the server.
 const USERNAME_PATTERN = /^[a-zA-Z0-9_]+$/;
 
-const PASSWORD_MIN = 8;
-const PASSWORD_MAX = 32;
-// No special characters allowed for now, per product decision — letters and
-// numbers only. Same whitelist reasoning as usernames.
-const PASSWORD_PATTERN = /^[a-zA-Z0-9]+$/;
+// Passwords allow ANY character — they're only ever hashed, never put into SQL
+// or shown on a page. The cap is in bytes because bcrypt (which hashes them)
+// silently ignores everything past 72 bytes; longer passwords are refused
+// rather than quietly shortened.
+const PASSWORD_MIN_CHARS = 8;
+const PASSWORD_MAX_BYTES = 72;
 
 export function validateUsername(username: string): ValidationResult {
   if (username.length < USERNAME_MIN || username.length > USERNAME_MAX) {
@@ -36,17 +37,11 @@ export function validateUsername(username: string): ValidationResult {
 }
 
 export function validatePassword(password: string): ValidationResult {
-  if (password.length < PASSWORD_MIN || password.length > PASSWORD_MAX) {
-    return {
-      valid: false,
-      error: `Password must be between ${PASSWORD_MIN} and ${PASSWORD_MAX} characters`,
-    };
+  if ([...password].length < PASSWORD_MIN_CHARS) {
+    return { valid: false, error: `Password must be at least ${PASSWORD_MIN_CHARS} characters` };
   }
-  if (!PASSWORD_PATTERN.test(password)) {
-    return {
-      valid: false,
-      error: 'Password can only contain letters and numbers (no special characters for now)',
-    };
+  if (new TextEncoder().encode(password).length > PASSWORD_MAX_BYTES) {
+    return { valid: false, error: `Password is too long (${PASSWORD_MAX_BYTES} bytes max — about ${PASSWORD_MAX_BYTES} letters, fewer with emoji)` };
   }
   return { valid: true };
 }

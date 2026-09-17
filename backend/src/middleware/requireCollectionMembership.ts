@@ -32,7 +32,7 @@ export async function requireCollectionMembership(
 
   try {
     const [rows] = await pool.execute<RowDataPacket[]>(
-      'SELECT id FROM collection_memberships WHERE user_id = ? AND collection_id = ?',
+      'SELECT cm.role FROM collection_memberships cm WHERE cm.user_id = ? AND cm.collection_id = ?',
       [req.user!.userId, collectionId]
     );
 
@@ -40,6 +40,12 @@ export async function requireCollectionMembership(
       res.status(403).json({ error: 'You are not a member of this collection' });
       return;
     }
+
+    // The user's role IN THIS COLLECTION, as it is right now. Everything
+    // downstream — requireAdmin, the admin override on editing someone else's
+    // mini — uses this, so being an admin elsewhere grants nothing here, and a
+    // demotion takes effect on the very next request.
+    req.user!.role = rows[0].role === 'admin' ? 'admin' : 'user';
 
     (req as CollectionRequest).collectionId = collectionId;
     next();

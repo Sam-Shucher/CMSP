@@ -45,12 +45,16 @@ export default function AdminPage(): React.ReactElement {
   // Wrapped in useCallback so it can be added to the useEffect dependency array without
   // causing an infinite loop (the function reference stays stable across renders).
   const fetchData = useCallback(async (): Promise<void> => {
-    const [e, u] = await Promise.all([
-      api<ApprovedEmail[]>('/api/admin/approved-emails'),
-      api<UserRow[]>('/api/admin/users'),
-    ]);
-    setEmails(e);
-    setUsers(u);
+    try {
+      const [e, u] = await Promise.all([
+        api<ApprovedEmail[]>('/api/admin/approved-emails'),
+        api<UserRow[]>('/api/admin/users'),
+      ]);
+      setEmails(e);
+      setUsers(u);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Failed to load admin data');
+    }
   }, []); // no dependencies — this function never needs to change
 
   // Load data on mount
@@ -80,7 +84,13 @@ export default function AdminPage(): React.ReactElement {
   async function toggleRole(userId: number, currentRole: string): Promise<void> {
     const newRole: string = currentRole === 'admin' ? 'user' : 'admin';
     if (!confirm(`Change this user's role to ${newRole}?`)) return;
-    await api(`/api/admin/users/${userId}/role`, { method: 'PATCH', json: { role: newRole } });
+    setError('');
+    setSuccess('');
+    try {
+      await api(`/api/admin/users/${userId}/role`, { method: 'PATCH', json: { role: newRole } });
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Failed to change role');
+    }
     void fetchData();
   }
 
@@ -88,10 +98,16 @@ export default function AdminPage(): React.ReactElement {
   // confirms the typed phrase matched.
   async function confirmPendingDelete(): Promise<void> {
     if (!pendingDelete) return;
-    if (pendingDelete.kind === 'email') {
-      await api(`/api/admin/approved-emails/${pendingDelete.id}`, { method: 'DELETE' });
-    } else {
-      await api(`/api/admin/users/${pendingDelete.id}`, { method: 'DELETE' });
+    setError('');
+    setSuccess('');
+    try {
+      if (pendingDelete.kind === 'email') {
+        await api(`/api/admin/approved-emails/${pendingDelete.id}`, { method: 'DELETE' });
+      } else {
+        await api(`/api/admin/users/${pendingDelete.id}`, { method: 'DELETE' });
+      }
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Failed to remove');
     }
     setPendingDelete(null);
     void fetchData();
@@ -196,20 +212,22 @@ export default function AdminPage(): React.ReactElement {
                 <td style={tdStyle}>{u.phone ?? '—'}</td>
                 <td style={tdStyle}>{u.neighborhood ?? '—'}</td>
                 <td style={tdStyle}>
-                  {/* Admins get a green badge, regular users get a grey tag */}
-                  <span className={u.role === 'admin' ? 'badge-available' : 'tag'}>{u.role}</span>
+                  {/* Role in THIS group — admins get a green badge, members a grey tag */}
+                  <span className={u.role === 'admin' ? 'badge-available' : 'tag'}>{u.role === 'admin' ? 'Admin' : 'Member'}</span>
                 </td>
                 <td style={tdStyle}>{new Date(u.created_at).toLocaleDateString()}</td>
                 <td style={tdStyle}>
                   <div style={{ display: 'flex', gap: '8px' }}>
-                    <button
-                      className="btn-secondary"
-                      style={{ padding: '4px 10px', fontSize: '12px' }}
-                      onClick={() => void toggleRole(u.id, u.role)}
-                    >
-                      {u.role === 'admin' ? 'Demote' : 'Make Admin'}
-                    </button>
-                    {/* Never offer to remove yourself from the group you're administering — the server blocks it too, but hiding it avoids a confusing error */}
+                    {/* Never offer to change your own role or remove yourself — the server blocks both too, but hiding them avoids a confusing error */}
+                    {u.id !== currentUser?.userId && (
+                      <button
+                        className="btn-secondary"
+                        style={{ padding: '4px 10px', fontSize: '12px' }}
+                        onClick={() => void toggleRole(u.id, u.role)}
+                      >
+                        {u.role === 'admin' ? 'Demote' : 'Make Admin'}
+                      </button>
+                    )}
                     {u.id !== currentUser?.userId && (
                       <button
                         className="btn-danger"

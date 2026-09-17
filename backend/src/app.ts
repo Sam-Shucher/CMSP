@@ -8,12 +8,27 @@ import adminRouter from './routes/admin';
 import usersRouter from './routes/users';
 import cartRouter from './routes/cart';
 import loansRouter from './routes/loans';
+import { requireAuth } from './middleware/requireAuth';
+import { requireImageAccess } from './middleware/requireImageAccess';
+import { securityHeaders, uploadHeaders, blockCrossSiteWrites, jsonErrors } from './middleware/security';
+import { uploadsDir as configuredUploadsDir } from './config';
 
 // Builds the Express app without starting it or touching the database —
 // kept separate from index.ts so tests can import it and run requests
 // against it with supertest without opening a real DB connection or port.
-export function createApp(): express.Express {
+// The options only exist so tests can serve scratch folders.
+export function createApp(options: { frontendDist?: string; uploadsDir?: string } = {}): express.Express {
   const app = express();
+
+  // Don't advertise "X-Powered-By: Express" to anyone probing the site.
+  app.disable('x-powered-by');
+
+  // The Cloudflare tunnel connects from this same machine; trusting only
+  // loopback proxies means req.ip is the real visitor (used for rate limits),
+  // while a visitor can't fake their address by sending the header themselves.
+  app.set('trust proxy', 'loopback');
+
+  app.use(securityHeaders);
 
   // Allow the frontend origin to send cookies cross-origin during development.
   // In production, FRONTEND_URL should be the actual domain (e.g. http://raspberrypi.local).
@@ -22,14 +37,19 @@ export function createApp(): express.Express {
     credentials: true, // required so the browser sends our auth cookie
   }));
 
-  // Parse JSON request bodies (used by login, register, etc.)
-  app.use(express.json());
+  app.use(blockCrossSiteWrites);
+
+  // Parse JSON request bodies (used by login, register, etc.) — capped so a
+  // huge body can't tie up the Pi.
+  app.use(express.json({ limit: '100kb' }));
 
   // Parse cookies on every request so req.cookies.token is available in route handlers
   app.use(cookieParser());
 
-  // Serve uploaded mini images as static files — /uploads/filename.jpg maps to backend/uploads/
-  app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
+  // Uploaded mini photos — only for logged-in members of the mini's collection,
+  // served with headers that keep them inert images.
+  const uploadsDir = options.uploadsDir ?? configuredUploadsDir();
+  app.use('/uploads', requireAuth, requireImageAccess, uploadHeaders, express.static(uploadsDir, { dotfiles: 'deny', index: false }));
 
   // Mount routers — each handles a group of related endpoints
   app.use('/api/auth',  authRouter);   // /api/auth/login, /register, /logout, /me
@@ -43,7 +63,7 @@ export function createApp(): express.Express {
   // site runs on a single port. During development the Vite dev server handles
   // the frontend instead (with its /api proxy pointing here).
   if (process.env.NODE_ENV === 'production') {
-    const frontendDist = path.join(__dirname, '../../frontend/dist');
+    const frontendDist = options.frontendDist ?? path.join(__dirname, '../../frontend/dist');
     app.use(express.static(frontendDist));
     // SPA fallback: any non-API GET request gets index.html so React Router
     // can handle the route client-side (e.g. a hard refresh on /minis/42).
@@ -54,6 +74,8 @@ export function createApp(): express.Express {
       res.sendFile(path.join(frontendDist, 'index.html'));
     });
   }
+
+  app.use(jsonErrors);
 
   return app;
 }
