@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event';
 import LoanCard from './LoanCard';
 import { Loan } from '../api/client';
 import { fromDateTimeLocalValue } from '../utils/loanTime';
+import { jsonResponse, urlOf, jsonBodyOf} from '../test/apiMock';
 
 const DAY = 24 * 60 * 60 * 1000;
 
@@ -39,16 +40,12 @@ const COMPLETE_TERMS: Partial<Loan> = {
   durationDays: 14,
 };
 
-function jsonResponse(body: unknown, ok = true): Response {
-  return { ok, statusText: ok ? 'OK' : 'Error', json: async () => body } as Response;
-}
-
 function lastRequest(): { url: string; method: string; body: unknown } {
   const [input, init] = vi.mocked(fetch).mock.calls.at(-1)!;
   return {
-    url: String(input),
+    url: urlOf(input),
     method: init?.method ?? 'GET',
-    body: init?.body ? JSON.parse(String(init.body)) : undefined,
+    body: init?.body ? jsonBodyOf(init) : undefined,
   };
 }
 
@@ -95,13 +92,13 @@ describe('LoanCard — negotiating terms', () => {
     expect(lastRequest().body).toEqual({ durationDays: 14 });
   });
 
-  it.each(['0', '366', '2.5'])('rejects a duration of %s days without calling the server', async (days: string) => {
+  it.each(['0', '91', '2.5'])('rejects a duration of %s days without calling the server', async (days: string) => {
     renderCard(makeLoan({ role: 'owner' }));
 
     await userEvent.type(screen.getByLabelText(/duration/i), days);
     await userEvent.click(screen.getByRole('button', { name: /propose terms/i }));
 
-    expect(await screen.findByText(/whole number of days from 1 to 365/i)).toBeInTheDocument();
+    expect(await screen.findByText(/loans can run from 1 to 90 days/i)).toBeInTheDocument();
     expect(fetch).not.toHaveBeenCalled();
   });
 
@@ -169,7 +166,7 @@ describe('LoanCard — negotiating terms', () => {
   });
 
   it('shows the server\'s error message when an action is refused', async () => {
-    vi.mocked(fetch).mockResolvedValue(jsonResponse({ error: 'This loan is no longer being negotiated' }, false));
+    vi.mocked(fetch).mockResolvedValue(jsonResponse({ error: 'This loan is no longer being negotiated' }, { ok: false }));
     const { onUpdated } = renderCard(makeLoan({ ...COMPLETE_TERMS }));
 
     await userEvent.click(screen.getByRole('button', { name: /approve terms/i }));
@@ -216,6 +213,41 @@ describe('LoanCard — what to do next', () => {
 
     expect(screen.getByText('You\'re both agreed. When you meet and hand it over, confirm the handoff.')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Confirm handoff' })).toBeInTheDocument();
+  });
+});
+
+describe('LoanCard — how long a loan can run', () => {
+  beforeEach(() => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({})));
+  });
+
+  const asOwner = { role: 'owner' as const, counterpart: { id: 20, username: 'bob', displayName: 'Bob' } };
+
+  it('stops a loan longer than three months before asking the server', async () => {
+    renderCard(makeLoan({ ...asOwner, durationDays: 7 }));
+
+    await userEvent.clear(screen.getByLabelText(/duration/i));
+    await userEvent.type(screen.getByLabelText(/duration/i), '120');
+    await userEvent.click(screen.getByRole('button', { name: 'Propose terms' }));
+
+    expect(await screen.findByText('Loans can run from 1 to 90 days (about 3 months)')).toBeInTheDocument();
+    expect(vi.mocked(fetch)).not.toHaveBeenCalled();
+  });
+
+  it('allows exactly three months', async () => {
+    const { onUpdated } = renderCard(makeLoan({ ...asOwner, durationDays: 7 }));
+
+    await userEvent.clear(screen.getByLabelText(/duration/i));
+    await userEvent.type(screen.getByLabelText(/duration/i), '90');
+    await userEvent.click(screen.getByRole('button', { name: 'Propose terms' }));
+
+    await waitFor(() => expect(onUpdated).toHaveBeenCalled());
+    expect(lastRequest()).toMatchObject({ body: { durationDays: 90 } });
+  });
+
+  it('says the limit on the field itself', () => {
+    renderCard(makeLoan({ ...asOwner }));
+    expect(screen.getByLabelText(/duration/i)).toHaveAttribute('max', '90');
   });
 });
 

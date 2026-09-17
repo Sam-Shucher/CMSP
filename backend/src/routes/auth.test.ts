@@ -127,9 +127,8 @@ describe('POST /api/auth/register', () => {
     execute
       .mockResolvedValueOnce([[{ collection_id: 5 }, { collection_id: 6 }]]) // invited to two collections
       .mockResolvedValueOnce([[]])
-      .mockResolvedValueOnce([{ insertId: 1 }])
-      .mockResolvedValueOnce([{}]) // membership 1
-      .mockResolvedValueOnce([{}]); // membership 2
+      .mockResolvedValueOnce([{ insertId: 1, affectedRows: 1 }])
+      .mockResolvedValueOnce([{}]); // both memberships, one statement
 
     const res = await request(app)
       .post('/api/auth/register')
@@ -137,8 +136,7 @@ describe('POST /api/auth/register', () => {
 
     expect(res.status).toBe(201);
     expect(res.body.collectionId).toBeUndefined();
-    expect(execute).toHaveBeenCalledWith(expect.stringContaining('INSERT IGNORE INTO collection_memberships'), [1, 5]);
-    expect(execute).toHaveBeenCalledWith(expect.stringContaining('INSERT IGNORE INTO collection_memberships'), [1, 6]);
+    expect(execute).toHaveBeenCalledWith(expect.stringContaining('INSERT IGNORE INTO collection_memberships'), [1, 5, 1, 6]);
   });
 
   it('rejects an email that is not on any collection\'s invite list', async () => {

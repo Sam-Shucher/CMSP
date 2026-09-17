@@ -1,3 +1,5 @@
+import { LIMITS } from '../limits';
+
 export interface ValidationResult {
   valid: boolean;
   error?: string;
@@ -58,7 +60,7 @@ export function looksBlank(value: string): boolean {
 
 // Prices are typed as dollars and cents. A comma works as the decimal point too
 // ("12,50"), since a number box would silently turn that into 1250.
-const MAX_PRICE = 9999.99;
+const MAX_PRICE = LIMITS.price;
 
 export function normalizePrice(value: string): string {
   const trimmed = value.trim();

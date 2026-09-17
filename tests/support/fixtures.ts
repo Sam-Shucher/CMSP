@@ -1,10 +1,10 @@
 import { test as base, expect, Page, BrowserContext } from '@playwright/test';
 import path from 'path';
-import { resetData, USERS } from './seed.cjs';
+import { resetData, USERS, AUTH_DIR } from './seed.cjs';
 
 export type Username = keyof typeof USERS;
 
-export const authFile = (username: string) => path.join(__dirname, '..', '.auth', `${username}.json`);
+export const authFile = (username: string): string => path.join(AUTH_DIR, `${username}.json`);
 
 type Fixtures = {
   // Opens a new browser window signed in as that user. Several can be open at once.
@@ -28,6 +28,7 @@ function watchForPageErrors(page: Page, problems: string[]): void {
 
 export const test = base.extend<Fixtures & { cleanData: void }>({
   // Every test starts from the seeded users and nothing else.
+  // eslint-disable-next-line no-empty-pattern -- Playwright reads the destructuring to find fixture dependencies; this one has none
   cleanData: [async ({}, use) => {
     await resetData();
     await use();
@@ -83,11 +84,15 @@ export async function createMini(page: Page, name: string, options: { tags?: str
     }
     const res = await fetch('/api/minis', { method: 'POST', body: form, credentials: 'include' });
     if (!res.ok) throw new Error(`createMini failed: ${res.status} ${await res.text()}`);
-    return (await res.json()).miniId as number;
+    return ((await res.json()) as { miniId: number }).miniId;
   }, { name, tags: options.tags, withPhoto: options.withPhoto ?? false, png: TINY_PNG_BASE64 });
 }
 
-export async function apiCall(page: Page, method: string, url: string, body?: unknown): Promise<{ status: number; body: any }> {
+// Calls the API as this signed-in person. Give it the shape you expect back:
+//   const { body } = await apiCall<{ status: string }>(page, 'GET', `/api/minis/${id}`);
+export async function apiCall<T = unknown>(
+  page: Page, method: string, url: string, body?: unknown
+): Promise<{ status: number; body: T }> {
   if (!page.url().startsWith('http')) await page.goto('/');
   return page.evaluate(async ({ method, url, body }) => {
     const res = await fetch(url, {
@@ -96,15 +101,15 @@ export async function apiCall(page: Page, method: string, url: string, body?: un
       headers: { 'Content-Type': 'application/json' },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
-    return { status: res.status, body: await res.json().catch(() => null) };
+    return { status: res.status, body: (await res.json().catch(() => null)) as T };
   }, { method, url, body });
 }
 
 // Cart + checkout for one mini; returns the new request's loan id.
 export async function requestMini(page: Page, miniId: number): Promise<number> {
   await apiCall(page, 'POST', '/api/cart', { miniId });
-  const res = await apiCall(page, 'POST', '/api/cart/checkout');
-  return res.body.created[0].loanId;
+  const checkout = await apiCall<{ created: { loanId: number }[] }>(page, 'POST', '/api/cart/checkout');
+  return checkout.body.created[0].loanId;
 }
 
 export const TINY_PNG = Buffer.from(TINY_PNG_BASE64, 'base64');

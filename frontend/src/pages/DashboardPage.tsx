@@ -4,6 +4,7 @@ import { api, Mini, CartItem } from '../api/client';
 import { useAuth } from '../App';
 import MiniDetailModal from '../components/MiniDetailModal';
 import MiniStatusBadge from '../components/MiniStatusBadge';
+import { LIMITS } from '../limits';
 
 // The main browse page — shows a searchable, filterable grid of all minis.
 export default function DashboardPage(): React.ReactElement {
@@ -94,7 +95,7 @@ export default function DashboardPage(): React.ReactElement {
           style={{ maxWidth: '360px' }}
           type="search"
           placeholder="Search by name or description…"
-          maxLength={100}
+          maxLength={LIMITS.search}
           value={search}
           onChange={(e: React.ChangeEvent<HTMLInputElement>) => setSearch(e.target.value)}
         />

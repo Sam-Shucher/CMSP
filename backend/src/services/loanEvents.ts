@@ -1,5 +1,4 @@
-import { RowDataPacket, ResultSetHeader } from 'mysql2';
-import { pool } from '../db/connection';
+import { rows, firstRow, change } from '../db/query';
 import { notify } from '../db/notifications';
 import { messages } from '../utils/notificationMessages';
 
@@ -7,7 +6,7 @@ import { messages } from '../utils/notificationMessages';
 // They never throw: a failed notification must never undo or fail the action
 // that triggered it.
 
-interface LoanInfo extends RowDataPacket {
+interface LoanInfo {
   id: number;
   mini_id: number;
   collection_id: number;
@@ -21,8 +20,8 @@ interface LoanInfo extends RowDataPacket {
   owner_name: string;
 }
 
-async function loadLoan(loanId: number): Promise<LoanInfo | null> {
-  const [rows] = await pool.execute<LoanInfo[]>(
+function loadLoan(loanId: number): Promise<LoanInfo | null> {
+  return firstRow<LoanInfo>(
     `SELECT l.id, l.mini_id, l.collection_id, l.borrower_id, l.owner_id, l.borrower_approved, l.owner_approved, l.due_at,
             m.name AS mini_name, b.display_name AS borrower_name, o.display_name AS owner_name
      FROM loans l
@@ -32,7 +31,6 @@ async function loadLoan(loanId: number): Promise<LoanInfo | null> {
      WHERE l.id = ?`,
     [loanId]
   );
-  return rows[0] ?? null;
 }
 
 async function safely(label: string, work: () => Promise<void>): Promise<void> {
@@ -113,7 +111,7 @@ export function requestCancelledByRemoval(loanId: number, removedUserId: number)
 export function handedOff(loanId: number): Promise<void> {
   return safely('handed off', async () => {
     const loan = await loadLoan(loanId);
-    if (!loan || !loan.due_at) return;
+    if (!loan?.due_at) return;
     await notify([loan.borrower_id], {
       ...base(loan), type: 'handed_off', message: messages.handedOff(loan.owner_name, loan.mini_name, new Date(loan.due_at)),
     });
@@ -138,18 +136,18 @@ export function returned(loanId: number): Promise<void> {
 
 // Housekeeping: announce each newly overdue loan to both sides, exactly once.
 export async function notifyOverdueLoans(): Promise<number> {
-  const [rows] = await pool.execute<RowDataPacket[]>(
+  const overdueLoans = await rows<{ id: number }>(
     "SELECT id FROM loans WHERE status = 'adventuring' AND due_at < NOW() AND overdue_notified_at IS NULL"
   );
   let announced = 0;
-  for (const row of rows) {
+  for (const row of overdueLoans) {
     // Claim it first, so two overlapping runs can't both announce it.
-    const [claim] = await pool.execute<ResultSetHeader>(
+    const claimed = await change(
       'UPDATE loans SET overdue_notified_at = NOW() WHERE id = ? AND overdue_notified_at IS NULL',
       [row.id]
     );
-    if (claim.affectedRows === 0) continue;
-    const loan = await loadLoan(row.id as number);
+    if (claimed === 0) continue;
+    const loan = await loadLoan(row.id);
     if (!loan) continue;
     await notify([loan.borrower_id, loan.owner_id], { ...base(loan), type: 'overdue', message: messages.overdue(loan.mini_name) });
     announced += 1;

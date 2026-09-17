@@ -62,7 +62,8 @@ export function jsonErrors(err: unknown, _req: Request, res: Response, next: Nex
     next(err);
     return;
   }
-  const type = (err as { type?: string })?.type;
+  // Express's body parser attaches `type` and `status` to the errors it throws.
+  const { type, status } = (err ?? {}) as { type?: string; status?: number };
   if (type === 'entity.parse.failed') {
     res.status(400).json({ error: 'Invalid request body' });
     return;
@@ -71,7 +72,6 @@ export function jsonErrors(err: unknown, _req: Request, res: Response, next: Nex
     res.status(413).json({ error: 'Request too large' });
     return;
   }
-  const status = (err as { status?: number })?.status;
   if (status === 400 || status === 403 || status === 404) {
     res.status(status).json({ error: 'Invalid request' });
     return;

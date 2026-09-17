@@ -4,10 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Routes, Route } from 'react-router-dom';
 import NotificationBell, { POLL_INTERVAL_MS } from './NotificationBell';
 import { NotificationItem, LOANS_CHANGED_EVENT } from '../api/client';
-
-function jsonResponse(body: unknown): Response {
-  return { ok: true, status: 200, json: async () => body } as Response;
-}
+import { jsonResponse, urlOf} from '../test/apiMock';
 
 function item(overrides: Partial<NotificationItem> = {}): NotificationItem {
   return {
@@ -22,13 +19,13 @@ const TWO_DAYS_MS = 2 * 24 * 60 * 60 * 1000;
 function mockInbox(inbox: { unread: number; items: NotificationItem[] }) {
   let current = inbox;
   vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
-    const url = String(input);
+    const url = urlOf(input);
     if (url === '/api/notifications' && !init?.method) return jsonResponse(current);
     if (url === '/api/notifications/read-all') {
       current = { unread: 0, items: current.items.map(i => ({ ...i, read: true, expiresAt: new Date(Date.now() + TWO_DAYS_MS).toISOString() })) };
       return jsonResponse({ message: 'All read' });
     }
-    const read = url.match(/^\/api\/notifications\/(\d+)\/read$/);
+    const read = /^\/api\/notifications\/(\d+)\/read$/.exec(url);
     if (read) {
       current = {
         unread: Math.max(0, current.unread - 1),
@@ -36,7 +33,7 @@ function mockInbox(inbox: { unread: number; items: NotificationItem[] }) {
       };
       return jsonResponse({ message: 'Read' });
     }
-    const unread = url.match(/^\/api\/notifications\/(\d+)\/unread$/);
+    const unread = /^\/api\/notifications\/(\d+)\/unread$/.exec(url);
     if (unread) {
       current = {
         unread: current.unread + 1,
@@ -44,7 +41,7 @@ function mockInbox(inbox: { unread: number; items: NotificationItem[] }) {
       };
       return jsonResponse({ message: 'Unread' });
     }
-    const dismiss = url.match(/^\/api\/notifications\/(\d+)$/);
+    const dismiss = /^\/api\/notifications\/(\d+)$/.exec(url);
     if (dismiss && init?.method === 'DELETE') {
       const gone = current.items.find(i => i.id === Number(dismiss[1]));
       current = {

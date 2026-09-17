@@ -21,8 +21,8 @@ export async function api<T = unknown>(
     ...options,
     credentials: 'include', // sends the httpOnly auth cookie on every request
     headers: isFormData
-      ? { ...groupHeader, ...(options?.headers ?? {}) }
-      : { 'Content-Type': 'application/json', ...groupHeader, ...(options?.headers ?? {}) },
+      ? { ...groupHeader, ...options.headers }
+      : { 'Content-Type': 'application/json', ...groupHeader, ...options?.headers },
     // If `json` was provided, serialize it; otherwise use `body` as-is (FormData or undefined)
     body: options?.json !== undefined ? JSON.stringify(options.json) : options?.body,
   });
@@ -129,13 +129,13 @@ export type HoldSummary = {
   count: number;
   position: number | null;
   watching: boolean;
-  queue?: Array<{ position: number; displayName: string }>;
+  queue?: { position: number; displayName: string }[];
 };
 
 // GET /api/holds — your places in line, and full lines you asked to hear about
 export type MyHolds = {
-  holds: Array<{ miniId: number; miniName: string; miniImage: string | null; ownerName: string; position: number; status: MiniStatus }>;
-  watching: Array<{ miniId: number; miniName: string; holdCount: number }>;
+  holds: { miniId: number; miniName: string; miniImage: string | null; ownerName: string; position: number; status: MiniStatus }[];
+  watching: { miniId: number; miniName: string; holdCount: number }[];
 };
 
 // One entry from GET /api/notifications

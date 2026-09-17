@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { detectImageType } from './imageType';
 
-const bytes = (...parts: Array<number[] | string>) =>
+const bytes = (...parts: (number[] | string)[]) =>
   Buffer.concat(parts.map(p => (typeof p === 'string' ? Buffer.from(p, 'latin1') : Buffer.from(p))));
 
 describe('detectImageType — what a file really is, whatever it claims', () => {

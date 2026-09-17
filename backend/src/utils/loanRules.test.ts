@@ -101,9 +101,13 @@ describe('parseTermsPatch', () => {
     expect(parseTermsPatch({ where: 'x'.repeat(255) }, 'owner')).toMatchObject({ ok: true });
   });
 
-  it('rejects durations that are not a whole number of days between 1 and 365', () => {
+  // A loan is a lend between friends, not an indefinite handover.
+  it('caps a loan at three months, and wants a whole number of days', () => {
+    expect(parseTermsPatch({ durationDays: 90 }, 'owner')).toMatchObject({ ok: true });
+    expect(parseTermsPatch({ durationDays: 91 }, 'owner')).toEqual({
+      ok: false, status: 400, error: 'Loans can run from 1 to 90 days (about 3 months)',
+    });
     expect(parseTermsPatch({ durationDays: 0 }, 'owner')).toMatchObject({ ok: false, status: 400 });
-    expect(parseTermsPatch({ durationDays: 366 }, 'owner')).toMatchObject({ ok: false, status: 400 });
     expect(parseTermsPatch({ durationDays: 2.5 }, 'owner')).toMatchObject({ ok: false, status: 400 });
     expect(parseTermsPatch({ durationDays: '7' }, 'owner')).toMatchObject({ ok: false, status: 400 });
   });

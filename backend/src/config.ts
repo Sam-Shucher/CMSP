@@ -6,7 +6,10 @@ type Env = Record<string, string | undefined>;
 // Where uploaded mini photos live. Tests point UPLOADS_DIR at a scratch folder
 // so they never write into (or clean up) the real photos.
 export function uploadsDir(env: Env = process.env): string {
-  return path.resolve(env.UPLOADS_DIR || path.join(__dirname, '../uploads'));
+  // An empty UPLOADS_DIR means "not set", not "the current directory".
+  const configured = env.UPLOADS_DIR?.trim();
+  if (configured) return path.resolve(configured);
+  return path.resolve(path.join(__dirname, '../uploads'));
 }
 
 const MIN_SECRET_LENGTH = 32;

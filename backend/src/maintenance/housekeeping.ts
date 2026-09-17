@@ -1,7 +1,6 @@
 import fs from 'fs';
 import path from 'path';
-import { RowDataPacket } from 'mysql2';
-import { pool } from '../db/connection';
+import { rows } from '../db/query';
 import { purgeEndedSessions } from '../db/sessions';
 import { purgeExpiredNotifications } from '../db/notifications';
 import { uploadsDir as configuredUploadsDir } from '../config';
@@ -46,12 +45,12 @@ export async function sweepOrphanedUploads(options: SweepOptions = {}): Promise<
 
   // Read what's in use FIRST. If the database can't be read this throws, and
   // nothing is deleted — "unknown" must never be treated as "unused".
-  const [rows] = await pool.execute<RowDataPacket[]>(
+  const referenced = await rows<{ image_path: string }>(
     `SELECT image_path FROM mini_images
      UNION
      SELECT image_path FROM minis WHERE image_path IS NOT NULL` // legacy single-photo column
   );
-  const inUse = new Set(rows.map(r => path.basename(String(r.image_path))));
+  const inUse = new Set(referenced.map(image => path.basename(image.image_path)));
 
   if (!fs.existsSync(dir)) return { deleted: [], kept: 0 };
 
@@ -121,9 +120,9 @@ export function startHousekeeping(options: SweepOptions & { intervalMs?: number 
   const first = setTimeout(() => {
     void runHousekeeping(options);
     interval = setInterval(() => void runHousekeeping(options), intervalMs);
-    interval.unref?.();
+    interval.unref();
   }, FIRST_RUN_DELAY_MS);
-  first.unref?.(); // never keeps the process alive on its own
+  first.unref(); // never keeps the process alive on its own
 
   return () => {
     clearTimeout(first);

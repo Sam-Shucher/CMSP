@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import CartPage from './CartPage';
 import { CartItem } from '../api/client';
+import { jsonResponse, urlOf} from '../test/apiMock';
 
 function item(overrides: Partial<CartItem> = {}): CartItem {
   return {
@@ -14,29 +15,25 @@ function item(overrides: Partial<CartItem> = {}): CartItem {
   };
 }
 
-function jsonResponse(body: unknown, ok = true): Response {
-  return { ok, statusText: ok ? 'OK' : 'Error', json: async () => body } as Response;
-}
-
 type Handler = (url: string, method: string) => Response | undefined;
 
 // Serves GET /api/cart from a mutable list so removals/checkouts are reflected on reload.
-function mockCartApi(initial: CartItem[], extra: Handler = () => undefined): { calls: Array<[string, string]> } {
+function mockCartApi(initial: CartItem[], extra: Handler = () => undefined): { calls: [string, string][] } {
   let cart = [...initial];
-  const calls: Array<[string, string]> = [];
+  const calls: [string, string][] = [];
   vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
-    const url = String(input);
+    const url = urlOf(input);
     const method = init?.method ?? 'GET';
     calls.push([method, url]);
     const custom = extra(url, method);
     if (custom) return custom;
     if (url === '/api/cart' && method === 'GET') return jsonResponse(cart);
-    const removeMatch = url.match(/^\/api\/cart\/(\d+)$/);
+    const removeMatch = /^\/api\/cart\/(\d+)$/.exec(url);
     if (removeMatch && method === 'DELETE') {
       cart = cart.filter((c: CartItem) => c.miniId !== Number(removeMatch[1]));
       return jsonResponse({ message: 'Removed' });
     }
-    return jsonResponse({ error: `unexpected ${method} ${url}` }, false);
+    return jsonResponse({ error: `unexpected ${method} ${url}` }, { ok: false });
   });
   return { calls };
 }
@@ -146,15 +143,15 @@ describe('CartPage', () => {
   });
 
   it('shows an error if the cart fails to load', async () => {
-    vi.mocked(fetch).mockResolvedValue(jsonResponse({ error: 'Select a collection first' }, false));
+    vi.mocked(fetch).mockResolvedValue(jsonResponse({ error: 'Select a collection first' }, { ok: false }));
     renderCart();
 
     expect(await screen.findByText(/select a collection first/i)).toBeInTheDocument();
   });
 
   it('shows an error and keeps the item if removing fails', async () => {
-    mockCartApi([item({ name: 'Dire Wolf' })], (url: string, method: string) =>
-      method === 'DELETE' ? jsonResponse({ error: 'Server error' }, false) : undefined);
+    mockCartApi([item({ name: 'Dire Wolf' })], (_url: string, method: string) =>
+      method === 'DELETE' ? jsonResponse({ error: 'Server error' }, { ok: false }) : undefined);
     renderCart();
     await screen.findByText('Dire Wolf');
 
@@ -177,7 +174,7 @@ describe('CartPage', () => {
     mockCartApi([item()]);
     const base = vi.mocked(fetch).getMockImplementation()!;
     vi.mocked(fetch).mockImplementation((input: RequestInfo | URL, init?: RequestInit) =>
-      String(input) === '/api/cart/checkout' ? new Promise<Response>(resolve => { finish = resolve; }) : base(input, init));
+      urlOf(input) === '/api/cart/checkout' ? new Promise<Response>(resolve => { finish = resolve; }) : base(input, init));
     renderCart();
     await screen.findByText('Dire Wolf');
 
@@ -191,7 +188,7 @@ describe('CartPage', () => {
   it('shows the server\'s error when nothing in the cart could be requested', async () => {
     mockCartApi([item({ status: 'adventuring' })], (url: string, method: string) => {
       if (url === '/api/cart/checkout' && method === 'POST') {
-        return jsonResponse({ error: 'None of the minis in your cart are available right now', unavailable: [] }, false);
+        return jsonResponse({ error: 'None of the minis in your cart are available right now', unavailable: [] }, { ok: false });
       }
       return undefined;
     });

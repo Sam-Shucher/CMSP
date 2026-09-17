@@ -3,20 +3,17 @@ import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import HoldPanel from './HoldPanel';
 import { HoldSummary } from '../api/client';
-
-function jsonResponse(body: unknown, ok = true): Response {
-  return { ok, status: ok ? 200 : 409, statusText: ok ? 'OK' : 'Conflict', json: async () => body } as Response;
-}
+import { jsonResponse, urlOf} from '../test/apiMock';
 
 // Serves the summary from a mutable value so actions can change what comes back next.
 function mockHoldsApi(initial: HoldSummary, actions: Record<string, () => Response> = {}) {
   let summary = initial;
   const setSummary = (next: HoldSummary) => { summary = next; };
   vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
-    const key = `${init?.method ?? 'GET'} ${String(input)}`;
+    const key = `${init?.method ?? 'GET'} ${urlOf(input)}`;
     if (actions[key]) return actions[key]();
     if (key === 'GET /api/holds/minis/42') return jsonResponse(summary);
-    return jsonResponse({ error: `unexpected ${key}` }, false);
+    return jsonResponse({ error: `unexpected ${key}` }, { ok: false });
   });
   return { setSummary };
 }
@@ -107,7 +104,7 @@ describe('HoldPanel', () => {
 
   it('shows the server\'s reason when a hold is refused (e.g. someone just took the last spot)', async () => {
     mockHoldsApi({ ...EMPTY, count: 2 }, {
-      'POST /api/holds/minis/42': () => jsonResponse({ error: 'The hold line is full (3 people)', code: 'full' }, false),
+      'POST /api/holds/minis/42': () => jsonResponse({ error: 'The hold line is full (3 people)', code: 'full' }, { ok: false }),
     });
     render(<HoldPanel miniId={42} status="adventuring" isOwn={false} />);
 
@@ -134,7 +131,7 @@ describe('HoldPanel', () => {
   });
 
   it('stays out of the way if the line can\'t be loaded', async () => {
-    vi.mocked(fetch).mockResolvedValue(jsonResponse({ error: 'Server error' }, false));
+    vi.mocked(fetch).mockResolvedValue(jsonResponse({ error: 'Server error' }, { ok: false }));
     render(<HoldPanel miniId={42} status="adventuring" isOwn={false} />);
 
     await waitFor(() => expect(fetch).toHaveBeenCalled());

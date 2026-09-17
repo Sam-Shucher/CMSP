@@ -32,7 +32,7 @@ beforeEach(async () => {
 async function inbox(who: TestUser) {
   return (await request(app).get('/api/notifications').set('Cookie', who.cookie)).body as {
     unread: number;
-    items: Array<{ id: number; type: string; message: string; loanId: number | null; miniId: number | null; read: boolean; expiresAt: string | null; createdAt: string }>;
+    items: { id: number; type: string; message: string; loanId: number | null; miniId: number | null; read: boolean; expiresAt: string | null; createdAt: string }[];
   };
 }
 

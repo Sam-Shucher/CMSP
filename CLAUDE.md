@@ -11,7 +11,20 @@ local dev setup, collections model, Pi deployment).
 
 - `backend/` — Express + TypeScript + MySQL/MariaDB (`mysql2`), JWT cookie auth
 - `frontend/` — React + Vite + TypeScript
+- `tests/` — Playwright end-to-end tests (the whole app in a real browser)
 - `scripts/` — Raspberry Pi setup/update scripts
+
+## House style
+
+- **Queries** go through `backend/src/db/query.ts` (`rows`, `firstRow`,
+  `firstValue`, `change`, `insert`) with a row interface per query — not
+  `pool.execute` with a cast. Placeholders only, never string-built SQL.
+- **Route handlers** are wrapped in `route()` (`backend/src/utils/route.ts`),
+  which logs anything unexpected and replies with a generic 500.
+- **Limits** live in one place per side: `backend/src/utils/inputs.ts` +
+  `config.ts`, and `frontend/src/limits.ts` (which mirrors them).
+- **Frontend tests** share `src/test/apiMock.ts` (`jsonResponse`, `urlOf`,
+  `jsonBodyOf`) instead of each file rolling its own fetch stub.
 
 ## Commands
 
@@ -20,7 +33,9 @@ npm run dev                                 # both servers (root)
 npm --prefix backend run test               # backend unit tests — mocked DB
 npm --prefix backend run test:integration   # backend tests against real MariaDB (needs docker compose -f docker-compose.test.yml up -d)
 npm --prefix frontend run test              # frontend tests
-npm run test:e2e                            # Playwright end-to-end (builds first; needs the same Docker MariaDB)
+npm run test:e2e                            # Playwright end-to-end in tests/ (builds first; needs the same Docker MariaDB)
+npm run lint                                # ESLint (type-aware) over backend, frontend, and tests
+
 npm --prefix backend run build              # tsc + copies db/migrations/*.sql into dist/
 ```
 

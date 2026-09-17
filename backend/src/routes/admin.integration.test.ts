@@ -55,7 +55,7 @@ async function rows(sql: string, params: unknown[] = []): Promise<RowDataPacket[
 }
 
 async function inbox(who: TestUser) {
-  return (await request(app).get('/api/notifications').set('Cookie', who.cookie)).body.items as Array<{ type: string; message: string }>;
+  return (await request(app).get('/api/notifications').set('Cookie', who.cookie)).body.items as { type: string; message: string }[];
 }
 
 describe('removing a member who is part of loans', () => {

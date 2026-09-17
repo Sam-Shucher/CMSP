@@ -78,7 +78,7 @@ describe('api()', () => {
   });
 
   it('announces a 401 so the app can send the user back to sign in', async () => {
-    vi.mocked(fetch).mockResolvedValueOnce({ ...response({ error: 'Your session has ended. Please sign in again.' }, { ok: false }), status: 401 } as Response);
+    vi.mocked(fetch).mockResolvedValueOnce({ ...response({ error: 'Your session has ended. Please sign in again.' }, { ok: false }), status: 401 });
     const listener = vi.fn();
     window.addEventListener(SESSION_ENDED_EVENT, listener);
 
@@ -89,7 +89,7 @@ describe('api()', () => {
   });
 
   it('does not treat a wrong password on the login form as an ended session', async () => {
-    vi.mocked(fetch).mockResolvedValueOnce({ ...response({ error: 'Invalid email or password' }, { ok: false }), status: 401 } as Response);
+    vi.mocked(fetch).mockResolvedValueOnce({ ...response({ error: 'Invalid email or password' }, { ok: false }), status: 401 });
     const listener = vi.fn();
     window.addEventListener(SESSION_ENDED_EVENT, listener);
 
@@ -100,7 +100,7 @@ describe('api()', () => {
   });
 
   it('does not announce other failures', async () => {
-    vi.mocked(fetch).mockResolvedValueOnce({ ...response({ error: 'Admin access required' }, { ok: false }), status: 403 } as Response);
+    vi.mocked(fetch).mockResolvedValueOnce({ ...response({ error: 'Admin access required' }, { ok: false }), status: 403 });
     const listener = vi.fn();
     window.addEventListener(SESSION_ENDED_EVENT, listener);
 
@@ -129,7 +129,7 @@ describe('api()', () => {
     vi.mocked(fetch).mockResolvedValueOnce({
       ...response({ error: 'You switched groups in another tab — this page has been updated to match. Please try again.', code: 'group_changed' }, { ok: false }),
       status: 409,
-    } as Response);
+    });
     const listener = vi.fn();
     window.addEventListener(GROUP_CHANGED_EVENT, listener);
 

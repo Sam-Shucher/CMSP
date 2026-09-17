@@ -1,9 +1,9 @@
-import { Router, Response } from 'express';
-import { RowDataPacket, ResultSetHeader } from 'mysql2';
-import { pool } from '../db/connection';
+import { Router } from 'express';
+import { rows, change } from '../db/query';
 import { requireAuth } from '../middleware/requireAuth';
 import { requireAdmin } from '../middleware/requireAdmin';
-import { requireCollectionMembership, CollectionRequest } from '../middleware/requireCollectionMembership';
+import { requireCollectionMembership } from '../middleware/requireCollectionMembership';
+import { route, idFrom } from '../utils/route';
 import { emailAddress } from '../utils/inputs';
 import { removeMember } from '../services/membership';
 
@@ -20,14 +20,14 @@ router.use(requireAuth, requireCollectionMembership, requireAdmin);
 // Row types — shape of each SELECT result we work with in this file
 // ---------------------------------------------------------------------------
 
-interface ApprovedEmailRow extends RowDataPacket {
+interface ApprovedEmailRow {
   id: number;
   email: string;
   added_at: string;
   added_by_username: string | null; // null if the row was inserted manually in MySQL
 }
 
-interface UserAdminRow extends RowDataPacket {
+interface UserAdminRow {
   id: number;
   email: string;
   username: string;
@@ -56,29 +56,23 @@ function isMySqlError(err: unknown): err is MySqlError {
 
 // GET /api/admin/approved-emails
 // Returns the invite list for the admin's active collection only.
-router.get('/approved-emails', async (req: CollectionRequest, res: Response): Promise<void> => {
-  try {
-    const [rows] = await pool.execute<ApprovedEmailRow[]>(
-      `SELECT ae.id, ae.email, ae.added_at,
-              u.username AS added_by_username
-       FROM approved_emails ae
-       LEFT JOIN users u ON ae.added_by = u.id
-       WHERE ae.collection_id = ?
-       ORDER BY ae.added_at DESC`,
-      [req.collectionId!]
-    );
-    res.json(rows);
-  } catch (err: unknown) {
-    console.error(err);
-    res.status(500).json({ error: 'Server error' });
-  }
-});
+router.get('/approved-emails', route(async (req, res) => {
+  res.json(await rows<ApprovedEmailRow>(
+    `SELECT ae.id, ae.email, ae.added_at,
+            u.username AS added_by_username
+     FROM approved_emails ae
+     LEFT JOIN users u ON ae.added_by = u.id
+     WHERE ae.collection_id = ?
+     ORDER BY ae.added_at DESC`,
+    [req.collectionId!]
+  ));
+}));
 
 // POST /api/admin/approved-emails
 // Adds an email to the invite list for the admin's active collection. The
 // same email can be invited into a different collection separately — the
 // uniqueness constraint is on (email, collection), not email alone.
-router.post('/approved-emails', async (req: CollectionRequest, res: Response): Promise<void> => {
+router.post('/approved-emails', route(async (req, res) => {
   const check = emailAddress((req.body as { email?: unknown } | undefined)?.email);
   if (!check.ok) {
     res.status(400).json({ error: check.error });
@@ -87,72 +81,60 @@ router.post('/approved-emails', async (req: CollectionRequest, res: Response): P
   const email = check.value;
 
   try {
-    await pool.execute<ResultSetHeader>(
+    await change(
       'INSERT INTO approved_emails (email, collection_id, added_by) VALUES (?, ?, ?)',
       [email, req.collectionId!, req.user!.userId]
     );
-    res.status(201).json({ message: 'Email approved', email });
   } catch (err: unknown) {
     // ER_DUP_ENTRY means the email is already invited to this collection — friendly message
     if (isMySqlError(err) && err.code === 'ER_DUP_ENTRY') {
       res.status(409).json({ error: 'Email already on this collection\'s invite list' });
       return;
     }
-    console.error(err);
-    res.status(500).json({ error: 'Server error' });
+    throw err;
   }
-});
+  res.status(201).json({ message: 'Email approved', email });
+}));
 
 // DELETE /api/admin/approved-emails/:id
 // Removes an email from the invite list — only if that invite row belongs
 // to the admin's active collection (an admin can't reach into another
 // collection's invite list by guessing an id). Does NOT delete the user if
 // they've already registered — it just prevents new registrations with it.
-router.delete('/approved-emails/:id', async (req: CollectionRequest, res: Response): Promise<void> => {
-  try {
-    const [result] = await pool.execute<ResultSetHeader>(
-      'DELETE FROM approved_emails WHERE id = ? AND collection_id = ?',
-      [req.params.id, req.collectionId!]
-    );
+router.delete('/approved-emails/:id', route(async (req, res) => {
+  const removed = await change(
+    'DELETE FROM approved_emails WHERE id = ? AND collection_id = ?',
+    [req.params.id, req.collectionId!]
+  );
 
-    if (result.affectedRows === 0) {
-      res.status(404).json({ error: 'Invite not found' });
-      return;
-    }
-
-    res.json({ message: 'Email removed' });
-  } catch (err: unknown) {
-    console.error(err);
-    res.status(500).json({ error: 'Server error' });
+  if (removed === 0) {
+    res.status(404).json({ error: 'Invite not found' });
+    return;
   }
-});
+
+  res.json({ message: 'Email removed' });
+}));
 
 // GET /api/admin/users
 // Returns members of the admin's active collection only — never every
 // registered user, since that would leak who's in other collections.
-router.get('/users', async (req: CollectionRequest, res: Response): Promise<void> => {
-  try {
-    const [rows] = await pool.execute<UserAdminRow[]>(
-      `SELECT u.id, u.email, u.username, u.display_name, u.phone, u.neighborhood, cm.role, u.created_at
-       FROM users u
-       JOIN collection_memberships cm ON cm.user_id = u.id
-       WHERE cm.collection_id = ?
-       ORDER BY u.created_at DESC`,
-      [req.collectionId!]
-    );
-    res.json(rows);
-  } catch (err: unknown) {
-    console.error(err);
-    res.status(500).json({ error: 'Server error' });
-  }
-});
+router.get('/users', route(async (req, res) => {
+  res.json(await rows<UserAdminRow>(
+    `SELECT u.id, u.email, u.username, u.display_name, u.phone, u.neighborhood, cm.role, u.created_at
+     FROM users u
+     JOIN collection_memberships cm ON cm.user_id = u.id
+     WHERE cm.collection_id = ?
+     ORDER BY u.created_at DESC`,
+    [req.collectionId!]
+  ));
+}));
 
 // PATCH /api/admin/users/:id/role
 // Makes a member an admin of the active collection, or back to a regular
 // member — in THIS collection only. Their role in any other collection is
 // untouched. You can't change your own role: that prevents locking yourself
 // out, and guarantees the collection always keeps at least one admin (you).
-router.patch('/users/:id/role', async (req: CollectionRequest, res: Response): Promise<void> => {
+router.patch('/users/:id/role', route(async (req, res) => {
   const role = (req.body as { role?: unknown } | undefined)?.role;
 
   if (role !== 'user' && role !== 'admin') {
@@ -164,21 +146,16 @@ router.patch('/users/:id/role', async (req: CollectionRequest, res: Response): P
     return;
   }
 
-  try {
-    const [result] = await pool.execute<ResultSetHeader>(
-      'UPDATE collection_memberships SET role = ? WHERE user_id = ? AND collection_id = ?',
-      [role, req.params.id, req.collectionId!]
-    );
-    if (result.affectedRows === 0) {
-      res.status(404).json({ error: 'User not found' });
-      return;
-    }
-    res.json({ message: 'Role updated' });
-  } catch (err: unknown) {
-    console.error(err);
-    res.status(500).json({ error: 'Server error' });
+  const updated = await change(
+    'UPDATE collection_memberships SET role = ? WHERE user_id = ? AND collection_id = ?',
+    [role, req.params.id, req.collectionId!]
+  );
+  if (updated === 0) {
+    res.status(404).json({ error: 'User not found' });
+    return;
   }
-});
+  res.json({ message: 'Role updated' });
+}));
 
 // DELETE /api/admin/users/:id
 // Removes this user's membership in the admin's active collection — not a
@@ -187,36 +164,31 @@ router.patch('/users/:id/role', async (req: CollectionRequest, res: Response): P
 // are tidied away (services/membership.ts). If that was their last
 // collection anywhere, the account itself is also removed. Blocked for your
 // own membership so an admin can't lock themselves out.
-router.delete('/users/:id', async (req: CollectionRequest, res: Response): Promise<void> => {
-  const userId = Number(req.params.id);
+router.delete('/users/:id', route(async (req, res) => {
+  const userId = idFrom(req.params.id);
   if (userId === req.user!.userId) {
     res.status(400).json({ error: 'You cannot remove yourself from this collection' });
     return;
   }
-  if (!Number.isInteger(userId) || userId <= 0) {
+  if (userId === null) {
     res.status(404).json({ error: 'User not found in this collection' });
     return;
   }
 
-  try {
-    const result = await removeMember(userId, req.collectionId!);
-    if (!result.ok) {
-      res.status(result.status).json({ error: result.error });
-      return;
-    }
-    if (result.accountDeleted) {
-      res.json({ message: 'Removed from this group — that was their last one, so the account was deleted too' });
-      return;
-    }
-    res.json({
-      message: result.minisRemoved === 0
-        ? 'Removed from this group'
-        : `Removed from this group — their ${result.minisRemoved} ${result.minisRemoved === 1 ? 'mini' : 'minis'} here ${result.minisRemoved === 1 ? 'was' : 'were'} removed too`,
-    });
-  } catch (err: unknown) {
-    console.error(err);
-    res.status(500).json({ error: 'Server error' });
+  const result = await removeMember(userId, req.collectionId!);
+  if (!result.ok) {
+    res.status(result.status).json({ error: result.error });
+    return;
   }
-});
+  if (result.accountDeleted) {
+    res.json({ message: 'Removed from this group — that was their last one, so the account was deleted too' });
+    return;
+  }
+  res.json({
+    message: result.minisRemoved === 0
+      ? 'Removed from this group'
+      : `Removed from this group — their ${result.minisRemoved} ${result.minisRemoved === 1 ? 'mini' : 'minis'} here ${result.minisRemoved === 1 ? 'was' : 'were'} removed too`,
+  });
+}));
 
 export default router;

@@ -1,8 +1,9 @@
 import React, { useEffect, useRef, useState } from 'react';
 import ImageDropzone from './ImageDropzone';
 import { photoProblem } from '../utils/photoFiles';
+import { LIMITS } from '../limits';
 
-const MAX_IMAGES = 3;
+const MAX_IMAGES = LIMITS.photosPerMini;
 
 type MultiImagePickerProps = {
   existingPaths: string[]; // current server-side image paths — empty when adding a new mini
@@ -44,7 +45,7 @@ export default function MultiImagePicker({ existingPaths, onChange }: MultiImage
   }
 
   function removeNew(index: number): void {
-    const photo = addedRef.current[index];
+    const photo = addedRef.current.at(index);
     if (photo) URL.revokeObjectURL(photo.preview);
     update(keptRef.current, addedRef.current.filter((_, i) => i !== index));
   }

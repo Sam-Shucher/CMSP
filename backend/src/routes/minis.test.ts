@@ -516,18 +516,16 @@ describe('POST /api/minis — validation', () => {
     expect(res.body.error).toMatch(/name is required/i);
   });
 
+  // Tags are saved in three statements however many there are, not three per tag.
   it('saves a trimmed name, a missing price as 0, and normalized tags', async () => {
     execute
       .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
-      .mockResolvedValueOnce([{ insertId: 42 }])  // INSERT INTO minis
-      .mockResolvedValueOnce([{}])                // DELETE mini_tags
-      .mockResolvedValueOnce([{}])                // INSERT IGNORE tags (boss)
-      .mockResolvedValueOnce([[{ id: 7 }]])       // SELECT tag id
-      .mockResolvedValueOnce([{}])                // INSERT IGNORE mini_tags
-      .mockResolvedValueOnce([{}])                // INSERT IGNORE tags (painted)
-      .mockResolvedValueOnce([[{ id: 8 }]])
-      .mockResolvedValueOnce([{}])
-      .mockResolvedValueOnce([{}]);               // DELETE mini_images
+      .mockResolvedValueOnce([{ insertId: 42, affectedRows: 1 }]) // INSERT INTO minis
+      .mockResolvedValueOnce([{}])                                // DELETE mini_tags
+      .mockResolvedValueOnce([{}])                                // INSERT IGNORE tags (both)
+      .mockResolvedValueOnce([[{ id: 7 }, { id: 8 }]])            // SELECT their ids
+      .mockResolvedValueOnce([{}])                                // INSERT IGNORE mini_tags (both)
+      .mockResolvedValueOnce([{}]);                               // DELETE mini_images
 
     const res = await request(app)
       .post('/api/minis')
@@ -537,10 +535,11 @@ describe('POST /api/minis — validation', () => {
 
     expect(res.status).toBe(201);
     expect(execute).toHaveBeenCalledWith(expect.stringContaining('INSERT INTO minis'), ['Dire Wolf', null, OWNER.userId, COLLECTION_A, 0]);
-    expect(execute).toHaveBeenCalledWith(expect.stringContaining('INSERT IGNORE INTO tags'), ['boss']);
-    expect(execute).toHaveBeenCalledWith(expect.stringContaining('INSERT IGNORE INTO tags'), ['painted']);
-    expect(execute).toHaveBeenCalledWith(expect.stringContaining('INSERT IGNORE INTO mini_tags'), [42, 7]);
-    expect(execute).toHaveBeenCalledWith(expect.stringContaining('INSERT IGNORE INTO mini_tags'), [42, 8]);
+    expect(execute).toHaveBeenCalledWith(expect.stringContaining('INSERT IGNORE INTO tags'), ['boss', 'painted']);
+    expect(execute).toHaveBeenCalledWith(expect.stringContaining('INSERT IGNORE INTO mini_tags'), [42, 7, 42, 8]);
+    // Four statements (clear, add names, read ids, link) however many tags
+    // there are — not three round trips per tag.
+    expect(execute.mock.calls.filter(([sql]) => String(sql).includes('tags')).length).toBe(4);
   });
 
   it('creates the mini as the logged-in user, ignoring any owner sent in the form', async () => {
@@ -562,10 +561,11 @@ describe('POST /api/minis — validation', () => {
 });
 
 describe('upload hardening', () => {
+  // Every photo path from the single multi-row INSERT (mini_id, path, position).
   function savedImagePaths(): string[] {
-    return execute.mock.calls
-      .filter(([sql]) => String(sql).includes('INSERT INTO mini_images'))
-      .map(([, params]) => (params as unknown[])[1] as string);
+    const call = execute.mock.calls.find(([sql]) => String(sql).includes('INSERT INTO mini_images'));
+    const params = (call?.[1] ?? []) as unknown[];
+    return params.filter((_, i) => i % 3 === 1) as string[];
   }
 
   // A file named evil.html that merely CLAIMS to be image/png would otherwise
@@ -849,8 +849,7 @@ describe('PATCH /api/minis/:id — photos', () => {
       .mockResolvedValueOnce([{}])                                                   // UPDATE minis
       .mockResolvedValueOnce([{}])                                                   // DELETE mini_tags (setTags)
       .mockResolvedValueOnce([{}])                                                   // DELETE mini_images
-      .mockResolvedValueOnce([{}])                                                   // INSERT kept image
-      .mockResolvedValueOnce([{}])                                                   // INSERT new image
+      .mockResolvedValueOnce([{}])                                                   // INSERT both images at once
       .mockResolvedValueOnce([[miniRow({ images: '/uploads/old1.png,/uploads/new.png' })]]); // re-fetch
 
     const res = await request(app)

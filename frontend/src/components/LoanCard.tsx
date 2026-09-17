@@ -1,8 +1,10 @@
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
 import { api, Loan, LoanStage } from '../api/client';
 import { formatTimeRemaining, fromDateTimeLocalValue, toDateTimeLocalValue } from '../utils/loanTime';
+import { LIMITS } from '../limits';
 
-const MAX_DURATION_DAYS = 365;
+const MAX_DURATION_DAYS = LIMITS.loanDays;
+const DURATION_LIMIT_MESSAGE = `Loans can run from 1 to ${MAX_DURATION_DAYS} days (about 3 months)`;
 
 const STAGE_LABELS: Record<LoanStage, string> = {
   negotiating: 'Negotiating',
@@ -43,14 +45,19 @@ export default function LoanCard({ loan, now, otherOpenRequests, onUpdated }: Lo
   const [busy, setBusy] = useState<boolean>(false);
   const [confirmingCancel, setConfirmingCancel] = useState<boolean>(false);
 
-  // Re-sync the form when this loan's saved terms change (after either side
+  // Re-fill the form when this loan's saved terms change (after either side
   // proposes), without wiping unsaved edits whenever some other card reloads.
-  useEffect(() => {
+  // Adjusting during render — rather than in an effect — means the fields are
+  // never briefly shown holding the old terms.
+  const savedTerms = `${loan.handoffWhen ?? ''}|${loan.handoffWhere ?? ''}|${loan.handoffHow ?? ''}|${loan.durationDays ?? ''}`;
+  const [lastSavedTerms, setLastSavedTerms] = useState<string>(savedTerms);
+  if (lastSavedTerms !== savedTerms) {
+    setLastSavedTerms(savedTerms);
     setWhen(toDateTimeLocalValue(loan.handoffWhen));
     setWhere(loan.handoffWhere ?? '');
     setHow(loan.handoffHow ?? '');
     setDuration(loan.durationDays?.toString() ?? '');
-  }, [loan.handoffWhen, loan.handoffWhere, loan.handoffHow, loan.durationDays]);
+  }
 
   const isOwner = loan.role === 'owner';
   const them = loan.counterpart.displayName;
@@ -116,7 +123,7 @@ export default function LoanCard({ loan, now, otherOpenRequests, onUpdated }: Lo
     if ('durationDays' in patch) {
       const days = patch.durationDays as number;
       if (!Number.isInteger(days) || days < 1 || days > MAX_DURATION_DAYS) {
-        setError(`Duration must be a whole number of days from 1 to ${MAX_DURATION_DAYS}`);
+        setError(DURATION_LIMIT_MESSAGE);
         return;
       }
     }

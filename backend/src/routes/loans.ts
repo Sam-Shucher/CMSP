@@ -1,7 +1,7 @@
 import { Router, Response } from 'express';
-import { RowDataPacket, ResultSetHeader } from 'mysql2';
-import { pool } from '../db/connection';
+import { rows, firstRow, change } from '../db/query';
 import { requireAuth } from '../middleware/requireAuth';
+import { route } from '../utils/route';
 import { requireCollectionMembership, CollectionRequest } from '../middleware/requireCollectionMembership';
 import {
   LoanSnapshot, LoanTerms, LoanApprovals, LoanStatus, RuleFailure,
@@ -17,7 +17,7 @@ const router = Router();
 // loan didn't exist. The actual rules live in utils/loanRules.ts.
 router.use(requireAuth, requireCollectionMembership);
 
-interface LoanRow extends RowDataPacket {
+interface LoanRow {
   id: number;
   mini_id: number;
   borrower_id: number;
@@ -104,11 +104,7 @@ function serializeLoan(row: LoanRow, userId: number) {
 
 async function findLoan(req: CollectionRequest, loanId: string | number): Promise<LoanRow | null> {
   const userId = req.user!.userId;
-  const [rows] = await pool.execute<LoanRow[]>(
-    `${LOAN_SELECT} AND l.id = ?`,
-    [req.collectionId!, userId, userId, loanId]
-  );
-  return rows[0] ?? null;
+  return firstRow<LoanRow>(`${LOAN_SELECT} AND l.id = ?`, [req.collectionId!, userId, userId, loanId]);
 }
 
 async function sendLoan(req: CollectionRequest, res: Response, loanId: number): Promise<void> {
@@ -129,7 +125,7 @@ function nowToTheSecond(): Date {
 }
 
 async function saveTerms(loanId: number, next: LoanTerms & LoanApprovals): Promise<number> {
-  const [result] = await pool.execute<ResultSetHeader>(
+  return change(
     `UPDATE loans
      SET handoff_when = ?, handoff_where = ?, handoff_how = ?, duration_days = ?,
          borrower_approved = ?, owner_approved = ?
@@ -139,44 +135,33 @@ async function saveTerms(loanId: number, next: LoanTerms & LoanApprovals): Promi
       next.borrowerApproved ? 1 : 0, next.ownerApproved ? 1 : 0, loanId,
     ]
   );
-  return result.affectedRows;
 }
 
 const NOT_NEGOTIATING: RuleFailure = { ok: false, status: 409, error: 'This loan is no longer being negotiated' };
 
 // Wraps each handler: loads the loan (404 if it isn't yours or isn't in this
-// collection) and turns unexpected errors into a 500.
+// collection); route() turns anything unexpected into a logged 500.
 function withLoan(handler: (req: CollectionRequest, res: Response, row: LoanRow) => Promise<void>) {
-  return async (req: CollectionRequest, res: Response): Promise<void> => {
-    try {
-      const row = await findLoan(req, req.params.id);
-      if (!row) {
-        res.status(404).json({ error: 'Loan not found' });
-        return;
-      }
-      await handler(req, res, row);
-    } catch (err: unknown) {
-      console.error(err);
-      res.status(500).json({ error: 'Server error' });
+  return route(async (req, res) => {
+    const row = await findLoan(req, req.params.id);
+    if (!row) {
+      res.status(404).json({ error: 'Loan not found' });
+      return;
     }
-  };
+    await handler(req, res, row);
+  });
 }
 
 // GET /api/loans
 // Every loan you're part of in this collection, as borrower or owner.
-router.get('/', async (req: CollectionRequest, res: Response): Promise<void> => {
+router.get('/', route(async (req, res) => {
   const userId = req.user!.userId;
-  try {
-    const [rows] = await pool.execute<LoanRow[]>(
-      `${LOAN_SELECT} ORDER BY l.created_at DESC, l.id DESC`,
-      [req.collectionId!, userId, userId]
-    );
-    res.json(rows.map(row => serializeLoan(row, userId)));
-  } catch (err: unknown) {
-    console.error(err);
-    res.status(500).json({ error: 'Server error' });
-  }
-});
+  const loans = await rows<LoanRow>(
+    `${LOAN_SELECT} ORDER BY l.created_at DESC, l.id DESC`,
+    [req.collectionId!, userId, userId]
+  );
+  res.json(loans.map(loan => serializeLoan(loan, userId)));
+}));
 
 // PATCH /api/loans/:id/terms  { when?, where?, how?, durationDays? }
 // Propose new terms. Clears the other side's approval (two-key rule).
@@ -185,7 +170,7 @@ router.patch('/:id/terms', withLoan(async (req, res, row) => {
   const role = roleOf(snapshot, req.user!.userId)!;
   if (snapshot.status !== 'negotiating') return fail(res, NOT_NEGOTIATING);
 
-  const parsed = parseTermsPatch(req.body ?? {}, role);
+  const parsed = parseTermsPatch((req.body ?? {}) as Record<string, unknown>, role);
   if (!parsed.ok) return fail(res, parsed);
 
   const next = applyTermsEdit(snapshot, role, parsed.patch);
@@ -201,11 +186,11 @@ router.post('/:id/approve', withLoan(async (req, res, row) => {
   const result = approveTerms(snapshot, roleOf(snapshot, req.user!.userId)!);
   if (!result.ok) return fail(res, result);
 
-  const [update] = await pool.execute<ResultSetHeader>(
+  const approved = await change(
     `UPDATE loans SET borrower_approved = ?, owner_approved = ? WHERE id = ? AND status = 'negotiating'`,
     [result.borrowerApproved ? 1 : 0, result.ownerApproved ? 1 : 0, row.id]
   );
-  if (update.affectedRows === 0) return fail(res, NOT_NEGOTIATING);
+  if (approved === 0) return fail(res, NOT_NEGOTIATING);
   await events.termsApproved(row.id, req.user!.userId);
   await sendLoan(req, res, row.id);
 }));
@@ -224,7 +209,7 @@ router.post('/:id/apply-terms-to-all', withLoan(async (req, res, row) => {
   }
 
   const userId = req.user!.userId;
-  const [others] = await pool.execute<LoanRow[]>(
+  const others = await rows<LoanRow>(
     `${LOAN_SELECT} AND l.borrower_id = ? AND l.owner_id = ? AND l.status = 'negotiating' AND l.id <> ?`,
     [req.collectionId!, userId, userId, row.borrower_id, row.owner_id, row.id]
   );
@@ -249,12 +234,12 @@ router.post('/:id/handoff', withLoan(async (req, res, row) => {
   }
 
   const handedOffAt = nowToTheSecond();
-  const [update] = await pool.execute<ResultSetHeader>(
+  const handedOff = await change(
     `UPDATE loans SET status = 'adventuring', handed_off_at = ?, due_at = ?
      WHERE id = ? AND status = 'negotiating' AND borrower_approved = 1 AND owner_approved = 1`,
     [handedOffAt, dueAtFrom(handedOffAt, snapshot.durationDays!), row.id]
   );
-  if (update.affectedRows === 0) return fail(res, NOT_NEGOTIATING);
+  if (handedOff === 0) return fail(res, NOT_NEGOTIATING);
   await events.handedOff(row.id);
   await sendLoan(req, res, row.id);
 }));
@@ -271,11 +256,11 @@ router.post('/:id/received', withLoan(async (req, res, row) => {
     : 'You can confirm you got it once the owner has confirmed the handoff' };
   if (row.status !== 'adventuring' || row.received_at) return fail(res, cannotConfirm);
 
-  const [update] = await pool.execute<ResultSetHeader>(
+  const confirmed = await change(
     `UPDATE loans SET received_at = ? WHERE id = ? AND status = 'adventuring' AND received_at IS NULL`,
     [nowToTheSecond(), row.id]
   );
-  if (update.affectedRows === 0) return fail(res, { ok: false, status: 409, error: 'This loan changed — refresh and try again' });
+  if (confirmed === 0) return fail(res, { ok: false, status: 409, error: 'This loan changed — refresh and try again' });
   await events.received(row.id);
   await sendLoan(req, res, row.id);
 }));
@@ -290,11 +275,11 @@ router.post('/:id/return', withLoan(async (req, res, row) => {
     return fail(res, { ok: false, status: 409, error: "This mini isn't out adventuring" });
   }
 
-  const [update] = await pool.execute<ResultSetHeader>(
+  const returned = await change(
     `UPDATE loans SET status = 'returned', returned_at = ? WHERE id = ? AND status = 'adventuring'`,
     [nowToTheSecond(), row.id]
   );
-  if (update.affectedRows === 0) return fail(res, { ok: false, status: 409, error: "This mini isn't out adventuring" });
+  if (returned === 0) return fail(res, { ok: false, status: 409, error: "This mini isn't out adventuring" });
   await events.returned(row.id);
   // It's back — the first person in line (if any) is checked out now.
   await promoteNextHold(row.mini_id);
@@ -307,11 +292,11 @@ router.post('/:id/cancel', withLoan(async (req, res, row) => {
   const cannotCancel: RuleFailure = { ok: false, status: 409, error: 'Only a request that hasn\'t been handed off can be cancelled' };
   if (row.status !== 'negotiating') return fail(res, cannotCancel);
 
-  const [update] = await pool.execute<ResultSetHeader>(
+  const cancelled = await change(
     `UPDATE loans SET status = 'cancelled', cancelled_by = ? WHERE id = ? AND status = 'negotiating'`,
     [req.user!.userId, row.id]
   );
-  if (update.affectedRows === 0) return fail(res, cannotCancel);
+  if (cancelled === 0) return fail(res, cannotCancel);
   await events.requestCancelled(row.id, req.user!.userId);
   // The mini never left its owner, so it's free again — next in line gets it.
   await promoteNextHold(row.mini_id);

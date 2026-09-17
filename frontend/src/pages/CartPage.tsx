@@ -4,8 +4,8 @@ import { api, CartItem } from '../api/client';
 import MiniStatusBadge from '../components/MiniStatusBadge';
 
 type CheckoutResult = {
-  created: Array<{ loanId: number; miniId: number }>;
-  unavailable: Array<{ miniId: number; name: string }>;
+  created: { loanId: number; miniId: number }[];
+  unavailable: { miniId: number; name: string }[];
 };
 
 // The basket. Nothing here is reserved — checking out is what sends each

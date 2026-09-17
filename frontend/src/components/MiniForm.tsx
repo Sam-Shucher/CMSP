@@ -3,13 +3,11 @@ import MultiImagePicker from './MultiImagePicker';
 import FieldError from './FieldError';
 import { useValidatedForm } from '../hooks/useValidatedForm';
 import { looksBlank, normalizePrice, priceProblem } from '../utils/validation';
+import { LIMITS } from '../limits';
 
-// Same limits the server enforces (backend/src/utils/inputs.ts and the price
-// column) — checked here too so people see the problem before uploading.
-const MAX_NAME_LENGTH = 255;
-const MAX_DESCRIPTION_LENGTH = 5000;
-const MAX_TAGS = 20;
-const MAX_TAG_LENGTH = 50;
+// The server's limits (see src/limits.ts) — checked here too so people see the
+// problem before uploading.
+const { miniName: MAX_NAME_LENGTH, description: MAX_DESCRIPTION_LENGTH, tagsPerMini: MAX_TAGS, tag: MAX_TAG_LENGTH } = LIMITS;
 
 export type MiniFormValues = {
   name: string;

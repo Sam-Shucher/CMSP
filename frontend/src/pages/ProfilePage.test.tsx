@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Routes, Route } from 'react-router-dom';
 import ProfilePage from './ProfilePage';
 import { AuthContext } from '../App';
+import { jsonBodyOf } from '../test/apiMock';
 
 const PROFILE = {
   id: 1,
@@ -87,7 +88,7 @@ describe('ProfilePage', () => {
     await userEvent.click(screen.getByRole('button', { name: /save/i }));
 
     await waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
-    expect(JSON.parse(String(vi.mocked(fetch).mock.calls[1][1]?.body))).toEqual({
+    expect(jsonBodyOf(vi.mocked(fetch).mock.calls[1][1])).toEqual({
       displayName: 'Owner Name', phone: '555-9999', neighborhood: 'Riverside',
     });
   });

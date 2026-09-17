@@ -7,6 +7,7 @@ import CartPage from './pages/CartPage';
 import AdminPage from './pages/AdminPage';
 import { AuthContext } from './App';
 import { Loan, Mini } from './api/client';
+import { jsonResponse} from './test/apiMock';
 
 // Anything another member typed — a mini name, a tag, a loan's "where", a
 // display name — must show up as literal text, never become live markup that
@@ -18,10 +19,6 @@ function expectInert(container: HTMLElement): void {
   expect(container.querySelector('img[onerror]')).toBeNull();
   expect(container.querySelector('script')).toBeNull();
   expect((window as unknown as { __pwned?: boolean }).__pwned).toBeUndefined();
-}
-
-function jsonResponse(body: unknown): Response {
-  return { ok: true, json: async () => body } as Response;
 }
 
 beforeEach(() => {

@@ -5,6 +5,7 @@ import { MemoryRouter } from 'react-router-dom';
 import DashboardPage from './DashboardPage';
 import { AuthContext } from '../App';
 import { CartItem, Mini } from '../api/client';
+import { jsonResponse, urlOf, jsonBodyOf} from '../test/apiMock';
 
 const MINI_OWNED_BY_1: Mini = {
   id: 1,
@@ -21,10 +22,6 @@ const MINI_OWNED_BY_1: Mini = {
   created_at: '2026-01-01T00:00:00.000Z',
 };
 
-function jsonResponse(body: unknown, ok = true): Response {
-  return { ok, statusText: ok ? 'OK' : 'Error', json: async () => body } as Response;
-}
-
 // Routes fetches by URL + method, so the order the page fires its requests in doesn't matter.
 function mockApi({ minis = [MINI_OWNED_BY_1], cart = [] as CartItem[], onAddToCart }: {
   minis?: Mini[];
@@ -33,13 +30,13 @@ function mockApi({ minis = [MINI_OWNED_BY_1], cart = [] as CartItem[], onAddToCa
 } = {}): void {
   let cartItems = [...cart];
   vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
-    const url = String(input);
+    const url = urlOf(input);
     const method = init?.method ?? 'GET';
     if (url.startsWith('/api/minis/tags')) return jsonResponse([]);
     if (url.startsWith('/api/minis')) return jsonResponse(minis);
     if (url === '/api/cart' && method === 'GET') return jsonResponse(cartItems);
     if (url === '/api/cart' && method === 'POST') {
-      const body = JSON.parse(String(init?.body)) as { miniId: number };
+      const body = jsonBodyOf(init) as { miniId: number };
       const result = onAddToCart ? onAddToCart(body) : { ok: true, body: { ok: true } };
       if (result.ok) {
         const mini = minis.find((m: Mini) => m.id === body.miniId)!;
@@ -48,9 +45,9 @@ function mockApi({ minis = [MINI_OWNED_BY_1], cart = [] as CartItem[], onAddToCa
           ownerName: mini.owner_name, ownerUsername: mini.owner_username, status: mini.status,
         }];
       }
-      return jsonResponse(result.body, result.ok);
+      return jsonResponse(result.body, { ok: result.ok });
     }
-    return jsonResponse({ error: `unexpected ${method} ${url}` }, false);
+    return jsonResponse({ error: `unexpected ${method} ${url}` }, { ok: false });
   });
 }
 
@@ -128,16 +125,16 @@ describe('DashboardPage — mini detail overlay', () => {
 describe('DashboardPage — browsing, search, and tags', () => {
   function mockBrowse({ minis = [MINI_OWNED_BY_1], tags = ['boss', 'painted'], minisOk = true }: { minis?: Mini[]; tags?: string[]; minisOk?: boolean } = {}) {
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
-      const url = String(input);
+      const url = urlOf(input);
       if (url.startsWith('/api/minis/tags')) return jsonResponse(tags);
-      if (url.startsWith('/api/minis')) return minisOk ? jsonResponse(minis) : jsonResponse({ error: 'Server error' }, false);
+      if (url.startsWith('/api/minis')) return minisOk ? jsonResponse(minis) : jsonResponse({ error: 'Server error' }, { ok: false });
       if (url === '/api/cart') return jsonResponse([]);
-      return jsonResponse({}, false);
+      return jsonResponse({}, { ok: false });
     }));
   }
 
   function minisUrls(): string[] {
-    return vi.mocked(fetch).mock.calls.map(([u]) => String(u)).filter(u => u.startsWith('/api/minis?'));
+    return vi.mocked(fetch).mock.calls.map(([u]) => urlOf(u)).filter(u => u.startsWith('/api/minis?'));
   }
 
   it('keeps a pasted search to the 100 characters the server accepts', async () => {
@@ -255,12 +252,12 @@ describe('DashboardPage — taking your own mini on a quest', () => {
   it('takes it out from the detail view and updates the card right away', async () => {
     const questing = { ...MINI_OWNED_BY_1, status: 'on_quest' as const, available: false, on_quest_since: '2026-10-01T18:00:00.000Z', on_quest_until: null };
     vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
+      const url = urlOf(input);
       if (url === '/api/minis/1/take-out' && init?.method === 'POST') return jsonResponse(questing);
       if (url.startsWith('/api/minis/tags')) return jsonResponse([]);
       if (url.startsWith('/api/minis')) return jsonResponse([MINI_OWNED_BY_1]);
       if (url === '/api/cart') return jsonResponse([]);
-      return jsonResponse({ error: 'unexpected' }, false);
+      return jsonResponse({ error: 'unexpected' }, { ok: false });
     });
     renderDashboard({ userId: 1, username: 'owner', role: 'user' });
     await userEvent.click(await screen.findByText('Dire Wolf'));
@@ -275,12 +272,12 @@ describe('DashboardPage — taking your own mini on a quest', () => {
   it('brings it back', async () => {
     const questing = { ...MINI_OWNED_BY_1, status: 'on_quest' as const, available: false, on_quest_since: '2026-10-01T18:00:00.000Z', on_quest_until: '2026-10-15' };
     vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
+      const url = urlOf(input);
       if (url === '/api/minis/1/bring-back' && init?.method === 'POST') return jsonResponse(MINI_OWNED_BY_1);
       if (url.startsWith('/api/minis/tags')) return jsonResponse([]);
       if (url.startsWith('/api/minis')) return jsonResponse([questing]);
       if (url === '/api/cart') return jsonResponse([]);
-      return jsonResponse({ error: 'unexpected' }, false);
+      return jsonResponse({ error: 'unexpected' }, { ok: false });
     });
     renderDashboard({ userId: 1, username: 'owner', role: 'user' });
     await userEvent.click(await screen.findByText('Dire Wolf'));

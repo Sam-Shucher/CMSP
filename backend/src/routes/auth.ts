@@ -1,8 +1,7 @@
 import { Router, Request, Response } from 'express';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
-import { RowDataPacket, ResultSetHeader } from 'mysql2';
-import { pool } from '../db/connection';
+import { rows, firstRow, change, insert } from '../db/query';
 import { requireAuth, AuthRequest, JwtPayload } from '../middleware/requireAuth';
 import { validateUsername, validatePassword } from '../utils/validation';
 import { jwtSecret, SESSION_LIFETIME_DAYS } from '../config';
@@ -22,7 +21,7 @@ const loginLimitByAccount = rateLimit({
   windowMs: FIFTEEN_MINUTES,
   max: 10,
   key: req => {
-    const email = (req.body as { email?: unknown })?.email;
+    const { email } = (req.body ?? {}) as { email?: unknown };
     return typeof email === 'string' && email.trim() ? `login:${email.trim().toLowerCase()}` : undefined;
   },
 });
@@ -35,19 +34,19 @@ const registerLimitByAddress = rateLimit({ windowMs: ONE_HOUR, max: 10, key: req
 // emails have accounts.
 const TIMING_EQUALIZER_HASH = '$2a$12$XJBk3T0MREeco56ZpDVDuOCuiX9O1I9W0cTEAPLrUOziiddPMhTTu';
 
-interface UserRow extends RowDataPacket {
+interface UserRow {
   id: number;
   username: string;
   password_hash: string;
   display_name: string;
 }
 
-interface MembershipRow extends RowDataPacket {
+interface MembershipRow {
   collection_id: number;
   role: string | null;
 }
 
-interface CollectionRow extends RowDataPacket {
+interface CollectionRow {
   id: number;
   name: string;
   role: string;
@@ -122,7 +121,7 @@ router.post('/register', registerLimitByAddress, async (req: Request, res: Respo
   const neighborhood = (neighborhoodCheck as { value: string | null }).value;
 
   try {
-    const [approved] = await pool.execute<MembershipRow[]>(
+    const approved = await rows<MembershipRow>(
       'SELECT collection_id FROM approved_emails WHERE email = ?',
       [email]
     );
@@ -132,11 +131,11 @@ router.post('/register', registerLimitByAddress, async (req: Request, res: Respo
     }
 
     // Make sure nobody has already claimed this email or username
-    const [existing] = await pool.execute<RowDataPacket[]>(
+    const existing = await firstRow<{ id: number }>(
       'SELECT id FROM users WHERE email = ? OR username = ?',
       [email, username]
     );
-    if (existing.length > 0) {
+    if (existing) {
       res.status(409).json({ error: 'Email or username already taken' });
       return;
     }
@@ -145,19 +144,17 @@ router.post('/register', registerLimitByAddress, async (req: Request, res: Respo
     // but fast enough that users don't notice the delay at login
     const passwordHash = await bcrypt.hash(password, 12);
 
-    const [result] = await pool.execute<ResultSetHeader>(
+    const account = await insert(
       'INSERT INTO users (email, username, password_hash, display_name, phone, neighborhood) VALUES (?, ?, ?, ?, ?, ?)',
       [email, username, passwordHash, displayName, phone, neighborhood]
     );
-    const userId: number = result.insertId;
+    const userId = account.id;
 
-    // Join every collection that invited this email
-    for (const row of approved) {
-      await pool.execute<ResultSetHeader>(
-        'INSERT IGNORE INTO collection_memberships (user_id, collection_id) VALUES (?, ?)',
-        [userId, row.collection_id]
-      );
-    }
+    // Join every collection that invited this email, in one statement.
+    await change(
+      `INSERT IGNORE INTO collection_memberships (user_id, collection_id) VALUES ${approved.map(() => '(?, ?)').join(', ')}`,
+      approved.flatMap(invite => [userId, invite.collection_id])
+    );
 
     // Only auto-select a collection when there's exactly one — otherwise the
     // frontend sends them to the picker before they can do anything else.
@@ -189,26 +186,26 @@ router.post('/login', loginLimitByAddress, loginLimitByAccount, async (req: Requ
   }
 
   try {
-    const [rows] = await pool.execute<UserRow[]>(
+    const user = await firstRow<UserRow>(
       'SELECT id, username, password_hash, display_name FROM users WHERE email = ?',
       [email.trim().toLowerCase()]
     );
 
     // Always run exactly one full bcrypt comparison — against the dummy hash
     // when the email has no account — so both cases take the same time.
-    const passwordMatches = await bcrypt.compare(password, rows[0]?.password_hash ?? TIMING_EQUALIZER_HASH);
-    if (rows.length === 0 || !passwordMatches) {
+    const passwordMatches = await bcrypt.compare(password, user?.password_hash ?? TIMING_EQUALIZER_HASH);
+    if (!user || !passwordMatches) {
       // Same error for "no such user" and "wrong password", so the message
       // can't be used to find out which emails have accounts.
       res.status(401).json({ error: 'Invalid email or password' });
       return;
     }
 
-    const { id, username, display_name } = rows[0];
+    const { id, username, display_name } = user;
 
     // Enter the collection automatically only when there's exactly one;
     // otherwise the app asks which one first.
-    const [memberships] = await pool.execute<MembershipRow[]>(
+    const memberships = await rows<MembershipRow>(
       'SELECT collection_id, role FROM collection_memberships WHERE user_id = ?',
       [id]
     );
@@ -233,8 +230,9 @@ router.post('/login', loginLimitByAddress, loginLimitByAccount, async (req: Requ
 // Ends this session on the server — so even a copy of the cookie stops
 // working — and clears the cookie. Always succeeds, even with a bad cookie.
 router.post('/logout', async (req: Request, res: Response): Promise<void> => {
-  const token: string | undefined = req.cookies?.token;
-  if (token) {
+  const cookies = req.cookies as Record<string, unknown> | undefined;
+  const token = cookies?.token;
+  if (typeof token === 'string') {
     try {
       const payload = jwt.verify(token, jwtSecret(), { algorithms: ['HS256'], ignoreExpiration: true }) as Partial<JwtPayload>;
       if (typeof payload.sid === 'string') await revokeSession(payload.sid);
@@ -267,23 +265,23 @@ router.post('/logout-all', requireAuth, async (req: AuthRequest, res: Response):
 router.get('/me', requireAuth, async (req: AuthRequest, res: Response): Promise<void> => {
   const { userId, collectionId } = req.user!;
   try {
-    const [rows] = await pool.execute<RowDataPacket[]>(
+    const me = await firstRow<{ username: string; collection_role: string | null }>(
       `SELECT u.username, cm.role AS collection_role
        FROM users u
        LEFT JOIN collection_memberships cm ON cm.user_id = u.id AND cm.collection_id = ?
        WHERE u.id = ?`,
       [collectionId ?? null, userId]
     );
-    if (rows.length === 0) {
+    if (!me) {
       res.clearCookie('token');
       res.status(401).json({ error: 'Invalid or expired session' });
       return;
     }
-    const stillMember = collectionId !== undefined && rows[0].collection_role != null;
+    const stillMember = collectionId !== undefined && me.collection_role !== null;
     res.json({
       userId,
-      username: rows[0].username,
-      role: stillMember ? roleName(rows[0].collection_role) : 'user',
+      username: me.username,
+      role: stillMember ? roleName(me.collection_role) : 'user',
       ...(stillMember ? { collectionId } : {}),
     });
   } catch (err: unknown) {
@@ -297,14 +295,14 @@ router.get('/me', requireAuth, async (req: AuthRequest, res: Response): Promise<
 // used to render the group picker.
 router.get('/collections', requireAuth, async (req: AuthRequest, res: Response): Promise<void> => {
   try {
-    const [rows] = await pool.execute<CollectionRow[]>(
+    const mine = await rows<CollectionRow>(
       `SELECT c.id, c.name, cm.role FROM collections c
        JOIN collection_memberships cm ON cm.collection_id = c.id
        WHERE cm.user_id = ?
        ORDER BY c.name`,
       [req.user!.userId]
     );
-    res.json(rows.map(r => ({ id: r.id, name: r.name, role: roleName(r.role) })));
+    res.json(mine.map(c => ({ id: c.id, name: c.name, role: roleName(c.role) })));
   } catch (err: unknown) {
     console.error(err);
     res.status(500).json({ error: 'Server error' });
@@ -325,21 +323,21 @@ router.post('/select-collection', requireAuth, async (req: AuthRequest, res: Res
   const collectionId = idCheck.value;
 
   try {
-    const [rows] = await pool.execute<CollectionRow[]>(
+    const collection = await firstRow<CollectionRow>(
       `SELECT c.id, c.name, cm.role FROM collections c
        JOIN collection_memberships cm ON cm.collection_id = c.id
        WHERE cm.user_id = ? AND c.id = ?`,
       [req.user!.userId, collectionId]
     );
 
-    if (rows.length === 0) {
+    if (!collection) {
       res.status(403).json({ error: 'You are not a member of that collection' });
       return;
     }
 
     const { sid, userId, username } = req.user!;
-    setAuthCookie(res, { sid, userId, username, collectionId: rows[0].id });
-    res.json({ userId, username, collectionId: rows[0].id, collectionName: rows[0].name, role: roleName(rows[0].role) });
+    setAuthCookie(res, { sid, userId, username, collectionId: collection.id });
+    res.json({ userId, username, collectionId: collection.id, collectionName: collection.name, role: roleName(collection.role) });
   } catch (err: unknown) {
     console.error(err);
     res.status(500).json({ error: 'Server error' });

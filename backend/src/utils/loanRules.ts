@@ -27,7 +27,10 @@ export interface LoanSnapshot extends LoanTerms, LoanApprovals {
 
 export type RuleFailure = { ok: false; status: 400 | 403 | 409; error: string };
 
-export const MAX_DURATION_DAYS = 365;
+// A loan is a lend between friends, not an indefinite handover: three months
+// at a time. Longer than that, agree a fresh loan when this one comes back.
+export const MAX_DURATION_DAYS = 90;
+export const DURATION_LIMIT_MESSAGE = `Loans can run from 1 to ${MAX_DURATION_DAYS} days (about 3 months)`;
 const MAX_TEXT_LENGTH = 255;
 const MIN_YEAR = 2000;
 const MAX_YEAR = 2100;
@@ -71,7 +74,7 @@ export function parseTermsPatch(
     }
     const days = input.durationDays;
     if (typeof days !== 'number' || !Number.isInteger(days) || days < 1 || days > MAX_DURATION_DAYS) {
-      return { ok: false, status: 400, error: `Duration must be a whole number of days from 1 to ${MAX_DURATION_DAYS}` };
+      return { ok: false, status: 400, error: DURATION_LIMIT_MESSAGE };
     }
     patch.durationDays = days;
   }

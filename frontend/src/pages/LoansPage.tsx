@@ -2,11 +2,12 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api, Loan, MyHolds, LOANS_CHANGED_EVENT } from '../api/client';
 import LoanCard from '../components/LoanCard';
+import { POLL_MS } from '../limits';
 
 // How often the "time left" countdowns re-render.
-const TICK_MS = 60 * 1000;
+const TICK_MS = POLL_MS.clockTick;
 // How often to check for changes the other person made.
-const REFRESH_MS = 30 * 1000;
+const REFRESH_MS = POLL_MS.loans;
 
 const rowStyle: React.CSSProperties = {
   display: 'flex', alignItems: 'center', gap: '12px', padding: '10px 14px', marginBottom: '8px',

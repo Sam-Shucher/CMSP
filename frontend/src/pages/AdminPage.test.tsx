@@ -3,6 +3,7 @@ import { render, screen, waitFor, within, fireEvent, act } from '@testing-librar
 import userEvent from '@testing-library/user-event';
 import AdminPage from './AdminPage';
 import { AuthContext } from '../App';
+import { jsonResponse} from '../test/apiMock';
 
 const SELF_ADMIN = { userId: 1, username: 'boss', role: 'admin' };
 
@@ -21,10 +22,6 @@ function renderAdminPage() {
       <AdminPage />
     </AuthContext.Provider>
   );
-}
-
-function jsonResponse(body: unknown): Response {
-  return { ok: true, json: async () => body } as Response;
 }
 
 type Handler = (url: string, init?: RequestInit) => Response | undefined;

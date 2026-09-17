@@ -164,7 +164,7 @@ test.describe('sessions', () => {
 
     const [{ live }] = await query(
       "SELECT COUNT(*) AS live FROM sessions s JOIN users u ON u.id = s.user_id WHERE u.username = 'sam' AND s.revoked_at IS NULL"
-    ) as Array<{ live: number }>;
+    ) as { live: number }[];
     expect(Number(live)).toBe(0);
   });
 

@@ -31,7 +31,7 @@ describe('ImageDropzone', () => {
     const onFiles = vi.fn();
     render(<ImageDropzone onFiles={onFiles} />);
 
-    const input = screen.getByTestId('image-input') as HTMLInputElement;
+    const input = screen.getByTestId('image-input');
     expect(input).toHaveAttribute('multiple');
     const a = makeFile('front.png');
     const b = makeFile('back.png');
@@ -43,7 +43,7 @@ describe('ImageDropzone', () => {
   it('lets the same photo be picked again after it was removed', async () => {
     const onFiles = vi.fn();
     render(<ImageDropzone onFiles={onFiles} />);
-    const input = screen.getByTestId('image-input') as HTMLInputElement;
+    const input = screen.getByTestId<HTMLInputElement>('image-input');
     const photo = makeFile('front.png');
 
     await userEvent.upload(input, photo);

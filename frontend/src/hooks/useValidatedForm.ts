@@ -53,7 +53,7 @@ export function useValidatedForm<V extends Record<string, string>>(initial: V, v
   }, [show]);
 
   function problemWith(name: keyof V, current: V): string | null {
-    return validators[name]?.(current[name] ?? '', current) ?? null;
+    return validators[name]?.(current[name], current) ?? null;
   }
 
   function errorFor(name: keyof V): string | null {
@@ -64,7 +64,7 @@ export function useValidatedForm<V extends Record<string, string>>(initial: V, v
   function validateAll(): boolean {
     timers.current.forEach(clearTimeout);
     timers.current.clear();
-    const names = Object.keys(validators) as Array<keyof V>;
+    const names = Object.keys(validators) as (keyof V)[];
     setVisible(prev => ({ ...prev, ...Object.fromEntries(names.map(n => [n, true])) }));
     return names.every(name => problemWith(name, valuesRef.current) === null);
   }

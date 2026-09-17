@@ -66,7 +66,7 @@ async function lendOut(miniId: number): Promise<number> {
   return loanId;
 }
 
-async function notificationsFor(who: TestUser): Promise<Array<{ type: string; message: string; loanId: number | null; miniId: number | null }>> {
+async function notificationsFor(who: TestUser): Promise<{ type: string; message: string; loanId: number | null; miniId: number | null }[]> {
   const res = await request(app).get('/api/notifications').set('Cookie', who.cookie);
   return res.body.items;
 }

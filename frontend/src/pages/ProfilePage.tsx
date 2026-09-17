@@ -42,6 +42,9 @@ export default function ProfilePage(): React.ReactElement {
         form.reset({ displayName: p.display_name, phone: p.phone ?? '', neighborhood: p.neighborhood ?? '' });
       })
       .catch((err: unknown) => setLoadError(err instanceof Error ? err.message : 'Failed to load your profile'));
+    // Loads once: `form` is new each render, and re-running would overwrite
+    // what the person has typed since.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>): Promise<void> {

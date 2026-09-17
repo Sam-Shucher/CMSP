@@ -2,9 +2,9 @@ import { Router, Request, Response, NextFunction } from 'express';
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
-import { RowDataPacket, ResultSetHeader } from 'mysql2';
-import { pool } from '../db/connection';
+import { rows, firstRow, change, insert } from '../db/query';
 import { requireAuth } from '../middleware/requireAuth';
+import { route } from '../utils/route';
 import { requireCollectionMembership, CollectionRequest } from '../middleware/requireCollectionMembership';
 import { matchesSearch } from '../utils/search';
 import { activeLoanStatusSql, miniStatusFrom } from '../utils/miniStatus';
@@ -146,7 +146,7 @@ function verifyImageContents(req: Request, res: Response, next: NextFunction): v
 // ---------------------------------------------------------------------------
 
 // The full shape of a row from the minis + users + tags + images join query
-interface MiniRow extends RowDataPacket {
+interface MiniRow {
   id: number;
   name: string;
   description: string | null;
@@ -163,22 +163,22 @@ interface MiniRow extends RowDataPacket {
   images: string | null;
 }
 
-interface TagRow extends RowDataPacket {
+interface TagRow {
   id: number;
   name: string;
 }
 
-interface TagNameRow extends RowDataPacket {
+interface TagNameRow {
   name: string;
 }
 
-interface OwnerRow extends RowDataPacket {
+interface OwnerRow {
   owner_id: number;
   active_loan_status?: string | null;
   on_quest_since?: Date | null;
 }
 
-interface ImagePathRow extends RowDataPacket {
+interface ImagePathRow {
   image_path: string;
 }
 
@@ -260,38 +260,41 @@ function parseMiniFields(body: Record<string, unknown>): Check<MiniFields> {
 
 // Replaces all of a mini's tags with the given (already validated) list —
 // shared by POST / and PATCH /:id so the upsert logic only lives in one place.
+// Three statements whatever the number of tags: clear, add any new tag names,
+// then link them all at once.
 async function setTags(miniId: number, tagNames: string[]): Promise<void> {
-  await pool.execute<ResultSetHeader>('DELETE FROM mini_tags WHERE mini_id = ?', [miniId]);
+  await change('DELETE FROM mini_tags WHERE mini_id = ?', [miniId]);
+  if (tagNames.length === 0) return;
 
-  for (const tagName of tagNames) {
-    // INSERT IGNORE skips silently if the tag name already exists (avoids duplicate key error)
-    await pool.execute<ResultSetHeader>('INSERT IGNORE INTO tags (name) VALUES (?)', [tagName]);
+  // INSERT IGNORE skips names that already exist (no duplicate-key error).
+  await change(
+    `INSERT IGNORE INTO tags (name) VALUES ${tagNames.map(() => '(?)').join(', ')}`,
+    tagNames
+  );
 
-    // Fetch the id of the tag we just created or that already existed
-    const [tagRows] = await pool.execute<TagRow[]>('SELECT id FROM tags WHERE name = ?', [tagName]);
-    const tagId: number = tagRows[0].id;
+  const placeholders = tagNames.map(() => '?').join(', ');
+  const tags = await rows<TagRow>(`SELECT id FROM tags WHERE name IN (${placeholders})`, tagNames);
+  if (tags.length === 0) return;
 
-    // Link the tag to this mini in the junction table
-    await pool.execute<ResultSetHeader>(
-      'INSERT IGNORE INTO mini_tags (mini_id, tag_id) VALUES (?, ?)',
-      [miniId, tagId]
-    );
-  }
+  await change(
+    `INSERT IGNORE INTO mini_tags (mini_id, tag_id) VALUES ${tags.map(() => '(?, ?)').join(', ')}`,
+    tags.flatMap(tag => [miniId, tag.id])
+  );
 }
 
 // Replaces all of a mini's photos with keptPaths (existing images the caller
 // chose to keep, in order) followed by newFiles (freshly uploaded ones).
 // Shared by POST / and PATCH /:id, same pattern as setTags above.
 async function setImages(miniId: number, keptPaths: string[], newFiles: Express.Multer.File[]): Promise<void> {
-  await pool.execute<ResultSetHeader>('DELETE FROM mini_images WHERE mini_id = ?', [miniId]);
+  await change('DELETE FROM mini_images WHERE mini_id = ?', [miniId]);
 
   const allPaths = [...keptPaths, ...newFiles.map(f => `/uploads/${f.filename}`)];
-  for (let i = 0; i < allPaths.length; i++) {
-    await pool.execute<ResultSetHeader>(
-      'INSERT INTO mini_images (mini_id, image_path, position) VALUES (?, ?, ?)',
-      [miniId, allPaths[i], i]
-    );
-  }
+  if (allPaths.length === 0) return;
+
+  await change(
+    `INSERT INTO mini_images (mini_id, image_path, position) VALUES ${allPaths.map(() => '(?, ?, ?)').join(', ')}`,
+    allPaths.flatMap((imagePath, position) => [miniId, imagePath, position])
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -303,7 +306,7 @@ async function setImages(miniId: number, keptPaths: string[], newFiles: Express.
 // name/description search or a tag. Minis in every other collection are
 // invisible here, full stop — the collection_id filter below is mandatory,
 // not optional like q/tag.
-router.get('/', async (req: CollectionRequest, res: Response): Promise<void> => {
+router.get('/', route(async (req, res) => {
   // Query strings can arrive as arrays (?q=a&q=b) or objects (?tag[x]=y), and
   // typo-tolerant search costs CPU in proportion to its length — so only
   // short, plain text is accepted.
@@ -319,88 +322,73 @@ router.get('/', async (req: CollectionRequest, res: Response): Promise<void> => 
   // Saved tags are lowercase and compared exactly, so the filter is too.
   const tag = (tagFilter as { value: string | null }).value?.toLowerCase() ?? null;
 
-  try {
-    // The collection filter is always present; tag (a controlled pill, not
-    // free text) stays an exact match in SQL. Free-text search (q) is
-    // applied afterwards in JS — see matchesSearch below — so a misspelled
-    // search term still finds a close match, which plain SQL LIKE can't do.
-    const params: (string | number)[] = [req.collectionId!];
-    const where: string[] = ['m.collection_id = ?'];
+  // The collection filter is always present; tag (a controlled pill, not
+  // free text) stays an exact match in SQL. Free-text search (q) is
+  // applied afterwards in JS — see matchesSearch below — so a misspelled
+  // search term still finds a close match, which plain SQL LIKE can't do.
+  const params: (string | number)[] = [req.collectionId!];
+  const where: string[] = ['m.collection_id = ?'];
 
-    if (tag) {
-      // Subquery: find minis that have a tag matching the filter
-      where.push('m.id IN (SELECT mt2.mini_id FROM mini_tags mt2 JOIN tags t2 ON mt2.tag_id = t2.id WHERE t2.name = ?)');
-      params.push(tag);
-    }
-
-    // GROUP_CONCAT aggregates all of a mini's tag names into one comma-separated
-    // string per row, so we don't get duplicate mini rows (one per tag)
-    const [rows] = await pool.execute<MiniRow[]>(
-      `${MINI_SELECT} WHERE ${where.join(' AND ')} GROUP BY m.id ORDER BY m.created_at DESC`,
-      params
-    );
-
-    let minis = rows.map(serializeMini);
-    if (search) {
-      minis = minis.filter(m => matchesSearch([m.name, m.description, m.tags], search));
-    }
-
-    res.json(minis);
-  } catch (err: unknown) {
-    console.error(err);
-    res.status(500).json({ error: 'Server error' });
+  if (tag) {
+    // Subquery: find minis that have a tag matching the filter
+    where.push('m.id IN (SELECT mt2.mini_id FROM mini_tags mt2 JOIN tags t2 ON mt2.tag_id = t2.id WHERE t2.name = ?)');
+    params.push(tag);
   }
-});
+
+  // GROUP_CONCAT aggregates all of a mini's tag names into one comma-separated
+  // string per row, so we don't get duplicate mini rows (one per tag)
+  const found = await rows<MiniRow>(
+    `${MINI_SELECT} WHERE ${where.join(' AND ')} GROUP BY m.id ORDER BY m.created_at DESC`,
+    params
+  );
+
+  let minis = found.map(serializeMini);
+  if (search) {
+    minis = minis.filter(m => matchesSearch([m.name, m.description, m.tags], search));
+  }
+
+  res.json(minis);
+}));
 
 // GET /api/minis/tags
 // Returns the sorted list of tags actually used by minis in the caller's
 // active collection — not every tag in the database, so a tag name from
 // another collection's minis can't leak through the filter pills.
 // Registered before /:id so "tags" isn't swallowed as an :id value.
-router.get('/tags', async (req: CollectionRequest, res: Response): Promise<void> => {
-  try {
-    const [rows] = await pool.execute<TagNameRow[]>(
-      `SELECT DISTINCT t.name FROM tags t
-       JOIN mini_tags mt ON mt.tag_id = t.id
-       JOIN minis m ON m.id = mt.mini_id
-       WHERE m.collection_id = ?
-       ORDER BY t.name`,
-      [req.collectionId!]
-    );
-    res.json(rows.map(r => r.name));
-  } catch (err: unknown) {
-    console.error(err);
-    res.status(500).json({ error: 'Server error' });
-  }
-});
+router.get('/tags', route(async (req, res) => {
+  const used = await rows<TagNameRow>(
+    `SELECT DISTINCT t.name FROM tags t
+     JOIN mini_tags mt ON mt.tag_id = t.id
+     JOIN minis m ON m.id = mt.mini_id
+     WHERE m.collection_id = ?
+     ORDER BY t.name`,
+    [req.collectionId!]
+  );
+  res.json(used.map(tag => tag.name));
+}));
 
 // GET /api/minis/:id
 // Returns a single mini by id — used to prefill the edit form. A mini from
 // a different collection returns 404, identical to a nonexistent id, so an
 // id guess can't be used to even confirm another collection's mini exists.
-router.get('/:id', async (req: CollectionRequest, res: Response): Promise<void> => {
-  try {
-    const [rows] = await pool.execute<MiniRow[]>(
-      `${MINI_SELECT} WHERE m.id = ? AND m.collection_id = ? GROUP BY m.id`,
-      [req.params.id, req.collectionId!]
-    );
+router.get('/:id', route(async (req, res) => {
+  const mini = await firstRow<MiniRow>(
+    `${MINI_SELECT} WHERE m.id = ? AND m.collection_id = ? GROUP BY m.id`,
+    [req.params.id, req.collectionId!]
+  );
 
-    if (rows.length === 0) {
-      res.status(404).json({ error: 'Mini not found' });
-      return;
-    }
-
-    res.json(serializeMini(rows[0]));
-  } catch (err: unknown) {
-    console.error(err);
-    res.status(500).json({ error: 'Server error' });
+  if (!mini) {
+    res.status(404).json({ error: 'Mini not found' });
+    return;
   }
-});
+
+  res.json(serializeMini(mini));
+}));
 
 // POST /api/minis
 // Creates a new mini in the caller's active collection. Expects multipart/form-data.
 // Fields: name (required), description, tags (comma-separated), images (0-3 files).
-router.post('/', discardUploadsIfRejected, upload.array('images', MAX_IMAGES), handleUploadError, verifyImageContents, async (req: CollectionRequest, res: Response): Promise<void> => {
+router.post('/', discardUploadsIfRejected, upload.array('images', MAX_IMAGES), handleUploadError, verifyImageContents, route(async (req, res) => {
   const files = (req.files as Express.Multer.File[] | undefined) ?? [];
 
   const fields = parseMiniFields((req.body ?? {}) as Record<string, unknown>);
@@ -410,23 +398,17 @@ router.post('/', discardUploadsIfRejected, upload.array('images', MAX_IMAGES), h
   }
   const { name, description, tags, price } = fields.value;
 
-  try {
-    // Insert the mini itself — req.user! is safe here because requireAuth ran first
-    const [result] = await pool.execute<ResultSetHeader>(
-      'INSERT INTO minis (name, description, owner_id, collection_id, price) VALUES (?, ?, ?, ?, ?)',
-      [name, description, req.user!.userId, req.collectionId!, price]
-    );
-    const miniId: number = result.insertId;
+  // Insert the mini itself — req.user! is safe here because requireAuth ran first
+  const created = await insert(
+    'INSERT INTO minis (name, description, owner_id, collection_id, price) VALUES (?, ?, ?, ?, ?)',
+    [name, description, req.user!.userId, req.collectionId!, price]
+  );
 
-    await setTags(miniId, tags);
-    await setImages(miniId, [], files);
+  await setTags(created.id, tags);
+  await setImages(created.id, [], files);
 
-    res.status(201).json({ message: 'Mini added', miniId });
-  } catch (err: unknown) {
-    console.error(err);
-    res.status(500).json({ error: 'Server error' });
-  }
-});
+  res.status(201).json({ message: 'Mini added', miniId: created.id });
+}));
 
 // PATCH /api/minis/:id
 // Edits an existing mini. Only the owner or an admin may do this, and only
@@ -435,91 +417,81 @@ router.post('/', discardUploadsIfRejected, upload.array('images', MAX_IMAGES), h
 // Expects multipart/form-data. `existingImages` is a JSON array of image
 // paths (from the mini's current photos) to keep; any new files in the
 // `images` field are appended after them, capped at MAX_IMAGES total.
-router.patch('/:id', discardUploadsIfRejected, upload.array('images', MAX_IMAGES), handleUploadError, verifyImageContents, async (req: CollectionRequest, res: Response): Promise<void> => {
+router.patch('/:id', discardUploadsIfRejected, upload.array('images', MAX_IMAGES), handleUploadError, verifyImageContents, route(async (req, res) => {
   const miniId = req.params.id;
   const existingImages = (req.body as Record<string, unknown> | undefined)?.existingImages;
   const newFiles = (req.files as Express.Multer.File[] | undefined) ?? [];
 
-  try {
-    const [ownerRows] = await pool.execute<OwnerRow[]>(
-      'SELECT owner_id FROM minis WHERE id = ? AND collection_id = ?',
-      [miniId, req.collectionId!]
-    );
+  const owned = await firstRow<OwnerRow>(
+    'SELECT owner_id FROM minis WHERE id = ? AND collection_id = ?',
+    [miniId, req.collectionId!]
+  );
 
-    if (ownerRows.length === 0) {
-      res.status(404).json({ error: 'Mini not found' });
-      return;
-    }
-
-    const isOwner = ownerRows[0].owner_id === req.user!.userId;
-    const isAdmin = req.user!.role === 'admin';
-    if (!isOwner && !isAdmin) {
-      res.status(403).json({ error: 'You can only edit your own minis' });
-      return;
-    }
-
-    const [currentImageRows] = await pool.execute<ImagePathRow[]>(
-      'SELECT image_path FROM mini_images WHERE mini_id = ? ORDER BY position',
-      [miniId]
-    );
-    const currentPaths = currentImageRows.map(r => r.image_path);
-
-    // existingImages comes from the browser, so it can name anything. Only
-    // photos this mini ALREADY has can be kept — otherwise someone could
-    // attach another member's photo (or an outside tracking URL) to their own
-    // mini, and deleting their mini would then delete that member's file.
-    let requested: unknown = [];
-    if (typeof existingImages === 'string' && existingImages) {
-      try {
-        requested = JSON.parse(existingImages);
-      } catch {
-        requested = [];
-      }
-    }
-    const keptPaths = Array.isArray(requested)
-      ? [...new Set(requested.filter((p): p is string => typeof p === 'string' && currentPaths.includes(p)))]
-      : [];
-
-    if (keptPaths.length + newFiles.length > MAX_IMAGES) {
-      res.status(400).json({ error: `You can have at most ${MAX_IMAGES} photos per mini` });
-      return;
-    }
-
-    const fields = parseMiniFields((req.body ?? {}) as Record<string, unknown>);
-    if (!fields.ok) {
-      res.status(400).json({ error: fields.error });
-      return;
-    }
-    const { name, description, tags, price } = fields.value;
-
-    // Which of the mini's current photos are being dropped, so we can clean
-    // up their files from disk once the DB is updated.
-    const droppedPaths = currentPaths.filter(p => !keptPaths.includes(p));
-
-    await pool.execute<ResultSetHeader>(
-      'UPDATE minis SET name = ?, description = ?, price = ? WHERE id = ?',
-      [name, description, price, miniId]
-    );
-
-    await setTags(Number(miniId), tags);
-    await setImages(Number(miniId), keptPaths, newFiles);
-
-    for (const droppedPath of droppedPaths) {
-      const oldFile = path.join(uploadsDir, path.basename(droppedPath));
-      fs.unlink(oldFile, () => {}); // best-effort cleanup; ignore errors
-    }
-
-    const [rows] = await pool.execute<MiniRow[]>(
-      `${MINI_SELECT} WHERE m.id = ? GROUP BY m.id`,
-      [miniId]
-    );
-
-    res.json(serializeMini(rows[0]));
-  } catch (err: unknown) {
-    console.error(err);
-    res.status(500).json({ error: 'Server error' });
+  if (!owned) {
+    res.status(404).json({ error: 'Mini not found' });
+    return;
   }
-});
+
+  const isOwner = owned.owner_id === req.user!.userId;
+  const isAdmin = req.user!.role === 'admin';
+  if (!isOwner && !isAdmin) {
+    res.status(403).json({ error: 'You can only edit your own minis' });
+    return;
+  }
+
+  const currentImages = await rows<ImagePathRow>(
+    'SELECT image_path FROM mini_images WHERE mini_id = ? ORDER BY position',
+    [miniId]
+  );
+  const currentPaths = currentImages.map(image => image.image_path);
+
+  // existingImages comes from the browser, so it can name anything. Only
+  // photos this mini ALREADY has can be kept — otherwise someone could
+  // attach another member's photo (or an outside tracking URL) to their own
+  // mini, and deleting their mini would then delete that member's file.
+  let requested: unknown = [];
+  if (typeof existingImages === 'string' && existingImages) {
+    try {
+      requested = JSON.parse(existingImages);
+    } catch {
+      requested = [];
+    }
+  }
+  const keptPaths = Array.isArray(requested)
+    ? [...new Set(requested.filter((p): p is string => typeof p === 'string' && currentPaths.includes(p)))]
+    : [];
+
+  if (keptPaths.length + newFiles.length > MAX_IMAGES) {
+    res.status(400).json({ error: `You can have at most ${MAX_IMAGES} photos per mini` });
+    return;
+  }
+
+  const fields = parseMiniFields((req.body ?? {}) as Record<string, unknown>);
+  if (!fields.ok) {
+    res.status(400).json({ error: fields.error });
+    return;
+  }
+  const { name, description, tags, price } = fields.value;
+
+  // Which of the mini's current photos are being dropped, so we can clean
+  // up their files from disk once the DB is updated.
+  const droppedPaths = currentPaths.filter(p => !keptPaths.includes(p));
+
+  await change(
+    'UPDATE minis SET name = ?, description = ?, price = ? WHERE id = ?',
+    [name, description, price, miniId]
+  );
+
+  await setTags(Number(miniId), tags);
+  await setImages(Number(miniId), keptPaths, newFiles);
+
+  for (const droppedPath of droppedPaths) {
+    const oldFile = path.join(uploadsDir, path.basename(droppedPath));
+    fs.unlink(oldFile, () => {}); // best-effort cleanup; ignore errors
+  }
+
+  await sendMini(res, miniId);
+}));
 
 // ---------------------------------------------------------------------------
 // "On a Quest" — the owner takes their own mini out, no negotiation needed.
@@ -528,154 +500,137 @@ router.patch('/:id', discardUploadsIfRejected, upload.array('images', MAX_IMAGES
 // ---------------------------------------------------------------------------
 
 async function findOwnMini(req: CollectionRequest, res: Response): Promise<OwnerRow | null> {
-  const [rows] = await pool.execute<OwnerRow[]>(
+  const mini = await firstRow<OwnerRow>(
     `SELECT m.owner_id, ${activeLoanStatusSql('m')} AS active_loan_status, m.on_quest_since
      FROM minis m WHERE m.id = ? AND m.collection_id = ?`,
     [req.params.id, req.collectionId!]
   );
-  if (rows.length === 0) {
+  if (!mini) {
     res.status(404).json({ error: 'Mini not found' });
     return null;
   }
-  if (rows[0].owner_id !== req.user!.userId) {
+  if (mini.owner_id !== req.user!.userId) {
     res.status(403).json({ error: 'Only the owner can take a mini on a quest' });
     return null;
   }
-  return rows[0];
+  return mini;
 }
 
+// The mini as the browser expects it, freshly read back after a change.
 async function sendMini(res: Response, miniId: string): Promise<void> {
-  const [rows] = await pool.execute<MiniRow[]>(`${MINI_SELECT} WHERE m.id = ? GROUP BY m.id`, [miniId]);
-  res.json(serializeMini(rows[0]));
+  const mini = await firstRow<MiniRow>(`${MINI_SELECT} WHERE m.id = ? GROUP BY m.id`, [miniId]);
+  res.json(mini === null ? null : serializeMini(mini));
 }
 
 // POST /api/minis/:id/take-out  { backBy?: 'YYYY-MM-DD' }
-router.post('/:id/take-out', async (req: CollectionRequest, res: Response): Promise<void> => {
+router.post('/:id/take-out', route(async (req, res) => {
   const backBy = parseBackBy((req.body as { backBy?: unknown } | undefined)?.backBy);
   if (!backBy.ok) {
     res.status(400).json({ error: backBy.error });
     return;
   }
 
-  try {
-    const mini = await findOwnMini(req, res);
-    if (!mini) return;
+  const mini = await findOwnMini(req, res);
+  if (!mini) return;
 
-    if (mini.active_loan_status === 'negotiating') {
-      res.status(409).json({ error: 'Someone has requested this mini — cancel or finish that request first' });
-      return;
-    }
-    if (mini.active_loan_status === 'adventuring') {
-      res.status(409).json({ error: 'This mini is out adventuring with a borrower right now' });
-      return;
-    }
-    if (mini.on_quest_since) {
-      res.status(409).json({ error: 'This mini is already on a quest' });
-      return;
-    }
-
-    // The same checks again, inside the update: someone could check it out
-    // in the instant between the lookup above and this write.
-    const [result] = await pool.execute<ResultSetHeader>(
-      `UPDATE minis m SET on_quest_since = NOW(), on_quest_until = ?
-       WHERE m.id = ? AND m.collection_id = ? AND m.owner_id = ?
-         AND m.on_quest_since IS NULL
-         AND NOT EXISTS (
-           SELECT 1 FROM loans l WHERE l.mini_id = m.id AND l.status IN ('negotiating', 'adventuring')
-         )`,
-      [backBy.value, req.params.id, req.collectionId!, req.user!.userId]
-    );
-    if (result.affectedRows === 0) {
-      res.status(409).json({ error: 'This mini just became unavailable — try again' });
-      return;
-    }
-    await sendMini(res, req.params.id);
-  } catch (err: unknown) {
-    console.error(err);
-    res.status(500).json({ error: 'Server error' });
+  if (mini.active_loan_status === 'negotiating') {
+    res.status(409).json({ error: 'Someone has requested this mini — cancel or finish that request first' });
+    return;
   }
-});
+  if (mini.active_loan_status === 'adventuring') {
+    res.status(409).json({ error: 'This mini is out adventuring with a borrower right now' });
+    return;
+  }
+  if (mini.on_quest_since) {
+    res.status(409).json({ error: 'This mini is already on a quest' });
+    return;
+  }
+
+  // The same checks again, inside the update: someone could check it out
+  // in the instant between the lookup above and this write.
+  const takenOut = await change(
+    `UPDATE minis m SET on_quest_since = NOW(), on_quest_until = ?
+     WHERE m.id = ? AND m.collection_id = ? AND m.owner_id = ?
+       AND m.on_quest_since IS NULL
+       AND NOT EXISTS (
+         SELECT 1 FROM loans l WHERE l.mini_id = m.id AND l.status IN ('negotiating', 'adventuring')
+       )`,
+    [backBy.value, req.params.id, req.collectionId!, req.user!.userId]
+  );
+  if (takenOut === 0) {
+    res.status(409).json({ error: 'This mini just became unavailable — try again' });
+    return;
+  }
+  await sendMini(res, req.params.id);
+}));
 
 // POST /api/minis/:id/bring-back
-router.post('/:id/bring-back', async (req: CollectionRequest, res: Response): Promise<void> => {
-  try {
-    const mini = await findOwnMini(req, res);
-    if (!mini) return;
+router.post('/:id/bring-back', route(async (req, res) => {
+  const mini = await findOwnMini(req, res);
+  if (!mini) return;
 
-    if (!mini.on_quest_since) {
-      res.status(409).json({ error: 'This mini isn\'t on a quest' });
-      return;
-    }
-
-    const [result] = await pool.execute<ResultSetHeader>(
-      `UPDATE minis SET on_quest_since = NULL, on_quest_until = NULL
-       WHERE id = ? AND collection_id = ? AND owner_id = ? AND on_quest_since IS NOT NULL`,
-      [req.params.id, req.collectionId!, req.user!.userId]
-    );
-    if (result.affectedRows === 0) {
-      res.status(409).json({ error: 'This mini isn\'t on a quest' });
-      return;
-    }
-    // Back and free — the first person in line (if any) is checked out now.
-    await promoteNextHold(Number(req.params.id));
-    await sendMini(res, req.params.id);
-  } catch (err: unknown) {
-    console.error(err);
-    res.status(500).json({ error: 'Server error' });
+  if (!mini.on_quest_since) {
+    res.status(409).json({ error: 'This mini isn\'t on a quest' });
+    return;
   }
-});
+
+  const broughtBack = await change(
+    `UPDATE minis SET on_quest_since = NULL, on_quest_until = NULL
+     WHERE id = ? AND collection_id = ? AND owner_id = ? AND on_quest_since IS NOT NULL`,
+    [req.params.id, req.collectionId!, req.user!.userId]
+  );
+  if (broughtBack === 0) {
+    res.status(409).json({ error: 'This mini isn\'t on a quest' });
+    return;
+  }
+  // Back and free — the first person in line (if any) is checked out now.
+  await promoteNextHold(Number(req.params.id));
+  await sendMini(res, req.params.id);
+}));
 
 // DELETE /api/minis/:id
 // Deletes a mini. Only the owner or an admin may do this, and only within
 // the caller's active collection. Tags and photo rows are removed
 // automatically via ON DELETE CASCADE; the photo files themselves still
 // need cleaning up from disk here.
-router.delete('/:id', async (req: CollectionRequest, res: Response): Promise<void> => {
+router.delete('/:id', route(async (req, res) => {
   const miniId = req.params.id;
 
-  try {
-    const [ownerRows] = await pool.execute<OwnerRow[]>(
-      `SELECT m.owner_id, ${activeLoanStatusSql('m')} AS active_loan_status
-       FROM minis m WHERE m.id = ? AND m.collection_id = ?`,
-      [miniId, req.collectionId!]
-    );
+  const mini = await firstRow<OwnerRow>(
+    `SELECT m.owner_id, ${activeLoanStatusSql('m')} AS active_loan_status
+     FROM minis m WHERE m.id = ? AND m.collection_id = ?`,
+    [miniId, req.collectionId!]
+  );
 
-    if (ownerRows.length === 0) {
-      res.status(404).json({ error: 'Mini not found' });
-      return;
-    }
-
-    const isOwner = ownerRows[0].owner_id === req.user!.userId;
-    const isAdmin = req.user!.role === 'admin';
-    if (!isOwner && !isAdmin) {
-      res.status(403).json({ error: 'You can only delete your own minis' });
-      return;
-    }
-
-    // Deleting would cascade away someone's in-progress request or loan.
-    if (ownerRows[0].active_loan_status) {
-      res.status(409).json({ error: 'This mini has an active request or loan — finish or cancel it first' });
-      return;
-    }
-
-    const [imageRows] = await pool.execute<ImagePathRow[]>(
-      'SELECT image_path FROM mini_images WHERE mini_id = ?',
-      [miniId]
-    );
-
-    // Tell anyone in line or on the notify list before their entries vanish with it.
-    await announceMiniRemoved(Number(miniId));
-    await pool.execute<ResultSetHeader>('DELETE FROM minis WHERE id = ?', [miniId]);
-
-    for (const { image_path } of imageRows) {
-      fs.unlink(path.join(uploadsDir, path.basename(image_path)), () => {}); // best-effort cleanup
-    }
-
-    res.json({ message: 'Mini deleted' });
-  } catch (err: unknown) {
-    console.error(err);
-    res.status(500).json({ error: 'Server error' });
+  if (!mini) {
+    res.status(404).json({ error: 'Mini not found' });
+    return;
   }
-});
+
+  const isOwner = mini.owner_id === req.user!.userId;
+  const isAdmin = req.user!.role === 'admin';
+  if (!isOwner && !isAdmin) {
+    res.status(403).json({ error: 'You can only delete your own minis' });
+    return;
+  }
+
+  // Deleting would cascade away someone's in-progress request or loan.
+  if (mini.active_loan_status) {
+    res.status(409).json({ error: 'This mini has an active request or loan — finish or cancel it first' });
+    return;
+  }
+
+  const images = await rows<ImagePathRow>('SELECT image_path FROM mini_images WHERE mini_id = ?', [miniId]);
+
+  // Tell anyone in line or on the notify list before their entries vanish with it.
+  await announceMiniRemoved(Number(miniId));
+  await change('DELETE FROM minis WHERE id = ?', [miniId]);
+
+  for (const { image_path } of images) {
+    fs.unlink(path.join(uploadsDir, path.basename(image_path)), () => {}); // best-effort cleanup
+  }
+
+  res.json({ message: 'Mini deleted' });
+}));
 
 export default router;

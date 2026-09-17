@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import LoansPage from './LoansPage';
 import { Loan, LOANS_CHANGED_EVENT } from '../api/client';
+import { jsonResponse, urlOf} from '../test/apiMock';
 
 const ALICE = { id: 10, username: 'alice', displayName: 'Alice' };
 const BOB = { id: 20, username: 'bob', displayName: 'Bob' };
@@ -35,14 +36,10 @@ function makeLoan(overrides: Partial<Loan> = {}): Loan {
   };
 }
 
-function jsonResponse(body: unknown, ok = true): Response {
-  return { ok, statusText: ok ? 'OK' : 'Error', json: async () => body } as Response;
-}
-
 function mockLoans(...responses: Loan[][]): void {
   const queue = [...responses];
   vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
-    const url = String(input);
+    const url = urlOf(input);
     const method = init?.method ?? 'GET';
     if (url === '/api/loans' && method === 'GET') {
       return jsonResponse(queue.length > 1 ? queue.shift() : queue[0]);
@@ -72,7 +69,7 @@ describe('LoansPage — holds', () => {
   function mockHolds(holds: unknown, loans: Loan[] = []) {
     let current = holds;
     vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const key = `${init?.method ?? 'GET'} ${String(input)}`;
+      const key = `${init?.method ?? 'GET'} ${urlOf(input)}`;
       if (key === 'GET /api/loans') return jsonResponse(loans);
       if (key === 'GET /api/holds') return jsonResponse(current);
       if (key === 'DELETE /api/holds/minis/42') {
@@ -83,7 +80,7 @@ describe('LoansPage — holds', () => {
         current = { ...HOLDS, watching: [] };
         return jsonResponse({ watching: false });
       }
-      return jsonResponse({ error: `unexpected ${key}` }, false);
+      return jsonResponse({ error: `unexpected ${key}` }, { ok: false });
     });
   }
 
@@ -277,7 +274,7 @@ describe('LoansPage', () => {
   });
 
   it('shows an error if loans fail to load', async () => {
-    vi.mocked(fetch).mockResolvedValue(jsonResponse({ error: 'Server error' }, false));
+    vi.mocked(fetch).mockResolvedValue(jsonResponse({ error: 'Server error' }, { ok: false }));
     renderLoans();
 
     expect(await screen.findByText(/server error/i)).toBeInTheDocument();

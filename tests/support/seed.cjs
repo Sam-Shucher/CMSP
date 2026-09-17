@@ -9,6 +9,10 @@ const mysql = require('mysql2/promise');
 const bcrypt = require('bcryptjs');
 
 const ROOT = path.resolve(__dirname, '../..');
+// Photos uploaded during the tests; wiped before each run (prepare.cjs).
+const UPLOADS_DIR = path.join(__dirname, '..', '.uploads');
+// Where signed-in sessions are saved by auth.setup.ts.
+const AUTH_DIR = path.join(__dirname, '..', '.auth');
 
 const E2E_PORT = 4310;
 const BASE_URL = `http://localhost:${E2E_PORT}`;
@@ -115,6 +119,6 @@ async function query(sql, params = []) {
 }
 
 module.exports = {
-  ROOT, E2E_PORT, BASE_URL, E2E_DB, DB, PASSWORD, USERS,
+  ROOT, UPLOADS_DIR, AUTH_DIR, E2E_PORT, BASE_URL, E2E_DB, DB, PASSWORD, USERS,
   emailOf, recreateDatabase, resetData, query,
 };

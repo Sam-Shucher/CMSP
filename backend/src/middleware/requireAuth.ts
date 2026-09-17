@@ -31,17 +31,21 @@ export interface AuthRequest extends Request {
 //   2. its server-side session is still live — not logged out, not idle too
 //      long, not past its lifetime (db/sessions.ts).
 export async function requireAuth(req: AuthRequest, res: Response, next: NextFunction): Promise<void> {
-  const token: string | undefined = req.cookies?.token;
+  // cookie-parser populates req.cookies, but this must hold up even if it
+  // somehow didn't run — no cookies means no session, not a crash.
+  const cookies = req.cookies as Record<string, unknown> | undefined;
+  const token: unknown = cookies?.token;
 
-  if (!token) {
+  if (typeof token !== 'string' || !token) {
     res.status(401).json({ error: 'Authentication required' });
     return;
   }
 
-  let payload: JwtPayload;
+  let payload: Partial<JwtPayload>;
   try {
     // Pinning the algorithm stops a token from choosing how it gets checked.
-    payload = jwt.verify(token, jwtSecret(), { algorithms: ['HS256'] }) as JwtPayload;
+    // What's inside is still unverified data — the checks below vet it.
+    payload = jwt.verify(token, jwtSecret(), { algorithms: ['HS256'] }) as Partial<JwtPayload>;
   } catch {
     res.status(401).json({ error: 'Invalid or expired session' });
     return;
@@ -66,7 +70,7 @@ export async function requireAuth(req: AuthRequest, res: Response, next: NextFun
     return;
   }
 
-  const { sid, userId, username, collectionId } = payload;
+  const { sid, userId, username, collectionId } = payload as JwtPayload;
   req.user = { sid, userId, username, ...(collectionId ? { collectionId } : {}) };
   next();
 }

@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import RegisterPage from './RegisterPage';
 import { AuthContext } from '../App';
+import { jsonBodyOf } from '../test/apiMock';
 
 function renderRegisterPage() {
   const setUser = vi.fn();
@@ -153,7 +154,7 @@ describe('RegisterPage validation', () => {
     await fillForm({ password: 'correct horse! battery#9', confirm: 'correct horse! battery#9' });
 
     await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
-    expect(JSON.parse(String(vi.mocked(fetch).mock.calls[0][1]?.body)).password).toBe('correct horse! battery#9');
+    expect(jsonBodyOf(vi.mocked(fetch).mock.calls[0][1])).toMatchObject({ password: 'correct horse! battery#9' });
   });
 
   it('lets password managers fill in long passwords (up to 72 characters)', () => {
@@ -195,7 +196,7 @@ describe('RegisterPage validation', () => {
     await fillForm();
 
     await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
-    expect(JSON.parse(String(vi.mocked(fetch).mock.calls[0][1]?.body))).toEqual({
+    expect(jsonBodyOf(vi.mocked(fetch).mock.calls[0][1])).toEqual({
       email: 'test@example.com',
       username: 'valid_user',
       displayName: 'Merric',
@@ -211,7 +212,7 @@ describe('RegisterPage validation', () => {
     await fillForm();
 
     await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
-    const body = JSON.parse(String(vi.mocked(fetch).mock.calls[0][1]?.body));
+    const body = jsonBodyOf(vi.mocked(fetch).mock.calls[0][1]) as Record<string, unknown>;
     expect(body.displayName).toBe('valid_user');
     expect(body).not.toHaveProperty('phone');
     expect(body).not.toHaveProperty('neighborhood');

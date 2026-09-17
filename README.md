@@ -115,7 +115,7 @@ Pi's database — nothing here touches production.
 
 ### End-to-end tests (Playwright)
 
-The `e2e/` suite drives the real, built app in Chrome — several people in
+The `tests/` suite drives the real, built app in Chrome — several people in
 separate browser windows at once (an owner and a borrower negotiating, a line
 of holds, an admin inviting someone) — to check that features work together
 the way people actually use them.
@@ -131,7 +131,18 @@ npm run test:e2e:report   # open the HTML report (traces + screenshots of failur
 It uses your installed Google Chrome, a throwaway `mini_library_e2e` database
 (rebuilt from `schema.sql` on every run, wiped between tests), and its own
 server on port 4310 with test-only secrets — your `backend/.env` is never read.
-Seeded people all share the password in `e2e/support/seed.cjs`.
+Seeded people all share the password in `tests/support/seed.cjs`.
+
+### Linting
+
+One ESLint setup covers the backend, the frontend, and the end-to-end tests,
+with type-aware rules (a forgotten `await`, an unhandled promise, an `any`
+creeping in):
+
+```bash
+npm run lint        # report
+npm run lint:fix    # fix what can be fixed automatically
+```
 
 ## Database migrations
 

@@ -25,7 +25,7 @@ describe('requireCollectionMembership', () => {
   it('calls next() and attaches req.collectionId when the DB confirms membership', async () => {
     execute.mockResolvedValueOnce([[{ id: 1 }]]); // membership row found
 
-    const req = { user: { userId: 1, username: 'owner', role: 'user', collectionId: 5 } } as unknown as CollectionRequest;
+    const req = { headers: {}, user: { userId: 1, username: 'owner', role: 'user', collectionId: 5 } } as unknown as CollectionRequest;
     const res = mockRes();
     const next = vi.fn();
 
@@ -38,7 +38,7 @@ describe('requireCollectionMembership', () => {
   it('rejects with 403 when the DB shows no membership row (even though the JWT claims one)', async () => {
     execute.mockResolvedValueOnce([[]]); // no membership row — e.g. an admin removed them since the token was issued
 
-    const req = { user: { userId: 1, username: 'owner', role: 'user', collectionId: 5 } } as unknown as CollectionRequest;
+    const req = { headers: {}, user: { userId: 1, username: 'owner', role: 'user', collectionId: 5 } } as unknown as CollectionRequest;
     const res = mockRes();
     const next = vi.fn();
 
@@ -53,7 +53,7 @@ describe('requireCollectionMembership', () => {
   it('replaces a stale admin role from the cookie with the current role from the database', async () => {
     execute.mockResolvedValueOnce([[{ role: 'user' }]]); // demoted since they logged in
 
-    const req = { user: { userId: 1, username: 'boss', role: 'admin', collectionId: 5 } } as unknown as CollectionRequest;
+    const req = { headers: {}, user: { userId: 1, username: 'boss', role: 'admin', collectionId: 5 } } as unknown as CollectionRequest;
     const next = vi.fn();
     await requireCollectionMembership(req, mockRes(), next);
 
@@ -64,7 +64,7 @@ describe('requireCollectionMembership', () => {
   it('picks up a promotion immediately, without logging in again', async () => {
     execute.mockResolvedValueOnce([[{ role: 'admin' }]]);
 
-    const req = { user: { userId: 1, username: 'grunt', role: 'user', collectionId: 5 } } as unknown as CollectionRequest;
+    const req = { headers: {}, user: { userId: 1, username: 'grunt', role: 'user', collectionId: 5 } } as unknown as CollectionRequest;
     await requireCollectionMembership(req, mockRes(), vi.fn());
 
     expect(req.user!.role).toBe('admin');
@@ -73,7 +73,7 @@ describe('requireCollectionMembership', () => {
   it('treats any unexpected role value from the database as a plain user', async () => {
     execute.mockResolvedValueOnce([[{ role: null }]]);
 
-    const req = { user: { userId: 1, username: 'boss', role: 'admin', collectionId: 5 } } as unknown as CollectionRequest;
+    const req = { headers: {}, user: { userId: 1, username: 'boss', role: 'admin', collectionId: 5 } } as unknown as CollectionRequest;
     await requireCollectionMembership(req, mockRes(), vi.fn());
 
     expect(req.user!.role).toBe('user');
@@ -83,7 +83,7 @@ describe('requireCollectionMembership', () => {
     execute.mockRejectedValueOnce(new Error('connection lost'));
     vi.spyOn(console, 'error').mockImplementation(() => {});
 
-    const req = { user: { userId: 1, username: 'owner', role: 'user', collectionId: 5 } } as unknown as CollectionRequest;
+    const req = { headers: {}, user: { userId: 1, username: 'owner', role: 'user', collectionId: 5 } } as unknown as CollectionRequest;
     const res = mockRes();
     const next = vi.fn();
 
@@ -97,7 +97,7 @@ describe('requireCollectionMembership', () => {
   it('checks membership for the user in the token, against the collection in the token', async () => {
     execute.mockResolvedValueOnce([[{ id: 1 }]]);
 
-    const req = { user: { userId: 7, username: 'owner', role: 'user', collectionId: 5 } } as unknown as CollectionRequest;
+    const req = { headers: {}, user: { userId: 7, username: 'owner', role: 'user', collectionId: 5 } } as unknown as CollectionRequest;
     await requireCollectionMembership(req, mockRes(), vi.fn());
 
     expect(execute).toHaveBeenCalledWith(expect.stringContaining('collection_memberships'), [7, 5]);
@@ -139,7 +139,7 @@ describe('requireCollectionMembership', () => {
   });
 
   it('rejects with 400 when no collection has been selected yet', async () => {
-    const req = { user: { userId: 1, username: 'owner', role: 'user' } } as unknown as CollectionRequest;
+    const req = { headers: {}, user: { userId: 1, username: 'owner', role: 'user' } } as unknown as CollectionRequest;
     const res = mockRes();
     const next = vi.fn();
 

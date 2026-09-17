@@ -235,6 +235,9 @@ export default function App(): React.ReactElement {
   // to log in again — the JWT cookie handles it transparently.
   useEffect(() => {
     void refreshSession().finally(() => setLoading(false));
+    // Once, on first load: refreshSession is re-created each render, and
+    // re-running this would re-check the session on every state change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Your role is per group, so entering a group also sets the role you hold

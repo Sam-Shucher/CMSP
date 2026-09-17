@@ -1,8 +1,10 @@
+import { LIMITS } from '../limits';
+
 // Checks a picked photo before anything is uploaded, so problems are explained
 // right away — not after a long upload is refused. The server checks again.
 
 export const ACCEPTED_PHOTO_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
-export const MAX_PHOTO_BYTES = 10 * 1024 * 1024;
+export const MAX_PHOTO_BYTES = LIMITS.photoBytes;
 
 // Returns what's wrong with the file, or null if it's a usable photo.
 export async function photoProblem(file: File): Promise<string | null> {

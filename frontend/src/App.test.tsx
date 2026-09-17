@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import App from './App';
+import { jsonResponse, jsonBodyOf} from './test/apiMock';
 
 const USER = { userId: 1, username: 'owner', role: 'user', collectionId: 5 };
 const MY_COLLECTIONS = [{ id: 5, name: 'Chicago' }];
@@ -14,10 +15,6 @@ const PROFILE = {
   neighborhood: null,
   role: 'user',
 };
-
-function jsonResponse(body: unknown): Response {
-  return { ok: true, json: async () => body } as Response;
-}
 
 // App uses a real BrowserRouter, which reads actual window.location — reset
 // it before each test so navigation from an earlier test doesn't leak in.
@@ -66,15 +63,17 @@ describe('App nav — username link', () => {
   });
 });
 
-type Routes = Record<string, unknown | ((init?: RequestInit) => Response)>;
+// A route serves either a fixed JSON body or a function of the request.
+type Route = ((init?: RequestInit) => Response) | Record<string, unknown> | unknown[];
+type Routes = Record<string, Route>;
 
 // Serves the given URL → body map; anything unlisted gets a 401, like a logged-out server.
 function mockServer(routes: Routes) {
   vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
     const key = Object.keys(routes).find(k => url === k || (k.endsWith('*') && url.startsWith(k.slice(0, -1))));
-    if (!key) return { ok: false, status: 401, statusText: 'Unauthorized', json: async () => ({ error: 'Authentication required' }) } as Response;
+    if (!key) return jsonResponse({ error: 'Authentication required' }, { ok: false, status: 401, statusText: 'Unauthorized' });
     const value = routes[key];
-    return typeof value === 'function' ? (value as (i?: RequestInit) => Response)(init) : jsonResponse(value);
+    return typeof value === 'function' ? value(init) : jsonResponse(value);
   }));
 }
 
@@ -167,7 +166,7 @@ describe('App — nav bar', () => {
     mockServer({
       ...LOGGED_IN_ROUTES,
       '/api/auth/collections': collections,
-      '/api/auth/select-collection': (init?: RequestInit) => jsonResponse({ ...USER, ...JSON.parse(String(init?.body)) }),
+      '/api/auth/select-collection': (init?: RequestInit) => jsonResponse({ ...USER, ...(jsonBodyOf(init) as object) }),
     });
     render(<App />);
 
@@ -184,7 +183,7 @@ describe('App — nav bar', () => {
 describe('App — your role depends on the group you enter', () => {
   const collections = [{ id: 5, name: 'Chicago', role: 'admin' }, { id: 6, name: 'dojo', role: 'user' }];
   const selectReturnsRole = (init?: RequestInit) => {
-    const { collectionId } = JSON.parse(String(init?.body));
+    const { collectionId } = jsonBodyOf(init) as { collectionId: number };
     const picked = collections.find(c => c.id === collectionId)!;
     return jsonResponse({ userId: 1, username: 'owner', collectionId, collectionName: picked.name, role: picked.role });
   };

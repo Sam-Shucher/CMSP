@@ -2,9 +2,10 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api, NotificationItem, LOANS_CHANGED_EVENT } from '../api/client';
 import { timeAgo, timeUntil } from '../utils/timeAgo';
+import { POLL_MS } from '../limits';
 
-export const POLL_INTERVAL_MS = 60 * 1000;
-const TICK_MS = 60 * 1000;
+export const POLL_INTERVAL_MS = POLL_MS.notifications;
+const TICK_MS = POLL_MS.clockTick;
 
 const iconButtonStyle: React.CSSProperties = {
   background: 'none',
