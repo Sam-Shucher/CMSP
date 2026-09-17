@@ -146,6 +146,7 @@ export type NotificationItem = {
   miniId: number | null;
   loanId: number | null;
   read: boolean;
+  expiresAt: string | null; // when a read notification disappears; null while unread
   createdAt: string;
 };
 

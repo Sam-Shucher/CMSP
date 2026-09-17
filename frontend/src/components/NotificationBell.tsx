@@ -1,9 +1,20 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api, NotificationItem, LOANS_CHANGED_EVENT } from '../api/client';
-import { timeAgo } from '../utils/timeAgo';
+import { timeAgo, timeUntil } from '../utils/timeAgo';
 
 export const POLL_INTERVAL_MS = 60 * 1000;
+const TICK_MS = 60 * 1000;
+
+const iconButtonStyle: React.CSSProperties = {
+  background: 'none',
+  border: 'none',
+  color: '#8a7d6a',
+  cursor: 'pointer',
+  fontSize: '12px',
+  lineHeight: 1,
+  padding: '6px 8px', // big enough to tap on a phone
+};
 
 type Inbox = { unread: number; items: NotificationItem[] };
 
@@ -13,6 +24,8 @@ export default function NotificationBell({ collectionId }: { collectionId?: numb
   const navigate = useNavigate();
   const [inbox, setInbox] = useState<Inbox>({ unread: 0, items: [] });
   const [open, setOpen] = useState<boolean>(false);
+  // Re-renders the "5m ago" and "Disappears in …" labels as time passes.
+  const [now, setNow] = useState<Date>(new Date());
 
   const load = useCallback(async (): Promise<void> => {
     try {
@@ -28,6 +41,11 @@ export default function NotificationBell({ collectionId }: { collectionId?: numb
     const timer = setInterval(() => void load(), POLL_INTERVAL_MS);
     return () => clearInterval(timer);
   }, [load, collectionId]);
+
+  useEffect(() => {
+    const tick = setInterval(() => setNow(new Date()), TICK_MS);
+    return () => clearInterval(tick);
+  }, []);
 
   // Everything about loans and holds lives on the Loans page.
   async function openNotification(item: NotificationItem): Promise<void> {
@@ -49,6 +67,24 @@ export default function NotificationBell({ collectionId }: { collectionId?: numb
   function toggle(): void {
     if (!open) void load();
     setOpen(o => !o);
+  }
+
+  // Gone for good — the list is refreshed either way.
+  async function dismiss(id: number): Promise<void> {
+    try {
+      await api(`/api/notifications/${id}`, { method: 'DELETE' });
+    } finally {
+      void load();
+    }
+  }
+
+  // Back to unread: it counts again and stops counting down.
+  async function markUnread(id: number): Promise<void> {
+    try {
+      await api(`/api/notifications/${id}/unread`, { method: 'POST' });
+    } finally {
+      void load();
+    }
   }
 
   async function markAllRead(): Promise<void> {
@@ -100,17 +136,47 @@ export default function NotificationBell({ collectionId }: { collectionId?: numb
             <ul style={{ listStyle: 'none', margin: 0, padding: 0 }}>
               {inbox.items.map(item => (
                 <li key={item.id} style={{ borderBottom: '1px solid #3d3629' }}>
-                  <button
-                    type="button"
-                    onClick={() => void openNotification(item)}
-                    style={{
-                      display: 'block', width: '100%', textAlign: 'left', padding: '10px 12px', border: 'none', cursor: 'pointer',
-                      background: item.read ? 'transparent' : 'rgba(201, 168, 76, 0.08)', color: '#e8e0d0', borderRadius: 0,
-                    }}
-                  >
-                    <span style={{ display: 'block', fontSize: '13px', fontWeight: item.read ? 400 : 600 }}>{item.message}</span>
-                    <span style={{ display: 'block', fontSize: '11px', color: '#8a7d6a', marginTop: '2px' }}>{timeAgo(item.createdAt)}</span>
-                  </button>
+                  <div style={{
+                    display: 'flex', alignItems: 'flex-start',
+                    background: item.read ? 'transparent' : 'rgba(201, 168, 76, 0.08)',
+                  }}>
+                    <button
+                      type="button"
+                      onClick={() => void openNotification(item)}
+                      style={{
+                        display: 'block', flex: 1, minWidth: 0, textAlign: 'left', padding: '10px 12px', border: 'none',
+                        cursor: 'pointer', background: 'none', color: '#e8e0d0', borderRadius: 0,
+                      }}
+                    >
+                      <span style={{ display: 'block', fontSize: '13px', fontWeight: item.read ? 400 : 600 }}>{item.message}</span>
+                      <span style={{ display: 'block', fontSize: '11px', color: '#8a7d6a', marginTop: '2px' }}>
+                        {timeAgo(item.createdAt, now)}
+                        {item.expiresAt && ` · Disappears in ${timeUntil(item.expiresAt, now)}`}
+                      </span>
+                    </button>
+                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '2px', padding: '8px 6px 8px 0' }}>
+                      <button
+                        type="button"
+                        aria-label="Dismiss"
+                        title="Dismiss"
+                        onClick={() => void dismiss(item.id)}
+                        style={iconButtonStyle}
+                      >
+                        ✕
+                      </button>
+                      {item.read && (
+                        <button
+                          type="button"
+                          aria-label="Mark as unread"
+                          title="Mark as unread"
+                          onClick={() => void markUnread(item.id)}
+                          style={iconButtonStyle}
+                        >
+                          ●
+                        </button>
+                      )}
+                    </div>
+                  </div>
                 </li>
               ))}
             </ul>

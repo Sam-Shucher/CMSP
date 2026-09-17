@@ -26,7 +26,10 @@ vi.mock('../db/notifications', () => ({
   notify: vi.fn(async () => {}),
   listNotifications: vi.fn(async () => ({ unread: 0, items: [] })),
   markNotificationRead: vi.fn(async () => true),
+  markNotificationUnread: vi.fn(async () => true),
+  dismissNotification: vi.fn(async () => true),
   markAllNotificationsRead: vi.fn(async () => {}),
+  purgeExpiredNotifications: vi.fn(async () => 0),
 }));
 
 vi.mock('../services/holds', () => ({

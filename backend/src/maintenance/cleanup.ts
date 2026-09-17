@@ -6,6 +6,7 @@
 import './loadEnv';
 import { pool } from '../db/connection';
 import { purgeEndedSessions } from '../db/sessions';
+import { purgeExpiredNotifications } from '../db/notifications';
 import { sweepOrphanedUploads } from './housekeeping';
 
 async function main(): Promise<void> {
@@ -21,8 +22,10 @@ async function main(): Promise<void> {
 
   if (dryRun) {
     console.log('Sessions: (dry run — ended sessions not purged)');
+    console.log('Notifications: (dry run — read notifications not removed)');
   } else {
     console.log(`Sessions: removed ${await purgeEndedSessions()} ended session(s)`);
+    console.log(`Notifications: removed ${await purgeExpiredNotifications()} read notification(s)`);
   }
 }
 

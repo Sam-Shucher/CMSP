@@ -3,6 +3,7 @@ import path from 'path';
 import { RowDataPacket } from 'mysql2';
 import { pool } from '../db/connection';
 import { purgeEndedSessions } from '../db/sessions';
+import { purgeExpiredNotifications } from '../db/notifications';
 import { uploadsDir as configuredUploadsDir } from '../config';
 import { notifyOverdueLoans } from '../services/loanEvents';
 import { promoteStrandedHolds } from '../services/holds';
@@ -78,6 +79,7 @@ export async function sweepOrphanedUploads(options: SweepOptions = {}): Promise<
 export interface HousekeepingResult {
   uploadsDeleted: number;
   sessionsPurged: number;
+  notificationsPurged: number;
   overdueAnnounced: number;
   holdsPromoted: number;
 }
@@ -85,7 +87,7 @@ export interface HousekeepingResult {
 // One full pass. Never throws: each step's failure is logged and the next run tries again.
 export async function runHousekeeping(options: SweepOptions = {}): Promise<HousekeepingResult> {
   const log = options.log ?? console.log;
-  const result: HousekeepingResult = { uploadsDeleted: 0, sessionsPurged: 0, overdueAnnounced: 0, holdsPromoted: 0 };
+  const result: HousekeepingResult = { uploadsDeleted: 0, sessionsPurged: 0, notificationsPurged: 0, overdueAnnounced: 0, holdsPromoted: 0 };
 
   async function step(label: string, work: () => Promise<void>): Promise<void> {
     try {
@@ -97,12 +99,14 @@ export async function runHousekeeping(options: SweepOptions = {}): Promise<House
 
   await step('Upload cleanup', async () => { result.uploadsDeleted = (await sweepOrphanedUploads(options)).deleted.length; });
   await step('Session cleanup', async () => { result.sessionsPurged = await purgeEndedSessions(); });
+  await step('Notification cleanup', async () => { result.notificationsPurged = await purgeExpiredNotifications(); });
   await step('Overdue notices', async () => { result.overdueAnnounced = await notifyOverdueLoans(); });
   await step('Hold promotion', async () => { result.holdsPromoted = await promoteStrandedHolds(); });
 
   if (Object.values(result).some(n => n > 0)) {
     log(
-      `Housekeeping: removed ${result.uploadsDeleted} unused photo(s), ${result.sessionsPurged} ended session(s); ` +
+      `Housekeeping: removed ${result.uploadsDeleted} unused photo(s), ${result.sessionsPurged} ended session(s), ` +
+      `${result.notificationsPurged} read notification(s); ` +
       `announced ${result.overdueAnnounced} overdue loan(s); promoted ${result.holdsPromoted} waiting hold(s)`
     );
   }

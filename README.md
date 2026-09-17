@@ -79,9 +79,13 @@ UPDATE collection_memberships SET role = 'admin'
 - Logins are server-side sessions: they end after **2 days unused** or **7 days**
   total (`SESSION_IDLE_DAYS` / `SESSION_LIFETIME_DAYS` in `backend/src/config.ts`).
   Logging out — or "Log out everywhere" on the profile page — ends them immediately.
+- Notifications can be dismissed from the bell, or put back to unread. Once read,
+  one disappears on its own after **2 days** (`NOTIFICATION_KEEP_READ_DAYS`), with a
+  countdown shown next to it; unread ones stay until you deal with them.
 - Photos from rejected uploads are deleted straight away. Every hour the server
-  also removes photo files no mini uses any more (older than an hour) and old
-  ended sessions. To preview or run that by hand on the Pi:
+  also removes photo files no mini uses any more (older than an hour), old
+  ended sessions, and read notifications past their 2 days. To preview or run
+  that by hand on the Pi:
   ```bash
   npm --prefix backend run cleanup -- --dry-run   # list what would be removed
   npm --prefix backend run cleanup                # remove it

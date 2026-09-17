@@ -32,7 +32,7 @@ beforeEach(async () => {
 async function inbox(who: TestUser) {
   return (await request(app).get('/api/notifications').set('Cookie', who.cookie)).body as {
     unread: number;
-    items: Array<{ id: number; type: string; message: string; loanId: number | null; miniId: number | null; read: boolean; createdAt: string }>;
+    items: Array<{ id: number; type: string; message: string; loanId: number | null; miniId: number | null; read: boolean; expiresAt: string | null; createdAt: string }>;
   };
 }
 
@@ -196,6 +196,62 @@ describe('the inbox', () => {
 
     expect(res.status).toBe(404);
     expect((await inbox(owner)).unread).toBe(1);
+  });
+
+  it('says when a read notification will disappear, and nothing for an unread one', async () => {
+    await requestMini('Dire Wolf');
+    await requestMini('Owlbear');
+    const { items } = await inbox(owner);
+
+    await request(app).post(`/api/notifications/${items[0].id}/read`).set('Cookie', owner.cookie);
+
+    const after = (await inbox(owner)).items;
+    const twoDaysOut = Date.now() + 2 * 24 * 60 * 60 * 1000;
+    expect(new Date(after[0].expiresAt!).getTime()).toBeGreaterThan(twoDaysOut - 60_000);
+    expect(new Date(after[0].expiresAt!).getTime()).toBeLessThan(twoDaysOut + 60_000);
+    expect(after[1].expiresAt).toBeNull();
+  });
+
+  it('puts a notification back to unread, so it stops counting down', async () => {
+    await requestMini();
+    const { items } = await inbox(owner);
+    await request(app).post(`/api/notifications/${items[0].id}/read`).set('Cookie', owner.cookie);
+
+    const res = await request(app).post(`/api/notifications/${items[0].id}/unread`).set('Cookie', owner.cookie);
+
+    expect(res.status).toBe(200);
+    expect(await inbox(owner)).toMatchObject({ unread: 1, items: [expect.objectContaining({ read: false, expiresAt: null })] });
+  });
+
+  it('dismisses one for good, and only your own', async () => {
+    await requestMini('Dire Wolf');
+    await requestMini('Owlbear');
+    const { items } = await inbox(owner);
+
+    expect((await request(app).delete(`/api/notifications/${items[0].id}`).set('Cookie', bystander.cookie)).status).toBe(404);
+    const res = await request(app).delete(`/api/notifications/${items[0].id}`).set('Cookie', owner.cookie);
+
+    expect(res.status).toBe(200);
+    expect((await inbox(owner)).items.map(n => n.message)).toEqual(['borrower display requested Dire Wolf']);
+    expect((await request(app).delete(`/api/notifications/${items[0].id}`).set('Cookie', owner.cookie)).status).toBe(404);
+  });
+
+  it('hides read notifications once their two days are up, and keeps unread ones however old', async () => {
+    await requestMini('Dire Wolf');
+    await requestMini('Owlbear');
+    const { items } = await inbox(owner);
+    await request(app).post(`/api/notifications/${items[0].id}/read`).set('Cookie', owner.cookie);
+    await pool.execute('UPDATE notifications SET read_at = NOW() - INTERVAL 3 DAY WHERE id = ?', [items[0].id]);
+    await pool.execute('UPDATE notifications SET created_at = NOW() - INTERVAL 30 DAY WHERE id = ?', [items[1].id]);
+
+    expect((await inbox(owner)).items.map(n => n.message)).toEqual(['borrower display requested Dire Wolf']);
+  });
+
+  it('refuses ids that aren\'t ids', async () => {
+    for (const path of ['/api/notifications/abc/unread', '/api/notifications/-1/unread']) {
+      expect((await request(app).post(path).set('Cookie', owner.cookie)).status).toBe(404);
+    }
+    expect((await request(app).delete('/api/notifications/abc').set('Cookie', owner.cookie)).status).toBe(404);
   });
 
   it('keeps the list to the 50 most recent', async () => {

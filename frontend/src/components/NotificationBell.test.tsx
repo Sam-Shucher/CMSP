@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, waitFor, act } from '@testing-library/react';
+import { render, screen, waitFor, act, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Routes, Route } from 'react-router-dom';
 import NotificationBell, { POLL_INTERVAL_MS } from './NotificationBell';
@@ -12,10 +12,12 @@ function jsonResponse(body: unknown): Response {
 function item(overrides: Partial<NotificationItem> = {}): NotificationItem {
   return {
     id: 1, type: 'your_turn', message: 'It\'s your turn — you can now negotiate for Dire Wolf',
-    miniId: 42, loanId: 9, read: false, createdAt: new Date().toISOString(),
+    miniId: 42, loanId: 9, read: false, expiresAt: null, createdAt: new Date().toISOString(),
     ...overrides,
   };
 }
+
+const TWO_DAYS_MS = 2 * 24 * 60 * 60 * 1000;
 
 function mockInbox(inbox: { unread: number; items: NotificationItem[] }) {
   let current = inbox;
@@ -23,16 +25,33 @@ function mockInbox(inbox: { unread: number; items: NotificationItem[] }) {
     const url = String(input);
     if (url === '/api/notifications' && !init?.method) return jsonResponse(current);
     if (url === '/api/notifications/read-all') {
-      current = { unread: 0, items: current.items.map(i => ({ ...i, read: true })) };
+      current = { unread: 0, items: current.items.map(i => ({ ...i, read: true, expiresAt: new Date(Date.now() + TWO_DAYS_MS).toISOString() })) };
       return jsonResponse({ message: 'All read' });
     }
-    const one = url.match(/^\/api\/notifications\/(\d+)\/read$/);
-    if (one) {
+    const read = url.match(/^\/api\/notifications\/(\d+)\/read$/);
+    if (read) {
       current = {
         unread: Math.max(0, current.unread - 1),
-        items: current.items.map(i => (i.id === Number(one[1]) ? { ...i, read: true } : i)),
+        items: current.items.map(i => (i.id === Number(read[1]) ? { ...i, read: true, expiresAt: new Date(Date.now() + TWO_DAYS_MS).toISOString() } : i)),
       };
       return jsonResponse({ message: 'Read' });
+    }
+    const unread = url.match(/^\/api\/notifications\/(\d+)\/unread$/);
+    if (unread) {
+      current = {
+        unread: current.unread + 1,
+        items: current.items.map(i => (i.id === Number(unread[1]) ? { ...i, read: false, expiresAt: null } : i)),
+      };
+      return jsonResponse({ message: 'Unread' });
+    }
+    const dismiss = url.match(/^\/api\/notifications\/(\d+)$/);
+    if (dismiss && init?.method === 'DELETE') {
+      const gone = current.items.find(i => i.id === Number(dismiss[1]));
+      current = {
+        unread: gone && !gone.read ? Math.max(0, current.unread - 1) : current.unread,
+        items: current.items.filter(i => i.id !== Number(dismiss[1])),
+      };
+      return jsonResponse({ message: 'Dismissed' });
     }
     return jsonResponse({});
   });
@@ -184,6 +203,60 @@ describe('NotificationBell', () => {
     );
 
     await waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
+  });
+
+  it('counts down to when a read notification disappears, and shows no countdown before it is read', async () => {
+    mockInbox({
+      unread: 1,
+      items: [
+        item({ id: 2, read: true, expiresAt: new Date(Date.now() + 47 * 3_600_000 + 30_000).toISOString(), message: 'Bob requested Owlbear' }),
+        item({ id: 1, message: 'Unread one' }),
+      ],
+    });
+    renderBell();
+    await userEvent.click(await screen.findByRole('button', { name: /notifications/i }));
+
+    const entries = screen.getAllByRole('listitem');
+    expect(entries[0]).toHaveTextContent('Disappears in 1d 23h');
+    expect(entries[1]).not.toHaveTextContent(/disappears/i);
+  });
+
+  it('dismisses one for good', async () => {
+    mockInbox({ unread: 1, items: [item({ id: 7, message: 'Bob requested Owlbear' }), item({ id: 8, message: 'A hold spot opened on Dire Wolf', read: true })] });
+    renderBell();
+    await userEvent.click(await screen.findByRole('button', { name: /notifications/i }));
+
+    const row = screen.getAllByRole('listitem').find(li => li.textContent?.includes('Bob requested Owlbear'))!;
+    await userEvent.click(within(row).getByRole('button', { name: 'Dismiss' }));
+
+    await waitFor(() => expect(screen.queryByText('Bob requested Owlbear')).not.toBeInTheDocument());
+    expect(fetch).toHaveBeenCalledWith('/api/notifications/7', expect.objectContaining({ method: 'DELETE' }));
+    expect(screen.getByText('A hold spot opened on Dire Wolf')).toBeInTheDocument();
+  });
+
+  it('puts a read one back to unread, which stops the countdown and counts again', async () => {
+    mockInbox({ unread: 0, items: [item({ id: 7, read: true, expiresAt: new Date(Date.now() + 3_600_000).toISOString() })] });
+    renderBell();
+    await userEvent.click(await screen.findByRole('button', { name: /^notifications$/i }));
+
+    await userEvent.click(screen.getByRole('button', { name: /mark as unread/i }));
+
+    expect(await screen.findByRole('button', { name: /notifications \(1 unread\)/i })).toBeInTheDocument();
+    expect(fetch).toHaveBeenCalledWith('/api/notifications/7/unread', expect.objectContaining({ method: 'POST' }));
+    await waitFor(() => expect(screen.queryByText(/disappears in/i)).not.toBeInTheDocument());
+    expect(screen.queryByRole('button', { name: /mark as unread/i })).not.toBeInTheDocument();
+  });
+
+  it('keeps the countdown ticking while the list is open', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    mockInbox({ unread: 0, items: [item({ id: 7, read: true, expiresAt: new Date(Date.now() + 2 * 60_000 + 30_000).toISOString() })] });
+    renderBell();
+    await userEvent.click(await screen.findByRole('button', { name: /^notifications$/i }));
+    expect(screen.getByRole('listitem')).toHaveTextContent('Disappears in 2m');
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+
+    expect(screen.getByRole('listitem')).toHaveTextContent('Disappears in 1m');
   });
 
   it('copes with an unexpected response', async () => {

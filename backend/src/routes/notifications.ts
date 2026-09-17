@@ -1,7 +1,10 @@
 import { Router, Response } from 'express';
 import { requireAuth } from '../middleware/requireAuth';
 import { requireCollectionMembership, CollectionRequest } from '../middleware/requireCollectionMembership';
-import { listNotifications, markNotificationRead, markAllNotificationsRead } from '../db/notifications';
+import {
+  listNotifications, markNotificationRead, markNotificationUnread,
+  markAllNotificationsRead, dismissNotification,
+} from '../db/notifications';
 
 const router = Router();
 
@@ -29,23 +32,37 @@ router.post('/read-all', async (req: CollectionRequest, res: Response): Promise<
   }
 });
 
-// POST /api/notifications/:id/read — only your own; anything else is 404
-router.post('/:id/read', async (req: CollectionRequest, res: Response): Promise<void> => {
-  const id = Number(req.params.id);
-  if (!Number.isInteger(id) || id <= 0) {
-    res.status(404).json({ error: 'Notification not found' });
-    return;
-  }
-  try {
-    if (!(await markNotificationRead(id, req.user!.userId, req.collectionId!))) {
+// Each of these acts on one of your own notifications; anything else is 404.
+function oneNotification(
+  change: (id: number, userId: number, collectionId: number) => Promise<boolean>,
+  message: string
+) {
+  return async (req: CollectionRequest, res: Response): Promise<void> => {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) {
       res.status(404).json({ error: 'Notification not found' });
       return;
     }
-    res.json({ message: 'Read' });
-  } catch (err: unknown) {
-    console.error(err);
-    res.status(500).json({ error: 'Server error' });
-  }
-});
+    try {
+      if (!(await change(id, req.user!.userId, req.collectionId!))) {
+        res.status(404).json({ error: 'Notification not found' });
+        return;
+      }
+      res.json({ message });
+    } catch (err: unknown) {
+      console.error(err);
+      res.status(500).json({ error: 'Server error' });
+    }
+  };
+}
+
+// POST /api/notifications/:id/read
+router.post('/:id/read', oneNotification(markNotificationRead, 'Read'));
+
+// POST /api/notifications/:id/unread — stops the two-day countdown
+router.post('/:id/unread', oneNotification(markNotificationUnread, 'Unread'));
+
+// DELETE /api/notifications/:id — dismissed for good
+router.delete('/:id', oneNotification(dismissNotification, 'Dismissed'));
 
 export default router;

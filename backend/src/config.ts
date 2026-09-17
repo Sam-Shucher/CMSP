@@ -49,6 +49,11 @@ export function jwtSecret(env: Env = process.env): string {
 export const SESSION_IDLE_DAYS = 2;
 export const SESSION_LIFETIME_DAYS = 7;
 
+// How long a notification sticks around after it's been read. The bell shows a
+// countdown, and the hourly sweep deletes them once it runs out. Marking one
+// unread again stops the clock; unread notifications are never removed.
+export const NOTIFICATION_KEEP_READ_DAYS = 2;
+
 // Which network interfaces to listen on (undefined = all). In production only
 // the Cloudflare tunnel on this same machine should reach the app — both
 // loopback addresses, since "localhost" can resolve to either one.

@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import request from 'supertest';
 import fs from 'fs';
 import path from 'path';
+import { RowDataPacket } from 'mysql2';
 import { createApp } from '../app';
 import { pool } from '../db/connection';
 import { uploadsDir } from '../config';
@@ -52,6 +53,28 @@ beforeEach(async () => {
   const chicago = await createCollection('Chicago');
   owner = await createUser('owner', chicago);
   other = await createUser('other', chicago);
+});
+
+describe('clearing out read notifications', () => {
+  async function addNotification(who: TestUser, message: string, readAgo: string | null): Promise<void> {
+    await pool.execute(
+      `INSERT INTO notifications (user_id, collection_id, type, message, read_at)
+       VALUES (?, (SELECT collection_id FROM collection_memberships WHERE user_id = ? LIMIT 1), 'hold_placed', ?, ${readAgo ?? 'NULL'})`,
+      [who.userId, who.userId, message]
+    );
+  }
+
+  it('removes ones read more than two days ago, and keeps the rest', async () => {
+    await addNotification(owner, 'read three days ago', 'NOW() - INTERVAL 3 DAY');
+    await addNotification(owner, 'read an hour ago', 'NOW() - INTERVAL 1 HOUR');
+    await addNotification(other, 'never read', null);
+
+    const result = await runHousekeeping({ log: quiet });
+
+    expect(result.notificationsPurged).toBe(1);
+    const [rows] = await pool.query<RowDataPacket[]>('SELECT message FROM notifications ORDER BY id');
+    expect(rows.map(r => r.message)).toEqual(['read an hour ago', 'never read']);
+  });
 });
 
 describe('sweeping unused photos', () => {
