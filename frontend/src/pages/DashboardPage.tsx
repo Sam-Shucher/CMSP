@@ -63,6 +63,21 @@ export default function DashboardPage(): React.ReactElement {
     await fetchCart();
   }
 
+  // Swap in the server's updated copy of a mini, both on its card and in the
+  // open detail view, so the new status shows immediately.
+  function replaceMini(updated: Mini): void {
+    setMinis((prev: Mini[]) => prev.map((m: Mini) => (m.id === updated.id ? updated : m)));
+    setSelectedMini((prev: Mini | null) => (prev?.id === updated.id ? updated : prev));
+  }
+
+  async function takeOnQuest(miniId: number, backBy: string | null): Promise<void> {
+    replaceMini(await api<Mini>(`/api/minis/${miniId}/take-out`, { method: 'POST', json: { backBy } }));
+  }
+
+  async function bringBack(miniId: number): Promise<void> {
+    replaceMini(await api<Mini>(`/api/minis/${miniId}/bring-back`, { method: 'POST' }));
+  }
+
   return (
     <div style={{ padding: '28px 32px', maxWidth: '1200px', margin: '0 auto' }}>
       {/* Page header */}
@@ -153,6 +168,8 @@ export default function DashboardPage(): React.ReactElement {
           isOwn={selectedMini.owner_id === user?.userId}
           inCart={cartMiniIds.has(selectedMini.id)}
           onAddToCart={() => addToCart(selectedMini.id)}
+          onTakeOut={(backBy: string | null) => takeOnQuest(selectedMini.id, backBy)}
+          onBringBack={() => bringBack(selectedMini.id)}
         />
       )}
     </div>

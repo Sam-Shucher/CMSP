@@ -77,6 +77,8 @@ CREATE TABLE IF NOT EXISTS minis (
   image_path    VARCHAR(500), -- legacy single-photo column, superseded by mini_images below
   price         DECIMAL(6,2) NOT NULL DEFAULT 0.00,
   available     BOOLEAN DEFAULT TRUE, -- legacy, unused: availability is derived from loans below
+  on_quest_since DATETIME NULL, -- set while the owner has taken it out themselves ("On a Quest")
+  on_quest_until DATE NULL,     -- optional "back by" date while on a quest
   created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE,

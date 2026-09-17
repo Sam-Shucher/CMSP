@@ -239,6 +239,51 @@ describe('DashboardPage — browsing, search, and tags', () => {
   });
 });
 
+describe('DashboardPage — taking your own mini on a quest', () => {
+  beforeEach(() => {
+    vi.stubGlobal('fetch', vi.fn());
+  });
+
+  it('takes it out from the detail view and updates the card right away', async () => {
+    const questing = { ...MINI_OWNED_BY_1, status: 'on_quest' as const, available: false, on_quest_since: '2026-10-01T18:00:00.000Z', on_quest_until: null };
+    vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === '/api/minis/1/take-out' && init?.method === 'POST') return jsonResponse(questing);
+      if (url.startsWith('/api/minis/tags')) return jsonResponse([]);
+      if (url.startsWith('/api/minis')) return jsonResponse([MINI_OWNED_BY_1]);
+      if (url === '/api/cart') return jsonResponse([]);
+      return jsonResponse({ error: 'unexpected' }, false);
+    });
+    renderDashboard({ userId: 1, username: 'owner', role: 'user' });
+    await userEvent.click(await screen.findByText('Dire Wolf'));
+
+    await userEvent.click(screen.getByRole('button', { name: /take on a quest/i }));
+
+    expect(fetch).toHaveBeenCalledWith('/api/minis/1/take-out', expect.objectContaining({ method: 'POST', body: JSON.stringify({ backBy: null }) }));
+    expect(await screen.findByRole('button', { name: /bring it back/i })).toBeInTheDocument();
+    expect(screen.getAllByText('On a Quest').length).toBeGreaterThanOrEqual(2); // card and detail view
+  });
+
+  it('brings it back', async () => {
+    const questing = { ...MINI_OWNED_BY_1, status: 'on_quest' as const, available: false, on_quest_since: '2026-10-01T18:00:00.000Z', on_quest_until: '2026-10-15' };
+    vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === '/api/minis/1/bring-back' && init?.method === 'POST') return jsonResponse(MINI_OWNED_BY_1);
+      if (url.startsWith('/api/minis/tags')) return jsonResponse([]);
+      if (url.startsWith('/api/minis')) return jsonResponse([questing]);
+      if (url === '/api/cart') return jsonResponse([]);
+      return jsonResponse({ error: 'unexpected' }, false);
+    });
+    renderDashboard({ userId: 1, username: 'owner', role: 'user' });
+    await userEvent.click(await screen.findByText('Dire Wolf'));
+
+    await userEvent.click(screen.getByRole('button', { name: /bring it back/i }));
+
+    expect(await screen.findByRole('button', { name: /take on a quest/i })).toBeInTheDocument();
+    expect(screen.getAllByText('Available').length).toBeGreaterThanOrEqual(2);
+  });
+});
+
 describe('DashboardPage — status badges and the cart', () => {
   beforeEach(() => {
     vi.stubGlobal('fetch', vi.fn());

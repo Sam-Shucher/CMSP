@@ -5,6 +5,7 @@ const LABELS: Record<MiniStatus, string> = {
   available: 'Available',
   requested: 'Requested',
   adventuring: 'Adventuring',
+  on_quest: 'On a Quest',
 };
 
 export default function MiniStatusBadge({ status }: { status: MiniStatus }): React.ReactElement {

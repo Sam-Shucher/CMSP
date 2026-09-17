@@ -15,6 +15,15 @@ describe('miniStatusFrom', () => {
     expect(miniStatusFrom('returned')).toBe('available');
     expect(miniStatusFrom('cancelled')).toBe('available');
   });
+
+  it('is "on a quest" while the owner has taken it out themselves', () => {
+    expect(miniStatusFrom(null, new Date('2026-10-01T18:00:00Z'))).toBe('on_quest');
+    expect(miniStatusFrom('returned', new Date('2026-10-01T18:00:00Z'))).toBe('on_quest');
+  });
+
+  it('is available again once the owner brings it back', () => {
+    expect(miniStatusFrom(null, null)).toBe('available');
+  });
 });
 
 describe('activeLoanStatusSql', () => {

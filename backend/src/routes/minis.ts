@@ -10,6 +10,7 @@ import { matchesSearch } from '../utils/search';
 import { activeLoanStatusSql, miniStatusFrom } from '../utils/miniStatus';
 import { requiredText, optionalText, tagList, LIMITS, Check } from '../utils/inputs';
 import { uploadsDir as configuredUploadsDir } from '../config';
+import { parseBackBy } from '../utils/quest';
 
 const router = Router();
 const MAX_IMAGES = 3;
@@ -116,6 +117,8 @@ interface MiniRow extends RowDataPacket {
   description: string | null;
   price: string; // mysql2 returns DECIMAL columns as strings to avoid float rounding issues
   active_loan_status: string | null;
+  on_quest_since: Date | null;
+  on_quest_until: string | null; // formatted YYYY-MM-DD by the query
   owner_name: string;
   owner_username: string;
   owner_id: number;
@@ -137,6 +140,7 @@ interface TagNameRow extends RowDataPacket {
 interface OwnerRow extends RowDataPacket {
   owner_id: number;
   active_loan_status?: string | null;
+  on_quest_since?: Date | null;
 }
 
 interface ImagePathRow extends RowDataPacket {
@@ -151,6 +155,7 @@ interface ImagePathRow extends RowDataPacket {
 const MINI_SELECT = `
   SELECT m.id, m.name, m.description, m.price,
          ${activeLoanStatusSql('m')} AS active_loan_status,
+         m.on_quest_since, DATE_FORMAT(m.on_quest_until, '%Y-%m-%d') AS on_quest_until,
          u.display_name AS owner_name, u.username AS owner_username, u.id AS owner_id,
          m.created_at,
          GROUP_CONCAT(t.name ORDER BY t.name SEPARATOR ',') AS tags,
@@ -166,8 +171,8 @@ const MINI_SELECT = `
 // (price as a number, tags/images as string arrays instead of CSV blobs,
 // availability derived from the mini's loans).
 function serializeMini(row: MiniRow) {
-  const { active_loan_status, ...rest } = row;
-  const status = miniStatusFrom(active_loan_status);
+  const { active_loan_status, on_quest_since, on_quest_until, ...rest } = row;
+  const status = miniStatusFrom(active_loan_status, on_quest_since ?? null);
   return {
     ...rest,
     price: Number(row.price),
@@ -175,6 +180,8 @@ function serializeMini(row: MiniRow) {
     images: row.images ? row.images.split(',') : [],
     status,
     available: status === 'available',
+    on_quest_since: on_quest_since ? new Date(on_quest_since).toISOString() : null,
+    on_quest_until: on_quest_since ? on_quest_until ?? null : null,
   };
 }
 
@@ -470,6 +477,108 @@ router.patch('/:id', discardUploadsIfRejected, upload.array('images', MAX_IMAGES
     );
 
     res.json(serializeMini(rows[0]));
+  } catch (err: unknown) {
+    console.error(err);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// "On a Quest" — the owner takes their own mini out, no negotiation needed.
+// Owner only (not admins: it's about who physically has it), in the caller's
+// active collection, and only while nobody has it requested or borrowed.
+// ---------------------------------------------------------------------------
+
+async function findOwnMini(req: CollectionRequest, res: Response): Promise<OwnerRow | null> {
+  const [rows] = await pool.execute<OwnerRow[]>(
+    `SELECT m.owner_id, ${activeLoanStatusSql('m')} AS active_loan_status, m.on_quest_since
+     FROM minis m WHERE m.id = ? AND m.collection_id = ?`,
+    [req.params.id, req.collectionId!]
+  );
+  if (rows.length === 0) {
+    res.status(404).json({ error: 'Mini not found' });
+    return null;
+  }
+  if (rows[0].owner_id !== req.user!.userId) {
+    res.status(403).json({ error: 'Only the owner can take a mini on a quest' });
+    return null;
+  }
+  return rows[0];
+}
+
+async function sendMini(res: Response, miniId: string): Promise<void> {
+  const [rows] = await pool.execute<MiniRow[]>(`${MINI_SELECT} WHERE m.id = ? GROUP BY m.id`, [miniId]);
+  res.json(serializeMini(rows[0]));
+}
+
+// POST /api/minis/:id/take-out  { backBy?: 'YYYY-MM-DD' }
+router.post('/:id/take-out', async (req: CollectionRequest, res: Response): Promise<void> => {
+  const backBy = parseBackBy((req.body as { backBy?: unknown } | undefined)?.backBy);
+  if (!backBy.ok) {
+    res.status(400).json({ error: backBy.error });
+    return;
+  }
+
+  try {
+    const mini = await findOwnMini(req, res);
+    if (!mini) return;
+
+    if (mini.active_loan_status === 'negotiating') {
+      res.status(409).json({ error: 'Someone has requested this mini — cancel or finish that request first' });
+      return;
+    }
+    if (mini.active_loan_status === 'adventuring') {
+      res.status(409).json({ error: 'This mini is out adventuring with a borrower right now' });
+      return;
+    }
+    if (mini.on_quest_since) {
+      res.status(409).json({ error: 'This mini is already on a quest' });
+      return;
+    }
+
+    // The same checks again, inside the update: someone could check it out
+    // in the instant between the lookup above and this write.
+    const [result] = await pool.execute<ResultSetHeader>(
+      `UPDATE minis m SET on_quest_since = NOW(), on_quest_until = ?
+       WHERE m.id = ? AND m.collection_id = ? AND m.owner_id = ?
+         AND m.on_quest_since IS NULL
+         AND NOT EXISTS (
+           SELECT 1 FROM loans l WHERE l.mini_id = m.id AND l.status IN ('negotiating', 'adventuring')
+         )`,
+      [backBy.value, req.params.id, req.collectionId!, req.user!.userId]
+    );
+    if (result.affectedRows === 0) {
+      res.status(409).json({ error: 'This mini just became unavailable — try again' });
+      return;
+    }
+    await sendMini(res, req.params.id);
+  } catch (err: unknown) {
+    console.error(err);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// POST /api/minis/:id/bring-back
+router.post('/:id/bring-back', async (req: CollectionRequest, res: Response): Promise<void> => {
+  try {
+    const mini = await findOwnMini(req, res);
+    if (!mini) return;
+
+    if (!mini.on_quest_since) {
+      res.status(409).json({ error: 'This mini isn\'t on a quest' });
+      return;
+    }
+
+    const [result] = await pool.execute<ResultSetHeader>(
+      `UPDATE minis SET on_quest_since = NULL, on_quest_until = NULL
+       WHERE id = ? AND collection_id = ? AND owner_id = ? AND on_quest_since IS NOT NULL`,
+      [req.params.id, req.collectionId!, req.user!.userId]
+    );
+    if (result.affectedRows === 0) {
+      res.status(409).json({ error: 'This mini isn\'t on a quest' });
+      return;
+    }
+    await sendMini(res, req.params.id);
   } catch (err: unknown) {
     console.error(err);
     res.status(500).json({ error: 'Server error' });

@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Mini } from '../api/client';
 import MiniStatusBadge from './MiniStatusBadge';
+import { formatBackBy, todayInputValue } from '../utils/questDates';
 
 type MiniDetailModalProps = {
   mini: Mini;
@@ -9,12 +10,15 @@ type MiniDetailModalProps = {
   isOwn?: boolean;
   inCart?: boolean;
   onAddToCart?: () => Promise<void>;
+  // Owner-only "On a Quest" controls, shown when both are provided.
+  onTakeOut?: (backBy: string | null) => Promise<void>;
+  onBringBack?: () => Promise<void>;
 };
 
 // Full-detail overlay opened by clicking a mini card on the browse page —
 // bigger photo with prev/next arrows through all of its images (if it has
 // more than one), the full description, and the "add to cart" action.
-export default function MiniDetailModal({ mini, onClose, isOwn = false, inCart = false, onAddToCart }: MiniDetailModalProps): React.ReactElement {
+export default function MiniDetailModal({ mini, onClose, isOwn = false, inCart = false, onAddToCart, onTakeOut, onBringBack }: MiniDetailModalProps): React.ReactElement {
   const [index, setIndex] = useState<number>(0);
   const [adding, setAdding] = useState<boolean>(false);
   const [cartError, setCartError] = useState<string>('');
@@ -162,10 +166,15 @@ export default function MiniDetailModal({ mini, onClose, isOwn = false, inCart =
           {onAddToCart && (
             <div style={{ marginTop: '20px', paddingTop: '16px', borderTop: '1px solid #3d3629' }}>
               {isOwn ? (
-                <p style={{ fontSize: '13px', color: '#8a7d6a' }}>This is your mini.</p>
+                <>
+                  <p style={{ fontSize: '13px', color: '#8a7d6a' }}>This is your mini.</p>
+                  {onTakeOut && onBringBack && (
+                    <QuestControls mini={mini} onTakeOut={onTakeOut} onBringBack={onBringBack} />
+                  )}
+                </>
               ) : mini.status !== 'available' ? (
                 <button type="button" className="btn-secondary" disabled style={{ width: '100%' }}>
-                  Not available — {mini.status === 'adventuring' ? 'out adventuring' : 'already requested'}
+                  Not available — {unavailableReason(mini)}
                 </button>
               ) : inCart ? (
                 <button type="button" className="btn-secondary" disabled style={{ width: '100%' }}>
@@ -187,6 +196,87 @@ export default function MiniDetailModal({ mini, onClose, isOwn = false, inCart =
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+function unavailableReason(mini: Mini): string {
+  if (mini.status === 'adventuring') return 'out adventuring';
+  if (mini.status === 'on_quest') {
+    return `on a quest with its owner${mini.on_quest_until ? ` (back by ${formatBackBy(mini.on_quest_until)})` : ''}`;
+  }
+  return 'already requested';
+}
+
+// "On a Quest": the owner takes their own mini out — say, a DM asked them to
+// bring it to a session — with no negotiation. One click, optional back-by date.
+function QuestControls({ mini, onTakeOut, onBringBack }: {
+  mini: Mini;
+  onTakeOut: (backBy: string | null) => Promise<void>;
+  onBringBack: () => Promise<void>;
+}): React.ReactElement {
+  const [backBy, setBackBy] = useState<string>('');
+  const [busy, setBusy] = useState<boolean>(false);
+  const [error, setError] = useState<string>('');
+
+  async function run(action: () => Promise<void>): Promise<void> {
+    setError('');
+    setBusy(true);
+    try {
+      await action();
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Something went wrong');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div style={{ marginTop: '12px' }}>
+      {mini.status === 'available' && (
+        <div style={{ display: 'flex', gap: '10px', alignItems: 'flex-end', flexWrap: 'wrap' }}>
+          <div style={{ flex: '1 1 160px' }}>
+            <label htmlFor={`back-by-${mini.id}`} style={{ display: 'block', fontSize: '12px', color: '#8a7d6a', marginBottom: '4px' }}>
+              Back by (optional)
+            </label>
+            <input
+              id={`back-by-${mini.id}`}
+              type="date"
+              min={todayInputValue()}
+              value={backBy}
+              onChange={(e: React.ChangeEvent<HTMLInputElement>) => setBackBy(e.target.value)}
+            />
+          </div>
+          <button type="button" className="btn-primary" disabled={busy} onClick={() => void run(() => onTakeOut(backBy || null))}>
+            {busy ? 'Setting out…' : 'Take on a quest'}
+          </button>
+        </div>
+      )}
+
+      {mini.status === 'on_quest' && (
+        <div style={{ display: 'flex', gap: '10px', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap' }}>
+          <span style={{ fontSize: '13px', color: '#c39bd3' }}>
+            On a quest with you{mini.on_quest_until ? ` · back by ${formatBackBy(mini.on_quest_until)}` : ''}
+          </span>
+          <button type="button" className="btn-primary" disabled={busy} onClick={() => void run(onBringBack)}>
+            {busy ? 'Returning…' : 'Bring it back'}
+          </button>
+        </div>
+      )}
+
+      {mini.status === 'requested' && (
+        <p style={{ fontSize: '13px', color: '#8a7d6a' }}>
+          Someone has requested this mini — cancel or finish that request on the Loans page before taking it on a quest.
+        </p>
+      )}
+
+      {mini.status === 'adventuring' && (
+        <p style={{ fontSize: '13px', color: '#8a7d6a' }}>
+          This mini is out adventuring with a borrower right now.
+        </p>
+      )}
+
+      {error && <div className="error-msg" style={{ marginTop: '10px' }}>{error}</div>}
     </div>
   );
 }

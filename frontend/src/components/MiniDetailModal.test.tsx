@@ -136,6 +136,104 @@ describe('MiniDetailModal', () => {
   });
 });
 
+describe('MiniDetailModal — taking your own mini on a quest', () => {
+  function renderOwn(mini: Mini, handlers: { onTakeOut?: ReturnType<typeof vi.fn>; onBringBack?: ReturnType<typeof vi.fn> } = {}) {
+    const onTakeOut = handlers.onTakeOut ?? vi.fn().mockResolvedValue(undefined);
+    const onBringBack = handlers.onBringBack ?? vi.fn().mockResolvedValue(undefined);
+    render(
+      <MiniDetailModal
+        mini={mini} onClose={vi.fn()} isOwn inCart={false}
+        onAddToCart={vi.fn()} onTakeOut={onTakeOut} onBringBack={onBringBack}
+      />
+    );
+    return { onTakeOut, onBringBack };
+  }
+
+  it('lets the owner take an available mini on a quest in one click, no date needed', async () => {
+    const { onTakeOut } = renderOwn(makeMini());
+
+    fireEvent.click(screen.getByRole('button', { name: /take on a quest/i }));
+
+    await waitFor(() => expect(onTakeOut).toHaveBeenCalledWith(null));
+  });
+
+  it('passes along an optional back-by date', async () => {
+    const { onTakeOut } = renderOwn(makeMini());
+
+    fireEvent.change(screen.getByLabelText(/back by/i), { target: { value: '2026-10-15' } });
+    fireEvent.click(screen.getByRole('button', { name: /take on a quest/i }));
+
+    await waitFor(() => expect(onTakeOut).toHaveBeenCalledWith('2026-10-15'));
+  });
+
+  it('does not offer back-by dates in the past', () => {
+    renderOwn(makeMini());
+
+    const today = new Date();
+    const pad = (n: number) => String(n).padStart(2, '0');
+    expect(screen.getByLabelText(/back by/i)).toHaveAttribute(
+      'min', `${today.getFullYear()}-${pad(today.getMonth() + 1)}-${pad(today.getDate())}`
+    );
+  });
+
+  it('shows when a questing mini is due back, and lets the owner bring it back', async () => {
+    const { onBringBack } = renderOwn(makeMini({ status: 'on_quest', available: false, on_quest_since: '2026-10-01T18:00:00.000Z', on_quest_until: '2026-10-15' }));
+
+    expect(screen.getByText(/back by oct 15/i)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /take on a quest/i })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /bring it back/i }));
+
+    await waitFor(() => expect(onBringBack).toHaveBeenCalledTimes(1));
+  });
+
+  it('explains why it can\'t go on a quest while someone has requested it', () => {
+    renderOwn(makeMini({ status: 'requested', available: false }));
+
+    expect(screen.queryByRole('button', { name: /take on a quest/i })).not.toBeInTheDocument();
+    expect(screen.getByText(/someone has requested this/i)).toBeInTheDocument();
+  });
+
+  it('explains why it can\'t go on a quest while a borrower has it', () => {
+    renderOwn(makeMini({ status: 'adventuring', available: false }));
+
+    expect(screen.queryByRole('button', { name: /take on a quest/i })).not.toBeInTheDocument();
+    expect(screen.getByText(/out adventuring/i)).toBeInTheDocument();
+  });
+
+  it('shows the server\'s message if taking it out fails', async () => {
+    renderOwn(makeMini(), { onTakeOut: vi.fn().mockRejectedValue(new Error('Someone has requested this mini — cancel or finish that request first')) });
+
+    fireEvent.click(screen.getByRole('button', { name: /take on a quest/i }));
+
+    expect(await screen.findByText(/cancel or finish that request first/i)).toBeInTheDocument();
+  });
+
+  it('never shows quest controls to someone who doesn\'t own the mini', () => {
+    render(<MiniDetailModal mini={makeMini()} onClose={vi.fn()} isOwn={false} inCart={false} onAddToCart={vi.fn()} onTakeOut={vi.fn()} onBringBack={vi.fn()} />);
+
+    expect(screen.queryByRole('button', { name: /take on a quest/i })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/back by/i)).not.toBeInTheDocument();
+  });
+
+  it('tells other members it\'s on a quest with its owner, and when it\'s due back', () => {
+    const onAddToCart = vi.fn();
+    render(
+      <MiniDetailModal
+        mini={makeMini({ status: 'on_quest', available: false, on_quest_since: '2026-10-01T18:00:00.000Z', on_quest_until: '2026-10-15' })}
+        onClose={vi.fn()} isOwn={false} inCart={false} onAddToCart={onAddToCart}
+      />
+    );
+
+    const button = screen.getByRole('button', { name: /not available/i });
+    expect(button).toBeDisabled();
+    expect(button).toHaveTextContent(/on a quest with its owner/i);
+    expect(button).toHaveTextContent(/back by oct 15/i);
+    fireEvent.click(button);
+    expect(onAddToCart).not.toHaveBeenCalled();
+  });
+});
+
 describe('MiniDetailModal — adding to the cart', () => {
   it('offers "Add to cart" for someone else\'s available mini, and calls onAddToCart', async () => {
     const onAddToCart = vi.fn().mockResolvedValue(undefined);

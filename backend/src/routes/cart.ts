@@ -18,18 +18,20 @@ interface CartRow extends RowDataPacket {
   owner_name: string;
   owner_username: string;
   active_loan_status: string | null;
+  on_quest_since: Date | null;
 }
 
 interface MiniLookupRow extends RowDataPacket {
   owner_id: number;
   active_loan_status: string | null;
+  on_quest_since: Date | null;
 }
 
 const CART_SELECT = `
   SELECT ci.mini_id, m.name,
          (SELECT mi.image_path FROM mini_images mi WHERE mi.mini_id = m.id ORDER BY mi.position LIMIT 1) AS image,
          u.id AS owner_id, u.display_name AS owner_name, u.username AS owner_username,
-         ${activeLoanStatusSql('m')} AS active_loan_status
+         ${activeLoanStatusSql('m')} AS active_loan_status, m.on_quest_since
   FROM cart_items ci
   JOIN minis m ON m.id = ci.mini_id
   JOIN users u ON u.id = m.owner_id
@@ -45,7 +47,7 @@ function serializeCartItem(row: CartRow) {
     ownerId: row.owner_id,
     ownerName: row.owner_name,
     ownerUsername: row.owner_username,
-    status: miniStatusFrom(row.active_loan_status),
+    status: miniStatusFrom(row.active_loan_status, row.on_quest_since),
   };
 }
 
@@ -73,7 +75,7 @@ router.post('/', async (req: CollectionRequest, res: Response): Promise<void> =>
 
   try {
     const [rows] = await pool.execute<MiniLookupRow[]>(
-      `SELECT m.owner_id, ${activeLoanStatusSql('m')} AS active_loan_status
+      `SELECT m.owner_id, ${activeLoanStatusSql('m')} AS active_loan_status, m.on_quest_since
        FROM minis m WHERE m.id = ? AND m.collection_id = ?`,
       [miniId, req.collectionId!]
     );
@@ -86,7 +88,7 @@ router.post('/', async (req: CollectionRequest, res: Response): Promise<void> =>
       res.status(400).json({ error: "That's your own mini" });
       return;
     }
-    if (rows[0].active_loan_status) {
+    if (rows[0].active_loan_status || rows[0].on_quest_since) {
       res.status(409).json({ error: "That mini isn't available right now" });
       return;
     }
@@ -143,6 +145,7 @@ router.post('/checkout', async (req: CollectionRequest, res: Response): Promise<
          SELECT m.id, m.collection_id, ?, m.owner_id, 'negotiating'
          FROM minis m
          WHERE m.id = ? AND m.collection_id = ? AND m.owner_id <> ?
+           AND m.on_quest_since IS NULL
            AND NOT EXISTS (
              SELECT 1 FROM loans l WHERE l.mini_id = m.id AND l.status IN ('negotiating', 'adventuring')
            )`,

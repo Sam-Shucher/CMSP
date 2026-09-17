@@ -201,6 +201,163 @@ describe('mini status in responses', () => {
   });
 });
 
+describe('taking your own mini on a quest', () => {
+  // Lookup row the take-out/bring-back routes read before changing anything.
+  const lookup = (overrides: Record<string, unknown> = {}) =>
+    [[{ owner_id: OWNER.userId, active_loan_status: null, on_quest_since: null, ...overrides }]];
+
+  it('shows a mini the owner took out as "on_quest", with its back-by date, and not available', async () => {
+    execute
+      .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
+      .mockResolvedValueOnce([[miniRow({ on_quest_since: new Date('2026-10-01T18:00:00Z'), on_quest_until: '2026-10-15' })]]);
+
+    const res = await request(app).get('/api/minis/42').set('Cookie', authCookie(OTHER));
+
+    expect(res.body).toMatchObject({
+      status: 'on_quest',
+      available: false,
+      on_quest_since: '2026-10-01T18:00:00.000Z',
+      on_quest_until: '2026-10-15',
+    });
+  });
+
+  it('lets the owner take it out in one step, with no back-by date required', async () => {
+    execute
+      .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
+      .mockResolvedValueOnce(lookup())
+      .mockResolvedValueOnce([{ affectedRows: 1 }])
+      .mockResolvedValueOnce([[miniRow({ on_quest_since: new Date(), on_quest_until: null })]]);
+
+    const res = await request(app).post('/api/minis/42/take-out').set('Cookie', authCookie(OWNER)).send({});
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('on_quest');
+    const update = execute.mock.calls.find(([sql]) => String(sql).includes('SET on_quest_since = NOW()'))!;
+    expect(update[1]).toEqual([null, '42', COLLECTION_A, OWNER.userId]);
+  });
+
+  it('saves an optional back-by date', async () => {
+    const backBy = new Date(Date.now() + 7 * 86_400_000).toISOString().slice(0, 10);
+    execute
+      .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
+      .mockResolvedValueOnce(lookup())
+      .mockResolvedValueOnce([{ affectedRows: 1 }])
+      .mockResolvedValueOnce([[miniRow({ on_quest_since: new Date(), on_quest_until: backBy })]]);
+
+    const res = await request(app).post('/api/minis/42/take-out').set('Cookie', authCookie(OWNER)).send({ backBy });
+
+    expect(res.status).toBe(200);
+    expect(res.body.on_quest_until).toBe(backBy);
+    const update = execute.mock.calls.find(([sql]) => String(sql).includes('SET on_quest_since = NOW()'))!;
+    expect((update[1] as unknown[])[0]).toBe(backBy);
+  });
+
+  it('refuses an invalid back-by date', async () => {
+    execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED);
+
+    const res = await request(app).post('/api/minis/42/take-out').set('Cookie', authCookie(OWNER)).send({ backBy: '2001-01-01' });
+
+    expect(res.status).toBe(400);
+    expect(execute).toHaveBeenCalledTimes(1);
+  });
+
+  it('is only for the owner — not other members', async () => {
+    execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED).mockResolvedValueOnce(lookup());
+
+    const res = await request(app).post('/api/minis/42/take-out').set('Cookie', authCookie(OTHER)).send({});
+
+    expect(res.status).toBe(403);
+    expect(execute).not.toHaveBeenCalledWith(expect.stringContaining('UPDATE minis'), expect.anything());
+  });
+
+  it('is only for the owner — not even an admin', async () => {
+    execute.mockResolvedValueOnce(ADMIN_MEMBERSHIP).mockResolvedValueOnce(lookup());
+
+    const res = await request(app).post('/api/minis/42/take-out').set('Cookie', authCookie(ADMIN)).send({});
+
+    expect(res.status).toBe(403);
+  });
+
+  it('returns 404 for a mini in another collection', async () => {
+    execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED).mockResolvedValueOnce([[]]);
+
+    const res = await request(app).post('/api/minis/42/take-out').set('Cookie', authCookie(OWNER)).send({});
+
+    expect(res.status).toBe(404);
+    expect(execute).toHaveBeenCalledWith(expect.stringContaining('collection_id = ?'), ['42', COLLECTION_A]);
+  });
+
+  it.each([
+    ['someone has requested it', 'negotiating', /request/i],
+    ['it is out adventuring with a borrower', 'adventuring', /adventuring/i],
+  ])('is blocked while %s', async (_why, loanStatus, message) => {
+    execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED).mockResolvedValueOnce(lookup({ active_loan_status: loanStatus }));
+
+    const res = await request(app).post('/api/minis/42/take-out').set('Cookie', authCookie(OWNER)).send({});
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toMatch(message);
+    expect(execute).not.toHaveBeenCalledWith(expect.stringContaining('UPDATE minis'), expect.anything());
+  });
+
+  it('is blocked when it is already on a quest', async () => {
+    execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED).mockResolvedValueOnce(lookup({ on_quest_since: new Date() }));
+
+    const res = await request(app).post('/api/minis/42/take-out').set('Cookie', authCookie(OWNER)).send({});
+
+    expect(res.status).toBe(409);
+  });
+
+  // Someone could check it out in the instant between the lookup and the update.
+  it('re-checks availability in the update itself, and reports a conflict if it lost the race', async () => {
+    execute
+      .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
+      .mockResolvedValueOnce(lookup())
+      .mockResolvedValueOnce([{ affectedRows: 0 }]);
+
+    const res = await request(app).post('/api/minis/42/take-out').set('Cookie', authCookie(OWNER)).send({});
+
+    expect(res.status).toBe(409);
+    const update = String(execute.mock.calls.find(([sql]) => String(sql).includes('UPDATE minis'))![0]);
+    expect(update).toMatch(/on_quest_since IS NULL/);
+    expect(update).toMatch(/NOT EXISTS/);
+    expect(update).toMatch(/owner_id = \?/);
+  });
+
+  it('lets the owner bring it back, making it available again', async () => {
+    execute
+      .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
+      .mockResolvedValueOnce(lookup({ on_quest_since: new Date() }))
+      .mockResolvedValueOnce([{ affectedRows: 1 }])
+      .mockResolvedValueOnce([[miniRow()]]);
+
+    const res = await request(app).post('/api/minis/42/bring-back').set('Cookie', authCookie(OWNER));
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('available');
+    expect(execute).toHaveBeenCalledWith(
+      expect.stringContaining('SET on_quest_since = NULL, on_quest_until = NULL'),
+      ['42', COLLECTION_A, OWNER.userId]
+    );
+  });
+
+  it('does not let anyone else bring it back', async () => {
+    execute.mockResolvedValueOnce(ADMIN_MEMBERSHIP).mockResolvedValueOnce(lookup({ on_quest_since: new Date() }));
+
+    const res = await request(app).post('/api/minis/42/bring-back').set('Cookie', authCookie(ADMIN));
+
+    expect(res.status).toBe(403);
+  });
+
+  it('reports a conflict when bringing back a mini that isn\'t on a quest', async () => {
+    execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED).mockResolvedValueOnce(lookup());
+
+    const res = await request(app).post('/api/minis/42/bring-back').set('Cookie', authCookie(OWNER));
+
+    expect(res.status).toBe(409);
+  });
+});
+
 describe('GET /api/minis — tag filter', () => {
   it('passes the tag to the query as a parameter alongside the collection', async () => {
     execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED).mockResolvedValueOnce([[]]);

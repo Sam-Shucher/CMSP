@@ -69,8 +69,9 @@ export type Collection = {
   role?: CollectionRole;
 };
 
-// requested = checked out and being negotiated; adventuring = handed off to a borrower
-export type MiniStatus = 'available' | 'requested' | 'adventuring';
+// requested = checked out and being negotiated; adventuring = handed off to a
+// borrower; on_quest = the owner took it out themselves (e.g. to bring to a game)
+export type MiniStatus = 'available' | 'requested' | 'adventuring' | 'on_quest';
 
 // One row from GET /api/minis — the shape the backend sends back
 export type Mini = {
@@ -81,6 +82,8 @@ export type Mini = {
   price: number;
   status: MiniStatus;
   available: boolean;         // status === 'available'
+  on_quest_since?: string | null; // ISO timestamp while on a quest
+  on_quest_until?: string | null; // optional "back by" date, YYYY-MM-DD
   owner_name: string;         // display_name of the user who owns this mini
   owner_username: string;
   owner_id: number;

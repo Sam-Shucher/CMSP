@@ -7,6 +7,7 @@ describe('MiniStatusBadge', () => {
     ['available', 'Available'],
     ['requested', 'Requested'],
     ['adventuring', 'Adventuring'],
+    ['on_quest', 'On a Quest'],
   ] as const)('labels %s as "%s" with its matching style', (status, label) => {
     render(<MiniStatusBadge status={status} />);
 

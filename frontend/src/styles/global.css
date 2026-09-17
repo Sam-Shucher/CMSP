@@ -146,7 +146,8 @@ button:disabled {
 }
 
 .badge-requested,
-.badge-adventuring {
+.badge-adventuring,
+.badge-on_quest {
   border-radius: 20px;
   font-size: 11px;
   font-weight: 600;
@@ -166,4 +167,10 @@ button:disabled {
   background: rgba(93, 173, 226, 0.15);
   border: 1px solid #5dade2;
   color: #5dade2;
+}
+
+.badge-on_quest {
+  background: rgba(175, 122, 197, 0.15);
+  border: 1px solid #af7ac5;
+  color: #c39bd3;
 }
