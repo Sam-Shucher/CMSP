@@ -89,7 +89,7 @@ export default function MiniDetailModal({ mini, onClose }: MiniDetailModalProps)
                 aria-label="Previous image"
                 style={arrowStyle('left')}
               >
-                ‹
+                <ChevronIcon direction="left" />
               </button>
               <button
                 type="button"
@@ -97,7 +97,7 @@ export default function MiniDetailModal({ mini, onClose }: MiniDetailModalProps)
                 aria-label="Next image"
                 style={arrowStyle('right')}
               >
-                ›
+                <ChevronIcon direction="right" />
               </button>
               <span style={{
                 position: 'absolute', bottom: '8px', right: '10px',
@@ -177,6 +177,24 @@ function arrowStyle(side: 'left' | 'right'): React.CSSProperties {
     [side]: '10px',
     top: '50%',
     transform: 'translateY(-50%)',
-    fontSize: '20px',
   };
+}
+
+// Drawn as SVG rather than a ‹ / › text glyph — those characters aren't
+// centered within their own glyph box in most fonts, so no amount of
+// flexbox centering on the button fixes it. A vector path has no such
+// font-metric ambiguity, so it lands dead-center every time.
+function ChevronIcon({ direction }: { direction: 'left' | 'right' }): React.ReactElement {
+  const points = direction === 'left' ? '15 6 9 12 15 18' : '9 6 15 12 9 18';
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" style={{ display: 'block' }}>
+      <polyline
+        points={points}
+        stroke="currentColor"
+        strokeWidth="3"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
 }
