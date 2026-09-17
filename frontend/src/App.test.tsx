@@ -86,6 +86,8 @@ const LOGGED_IN_ROUTES: Routes = {
   '/api/loans': [],
   '/api/users/me': PROFILE,
   '/api/auth/logout': { message: 'Logged out' },
+  '/api/notifications': { unread: 2, items: [] },
+  '/api/holds': { holds: [], watching: [] },
 };
 
 describe('App — logged out', () => {
@@ -131,6 +133,13 @@ describe('App — nav bar', () => {
     expect(await screen.findByRole('button', { name: /sign in/i })).toBeInTheDocument();
     expect(fetch).toHaveBeenCalledWith('/api/auth/logout', expect.objectContaining({ method: 'POST' }));
     expect(screen.queryByRole('link', { name: 'owner' })).not.toBeInTheDocument();
+  });
+
+  it('shows the notification bell with the unread count', async () => {
+    mockServer(LOGGED_IN_ROUTES);
+    render(<App />);
+
+    expect(await screen.findByRole('button', { name: /notifications \(2 unread\)/i })).toBeInTheDocument();
   });
 
   it('shows the Admin link only to admins', async () => {

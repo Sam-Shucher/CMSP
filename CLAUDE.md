@@ -60,6 +60,11 @@ SQL step for the person deploying this.
   (`db/sessions.ts`). Unit tests replace that module with an always-live stand-in
   (`src/test/unitSetup.ts`); integration tests use real session rows via
   `test/dbHelpers.ts`.
+- **Holds & notifications:** hold-line changes go through `services/holds.ts`
+  (transactions that lock the mini row); loan notifications through
+  `services/loanEvents.ts`. Anything that makes a mini free again must call
+  `promoteNextHold(miniId)`. Unit tests stub these modules (`unitSetup.ts`); their
+  real behavior is tested in `holds.integration.test.ts` / `notifications.integration.test.ts`.
 - **Input:** validate every body/query value with `backend/src/utils/inputs.ts`
   (type + length) before it reaches the database. Query strings can be arrays or
   objects; JSON can be any type.

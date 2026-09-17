@@ -170,6 +170,7 @@ export default function DashboardPage(): React.ReactElement {
           onAddToCart={() => addToCart(selectedMini.id)}
           onTakeOut={(backBy: string | null) => takeOnQuest(selectedMini.id, backBy)}
           onBringBack={() => bringBack(selectedMini.id)}
+          showHolds
         />
       )}
     </div>

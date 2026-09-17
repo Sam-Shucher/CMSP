@@ -5,8 +5,10 @@ import { requireAuth } from '../middleware/requireAuth';
 import { requireCollectionMembership, CollectionRequest } from '../middleware/requireCollectionMembership';
 import {
   LoanSnapshot, LoanTerms, LoanApprovals, LoanStatus, RuleFailure,
-  roleOf, parseTermsPatch, applyTermsEdit, approveTerms, stageOf, termsToCopy, dueAtFrom,
+  roleOf, parseTermsPatch, applyTermsEdit, termsChanged, approveTerms, stageOf, termsToCopy, dueAtFrom,
 } from '../utils/loanRules';
+import * as events from '../services/loanEvents';
+import { promoteNextHold } from '../services/holds';
 
 const router = Router();
 
@@ -184,7 +186,9 @@ router.patch('/:id/terms', withLoan(async (req, res, row) => {
   const parsed = parseTermsPatch(req.body ?? {}, role);
   if (!parsed.ok) return fail(res, parsed);
 
-  if (await saveTerms(row.id, applyTermsEdit(snapshot, role, parsed.patch)) === 0) return fail(res, NOT_NEGOTIATING);
+  const next = applyTermsEdit(snapshot, role, parsed.patch);
+  if (await saveTerms(row.id, next) === 0) return fail(res, NOT_NEGOTIATING);
+  if (termsChanged(snapshot, next)) await events.termsProposed(row.id, req.user!.userId);
   await sendLoan(req, res, row.id);
 }));
 
@@ -200,6 +204,7 @@ router.post('/:id/approve', withLoan(async (req, res, row) => {
     [result.borrowerApproved ? 1 : 0, result.ownerApproved ? 1 : 0, row.id]
   );
   if (update.affectedRows === 0) return fail(res, NOT_NEGOTIATING);
+  await events.termsApproved(row.id, req.user!.userId);
   await sendLoan(req, res, row.id);
 }));
 
@@ -226,6 +231,7 @@ router.post('/:id/apply-terms-to-all', withLoan(async (req, res, row) => {
   for (const other of others) {
     updated += await saveTerms(other.id, applyTermsEdit(toSnapshot(other), role, copy));
   }
+  await events.termsAppliedToAll(row.id, userId, updated);
   res.json({ updated });
 }));
 
@@ -247,6 +253,7 @@ router.post('/:id/handoff', withLoan(async (req, res, row) => {
     [handedOffAt, dueAtFrom(handedOffAt, snapshot.durationDays!), row.id]
   );
   if (update.affectedRows === 0) return fail(res, NOT_NEGOTIATING);
+  await events.handedOff(row.id);
   await sendLoan(req, res, row.id);
 }));
 
@@ -265,6 +272,9 @@ router.post('/:id/return', withLoan(async (req, res, row) => {
     [nowToTheSecond(), row.id]
   );
   if (update.affectedRows === 0) return fail(res, { ok: false, status: 409, error: "This mini isn't out adventuring" });
+  await events.returned(row.id);
+  // It's back — the first person in line (if any) is checked out now.
+  await promoteNextHold(row.mini_id);
   await sendLoan(req, res, row.id);
 }));
 
@@ -279,6 +289,9 @@ router.post('/:id/cancel', withLoan(async (req, res, row) => {
     [req.user!.userId, row.id]
   );
   if (update.affectedRows === 0) return fail(res, cannotCancel);
+  await events.requestCancelled(row.id, req.user!.userId);
+  // The mini never left its owner, so it's free again — next in line gets it.
+  await promoteNextHold(row.mini_id);
   await sendLoan(req, res, row.id);
 }));
 

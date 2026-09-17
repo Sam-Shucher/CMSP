@@ -4,6 +4,7 @@ import { pool } from '../db/connection';
 import { requireAuth } from '../middleware/requireAuth';
 import { requireCollectionMembership, CollectionRequest } from '../middleware/requireCollectionMembership';
 import { activeLoanStatusSql, miniStatusFrom } from '../utils/miniStatus';
+import * as events from '../services/loanEvents';
 
 const router = Router();
 
@@ -155,6 +156,7 @@ router.post('/checkout', async (req: CollectionRequest, res: Response): Promise<
       if (result.affectedRows === 1) {
         created.push({ loanId: result.insertId, miniId: item.mini_id });
         await pool.execute('DELETE FROM cart_items WHERE user_id = ? AND mini_id = ?', [userId, item.mini_id]);
+        await events.requestCreated(result.insertId);
       } else {
         unavailable.push({ miniId: item.mini_id, name: item.name });
       }

@@ -5,6 +5,7 @@ import {
   termsComplete,
   parseTermsPatch,
   applyTermsEdit,
+  termsChanged,
   approveTerms,
   stageOf,
   termsToCopy,
@@ -137,6 +138,17 @@ describe('applyTermsEdit — the two-key rule', () => {
 
     expect(result.borrowerApproved).toBe(true);
     expect(result.ownerApproved).toBe(true);
+  });
+});
+
+describe('termsChanged', () => {
+  it('is true only when a term actually differs', () => {
+    const current = loan(COMPLETE);
+    expect(termsChanged(current, { ...COMPLETE })).toBe(false);
+    expect(termsChanged(current, { ...COMPLETE, handoffWhen: new Date(WHEN.getTime()) })).toBe(false);
+    expect(termsChanged(current, { ...COMPLETE, handoffWhere: 'Elsewhere' })).toBe(true);
+    expect(termsChanged(current, { ...COMPLETE, durationDays: 21 })).toBe(true);
+    expect(termsChanged(loan(), { ...loan(), handoffHow: 'Mailed' })).toBe(true);
   });
 });
 

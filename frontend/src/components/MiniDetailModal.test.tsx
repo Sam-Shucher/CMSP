@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import MiniDetailModal from './MiniDetailModal';
 import { Mini } from '../api/client';
@@ -231,6 +231,27 @@ describe('MiniDetailModal — taking your own mini on a quest', () => {
     expect(button).toHaveTextContent(/back by oct 15/i);
     fireEvent.click(button);
     expect(onAddToCart).not.toHaveBeenCalled();
+  });
+});
+
+describe('MiniDetailModal — hold line', () => {
+  beforeEach(() => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true, status: 200, json: async () => ({ max: 3, count: 1, position: null, watching: false }),
+    } as Response)));
+  });
+
+  it('shows the hold line for an unavailable mini when enabled', async () => {
+    render(<MiniDetailModal mini={makeMini({ status: 'adventuring', available: false })} onClose={vi.fn()} onAddToCart={vi.fn()} showHolds />);
+
+    expect(await screen.findByRole('button', { name: /place a hold/i })).toBeInTheDocument();
+    expect(fetch).toHaveBeenCalledWith('/api/holds/minis/1', expect.anything());
+  });
+
+  it('doesn\'t look up holds unless enabled', () => {
+    render(<MiniDetailModal mini={makeMini({ status: 'adventuring', available: false })} onClose={vi.fn()} onAddToCart={vi.fn()} />);
+
+    expect(fetch).not.toHaveBeenCalled();
   });
 });
 

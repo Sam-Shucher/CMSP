@@ -58,6 +58,89 @@ function renderLoans() {
   );
 }
 
+describe('LoansPage — holds', () => {
+  const HOLDS = {
+    holds: [
+      { miniId: 42, miniName: 'Dire Wolf', miniImage: null, ownerName: 'Alice', position: 2, status: 'adventuring' },
+    ],
+    watching: [
+      { miniId: 43, miniName: 'Owlbear', holdCount: 3 },
+    ],
+  };
+
+  function mockHolds(holds: unknown, loans: Loan[] = []) {
+    let current = holds;
+    vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const key = `${init?.method ?? 'GET'} ${String(input)}`;
+      if (key === 'GET /api/loans') return jsonResponse(loans);
+      if (key === 'GET /api/holds') return jsonResponse(current);
+      if (key === 'DELETE /api/holds/minis/42') {
+        current = { ...HOLDS, holds: [] };
+        return jsonResponse({ message: 'Left the line' });
+      }
+      if (key === 'DELETE /api/holds/minis/43/watch') {
+        current = { ...HOLDS, watching: [] };
+        return jsonResponse({ watching: false });
+      }
+      return jsonResponse({ error: `unexpected ${key}` }, false);
+    });
+  }
+
+  beforeEach(() => {
+    nextId = 1;
+    vi.stubGlobal('fetch', vi.fn());
+  });
+
+  it('lists the minis you\'re waiting for, with your place in line', async () => {
+    mockHolds(HOLDS);
+    renderLoans();
+
+    const section = await screen.findByRole('region', { name: /waiting in line/i });
+    expect(within(section).getByText('Dire Wolf')).toBeInTheDocument();
+    expect(section).toHaveTextContent(/#2 in line/);
+    expect(section).toHaveTextContent(/from Alice/);
+    expect(section).toHaveTextContent(/checked out automatically/i);
+  });
+
+  it('lets you leave a line from here', async () => {
+    mockHolds(HOLDS);
+    renderLoans();
+
+    await userEvent.click(await screen.findByRole('button', { name: /leave the line for dire wolf/i }));
+
+    await waitFor(() => expect(screen.queryByText('Dire Wolf')).not.toBeInTheDocument());
+  });
+
+  it('lists full lines you asked to hear about, and lets you stop', async () => {
+    mockHolds(HOLDS);
+    renderLoans();
+
+    const section = await screen.findByRole('region', { name: /notify me/i });
+    expect(within(section).getByText('Owlbear')).toBeInTheDocument();
+
+    await userEvent.click(within(section).getByRole('button', { name: /stop notifying me about owlbear/i }));
+
+    await waitFor(() => expect(screen.queryByRole('region', { name: /notify me/i })).not.toBeInTheDocument());
+  });
+
+  it('does not count as "nothing here" when you have holds but no loans', async () => {
+    mockHolds(HOLDS);
+    renderLoans();
+
+    await screen.findByRole('region', { name: /waiting in line/i });
+    expect(screen.queryByText(/no requests or loans yet/i)).not.toBeInTheDocument();
+  });
+
+  it('hides the holds sections when you have none', async () => {
+    mockHolds({ holds: [], watching: [] }, [makeLoan({ miniName: 'Beholder' })]);
+    renderLoans();
+
+    await screen.findByText('Beholder');
+    expect(screen.queryByRole('region', { name: /waiting in line/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: /notify me/i })).not.toBeInTheDocument();
+  });
+});
+
 describe('LoansPage', () => {
   beforeEach(() => {
     nextId = 1;

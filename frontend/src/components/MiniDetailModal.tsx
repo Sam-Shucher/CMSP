@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Mini } from '../api/client';
 import MiniStatusBadge from './MiniStatusBadge';
 import { formatBackBy, todayInputValue } from '../utils/questDates';
+import HoldPanel from './HoldPanel';
 
 type MiniDetailModalProps = {
   mini: Mini;
@@ -13,12 +14,14 @@ type MiniDetailModalProps = {
   // Owner-only "On a Quest" controls, shown when both are provided.
   onTakeOut?: (backBy: string | null) => Promise<void>;
   onBringBack?: () => Promise<void>;
+  // Show the hold line (looked up from the server) for unavailable minis.
+  showHolds?: boolean;
 };
 
 // Full-detail overlay opened by clicking a mini card on the browse page —
 // bigger photo with prev/next arrows through all of its images (if it has
 // more than one), the full description, and the "add to cart" action.
-export default function MiniDetailModal({ mini, onClose, isOwn = false, inCart = false, onAddToCart, onTakeOut, onBringBack }: MiniDetailModalProps): React.ReactElement {
+export default function MiniDetailModal({ mini, onClose, isOwn = false, inCart = false, onAddToCart, onTakeOut, onBringBack, showHolds = false }: MiniDetailModalProps): React.ReactElement {
   const [index, setIndex] = useState<number>(0);
   const [adding, setAdding] = useState<boolean>(false);
   const [cartError, setCartError] = useState<string>('');
@@ -192,6 +195,10 @@ export default function MiniDetailModal({ mini, onClose, isOwn = false, inCart =
                 </button>
               )}
               {cartError && <div className="error-msg" style={{ marginTop: '10px' }}>{cartError}</div>}
+              {showHolds && (
+                // Keyed by status so the line reloads when the mini's status changes.
+                <HoldPanel key={`${mini.id}-${mini.status}`} miniId={mini.id} status={mini.status} isOwn={isOwn} />
+              )}
             </div>
           )}
         </div>

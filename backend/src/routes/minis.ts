@@ -11,6 +11,7 @@ import { activeLoanStatusSql, miniStatusFrom } from '../utils/miniStatus';
 import { requiredText, optionalText, tagList, LIMITS, Check } from '../utils/inputs';
 import { uploadsDir as configuredUploadsDir } from '../config';
 import { parseBackBy } from '../utils/quest';
+import { promoteNextHold, announceMiniRemoved } from '../services/holds';
 
 const router = Router();
 const MAX_IMAGES = 3;
@@ -578,6 +579,8 @@ router.post('/:id/bring-back', async (req: CollectionRequest, res: Response): Pr
       res.status(409).json({ error: 'This mini isn\'t on a quest' });
       return;
     }
+    // Back and free — the first person in line (if any) is checked out now.
+    await promoteNextHold(Number(req.params.id));
     await sendMini(res, req.params.id);
   } catch (err: unknown) {
     console.error(err);
@@ -623,6 +626,8 @@ router.delete('/:id', async (req: CollectionRequest, res: Response): Promise<voi
       [miniId]
     );
 
+    // Tell anyone in line or on the notify list before their entries vanish with it.
+    await announceMiniRemoved(Number(miniId));
     await pool.execute<ResultSetHeader>('DELETE FROM minis WHERE id = ?', [miniId]);
 
     for (const { image_path } of imageRows) {

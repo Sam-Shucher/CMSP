@@ -141,11 +141,53 @@ CREATE TABLE IF NOT EXISTS loans (
   returned_at       DATETIME NULL,
   cancelled_by      INT NULL,
   created_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  overdue_notified_at DATETIME NULL, -- set once "overdue" has been announced
   FOREIGN KEY (mini_id) REFERENCES minis(id) ON DELETE CASCADE,
   FOREIGN KEY (collection_id) REFERENCES collections(id) ON DELETE CASCADE,
   FOREIGN KEY (borrower_id) REFERENCES users(id) ON DELETE CASCADE,
   FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE,
   FOREIGN KEY (cancelled_by) REFERENCES users(id) ON DELETE SET NULL
+);
+
+-- Holds: up to 3 people waiting (in id order) for a mini that isn't available.
+-- When it's confirmed back, the first hold automatically becomes a request.
+CREATE TABLE IF NOT EXISTS holds (
+  id         INT PRIMARY KEY AUTO_INCREMENT,
+  mini_id    INT NOT NULL,
+  user_id    INT NOT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE (mini_id, user_id),
+  FOREIGN KEY (mini_id) REFERENCES minis(id) ON DELETE CASCADE,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+-- People who want to hear when a full hold line opens up.
+CREATE TABLE IF NOT EXISTS hold_watchers (
+  id         INT PRIMARY KEY AUTO_INCREMENT,
+  mini_id    INT NOT NULL,
+  user_id    INT NOT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE (mini_id, user_id),
+  FOREIGN KEY (mini_id) REFERENCES minis(id) ON DELETE CASCADE,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+-- In-app notifications (the bell), per user and collection.
+CREATE TABLE IF NOT EXISTS notifications (
+  id            INT PRIMARY KEY AUTO_INCREMENT,
+  user_id       INT NOT NULL,
+  collection_id INT NOT NULL,
+  type          VARCHAR(40) NOT NULL,
+  message       VARCHAR(255) NOT NULL,
+  mini_id       INT NULL,
+  loan_id       INT NULL,
+  created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  read_at       DATETIME NULL,
+  INDEX idx_notifications_inbox (user_id, collection_id, read_at),
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+  FOREIGN KEY (collection_id) REFERENCES collections(id) ON DELETE CASCADE,
+  FOREIGN KEY (mini_id) REFERENCES minis(id) ON DELETE SET NULL,
+  FOREIGN KEY (loan_id) REFERENCES loans(id) ON DELETE SET NULL
 );
 
 -- Bootstrap: create at least one collection, then add your own email to its

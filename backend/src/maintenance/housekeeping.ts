@@ -4,6 +4,8 @@ import { RowDataPacket } from 'mysql2';
 import { pool } from '../db/connection';
 import { purgeEndedSessions } from '../db/sessions';
 import { uploadsDir as configuredUploadsDir } from '../config';
+import { notifyOverdueLoans } from '../services/loanEvents';
+import { promoteStrandedHolds } from '../services/holds';
 
 // Background cleanup ("garbage collection"). Rejected uploads are already
 // deleted the moment they're rejected (see minis.ts), and deleting a mini or
@@ -73,27 +75,38 @@ export async function sweepOrphanedUploads(options: SweepOptions = {}): Promise<
   return { deleted: orphans, kept: files.length - orphans.length };
 }
 
-// One full pass. Never throws: a failure is logged and the next run tries again.
-export async function runHousekeeping(options: SweepOptions = {}): Promise<{ uploadsDeleted: number; sessionsPurged: number }> {
+export interface HousekeepingResult {
+  uploadsDeleted: number;
+  sessionsPurged: number;
+  overdueAnnounced: number;
+  holdsPromoted: number;
+}
+
+// One full pass. Never throws: each step's failure is logged and the next run tries again.
+export async function runHousekeeping(options: SweepOptions = {}): Promise<HousekeepingResult> {
   const log = options.log ?? console.log;
-  let uploadsDeleted = 0;
-  let sessionsPurged = 0;
+  const result: HousekeepingResult = { uploadsDeleted: 0, sessionsPurged: 0, overdueAnnounced: 0, holdsPromoted: 0 };
 
-  try {
-    uploadsDeleted = (await sweepOrphanedUploads(options)).deleted.length;
-  } catch (err: unknown) {
-    log(`Upload cleanup failed: ${err instanceof Error ? err.message : String(err)}`);
-  }
-  try {
-    sessionsPurged = await purgeEndedSessions();
-  } catch (err: unknown) {
-    log(`Session cleanup failed: ${err instanceof Error ? err.message : String(err)}`);
+  async function step(label: string, work: () => Promise<void>): Promise<void> {
+    try {
+      await work();
+    } catch (err: unknown) {
+      log(`${label} failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
-  if (uploadsDeleted || sessionsPurged) {
-    log(`Housekeeping: removed ${uploadsDeleted} unused photo(s), ${sessionsPurged} ended session(s)`);
+  await step('Upload cleanup', async () => { result.uploadsDeleted = (await sweepOrphanedUploads(options)).deleted.length; });
+  await step('Session cleanup', async () => { result.sessionsPurged = await purgeEndedSessions(); });
+  await step('Overdue notices', async () => { result.overdueAnnounced = await notifyOverdueLoans(); });
+  await step('Hold promotion', async () => { result.holdsPromoted = await promoteStrandedHolds(); });
+
+  if (Object.values(result).some(n => n > 0)) {
+    log(
+      `Housekeeping: removed ${result.uploadsDeleted} unused photo(s), ${result.sessionsPurged} ended session(s); ` +
+      `announced ${result.overdueAnnounced} overdue loan(s); promoted ${result.holdsPromoted} waiting hold(s)`
+    );
   }
-  return { uploadsDeleted, sessionsPurged };
+  return result;
 }
 
 // Runs a minute after startup, then hourly. Returns a function that stops it.

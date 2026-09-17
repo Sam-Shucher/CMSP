@@ -106,6 +106,13 @@ function sameValue(a: Date | string | number | null, b: Date | string | number |
   return a === b;
 }
 
+export function termsChanged(current: LoanTerms, next: LoanTerms): boolean {
+  return !sameValue(next.handoffWhen, current.handoffWhen)
+    || !sameValue(next.handoffWhere, current.handoffWhere)
+    || !sameValue(next.handoffHow, current.handoffHow)
+    || !sameValue(next.durationDays, current.durationDays);
+}
+
 // The two-key rule. Proposing changed terms counts as the editor turning
 // their own key (if the terms are complete) and always un-turns the other
 // side's — so the loan can only be "agreed" when both approvals sit on the
@@ -122,12 +129,7 @@ export function applyTermsEdit(
     durationDays: patch.durationDays !== undefined ? patch.durationDays : current.durationDays,
   };
 
-  const changed = !sameValue(merged.handoffWhen, current.handoffWhen)
-    || !sameValue(merged.handoffWhere, current.handoffWhere)
-    || !sameValue(merged.handoffHow, current.handoffHow)
-    || !sameValue(merged.durationDays, current.durationDays);
-
-  if (!changed) {
+  if (!termsChanged(current, merged)) {
     return { ...merged, borrowerApproved: current.borrowerApproved, ownerApproved: current.ownerApproved };
   }
 

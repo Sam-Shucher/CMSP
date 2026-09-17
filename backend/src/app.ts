@@ -8,6 +8,8 @@ import adminRouter from './routes/admin';
 import usersRouter from './routes/users';
 import cartRouter from './routes/cart';
 import loansRouter from './routes/loans';
+import holdsRouter from './routes/holds';
+import notificationsRouter from './routes/notifications';
 import { requireAuth } from './middleware/requireAuth';
 import { requireImageAccess } from './middleware/requireImageAccess';
 import { securityHeaders, uploadHeaders, blockCrossSiteWrites, jsonErrors } from './middleware/security';
@@ -58,6 +60,8 @@ export function createApp(options: { frontendDist?: string; uploadsDir?: string 
   app.use('/api/users', usersRouter);  // /api/users/me (view/edit own profile)
   app.use('/api/cart',  cartRouter);   // /api/cart (basket + checkout)
   app.use('/api/loans', loansRouter);  // /api/loans (negotiation, handoff, return)
+  app.use('/api/holds', holdsRouter);  // /api/holds (the line for unavailable minis, notify list)
+  app.use('/api/notifications', notificationsRouter); // /api/notifications (the bell)
 
   // In production the backend also serves the built React app, so the whole
   // site runs on a single port. During development the Vite dev server handles

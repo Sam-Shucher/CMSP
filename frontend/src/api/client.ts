@@ -102,6 +102,32 @@ export type CartItem = {
   status: MiniStatus;
 };
 
+// GET /api/holds/minis/:id — the line for one mini. `queue` is only sent to the owner.
+export type HoldSummary = {
+  max: number;
+  count: number;
+  position: number | null;
+  watching: boolean;
+  queue?: Array<{ position: number; displayName: string }>;
+};
+
+// GET /api/holds — your places in line, and full lines you asked to hear about
+export type MyHolds = {
+  holds: Array<{ miniId: number; miniName: string; miniImage: string | null; ownerName: string; position: number; status: MiniStatus }>;
+  watching: Array<{ miniId: number; miniName: string; holdCount: number }>;
+};
+
+// One entry from GET /api/notifications
+export type NotificationItem = {
+  id: number;
+  type: string;
+  message: string;
+  miniId: number | null;
+  loanId: number | null;
+  read: boolean;
+  createdAt: string;
+};
+
 export type LoanStage = 'negotiating' | 'agreed' | 'adventuring' | 'overdue' | 'returned' | 'cancelled';
 
 // One row from GET /api/loans, seen from the current user's side

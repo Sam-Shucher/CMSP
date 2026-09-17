@@ -11,6 +11,7 @@ import ProfilePage from './pages/ProfilePage';
 import CollectionPicker from './pages/CollectionPicker';
 import CartPage from './pages/CartPage';
 import LoansPage from './pages/LoansPage';
+import NotificationBell from './components/NotificationBell';
 
 // ---------------------------------------------------------------------------
 // Auth context
@@ -107,6 +108,7 @@ function NavBar(): React.ReactElement | null {
       {user.role === 'admin' && (
         <a href="/admin" style={{ color: '#c9a84c', fontSize: '14px' }}>Admin</a>
       )}
+      <NotificationBell collectionId={user.collectionId} />
       <Link to="/profile" style={{ color: '#8a7d6a', fontSize: '14px' }}>{user.username}</Link>
       <button className="btn-secondary" style={{ padding: '6px 14px', fontSize: '13px' }} onClick={logout}>
         Logout

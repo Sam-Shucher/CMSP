@@ -5,6 +5,7 @@ import { requireAuth } from '../middleware/requireAuth';
 import { requireAdmin } from '../middleware/requireAdmin';
 import { requireCollectionMembership, CollectionRequest } from '../middleware/requireCollectionMembership';
 import { emailAddress } from '../utils/inputs';
+import { dropHoldsInCollection } from '../services/holds';
 
 const router = Router();
 
@@ -204,6 +205,9 @@ router.delete('/users/:id', async (req: CollectionRequest, res: Response): Promi
       res.status(404).json({ error: 'User not found in this collection' });
       return;
     }
+
+    // Their places in this group's hold lines go too; people behind them move up.
+    await dropHoldsInCollection(Number(req.params.id), req.collectionId!);
 
     await pool.execute<ResultSetHeader>(
       'DELETE FROM collection_memberships WHERE user_id = ? AND collection_id = ?',
