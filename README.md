@@ -109,6 +109,26 @@ docker compose -f docker-compose.test.yml down -v  # tear it down when done
 Requires Docker Desktop. This container is local-only and separate from the
 Pi's database — nothing here touches production.
 
+### End-to-end tests (Playwright)
+
+The `e2e/` suite drives the real, built app in Chrome — several people in
+separate browser windows at once (an owner and a borrower negotiating, a line
+of holds, an admin inviting someone) — to check that features work together
+the way people actually use them.
+
+```bash
+docker compose -f docker-compose.test.yml up -d   # same MariaDB as the integration suite
+npm install                                       # root dev dependencies (Playwright)
+npm run test:e2e          # builds frontend + backend, then runs every scenario
+npm run test:e2e:only     # skip the build when nothing changed
+npm run test:e2e:report   # open the HTML report (traces + screenshots of failures)
+```
+
+It uses your installed Google Chrome, a throwaway `mini_library_e2e` database
+(rebuilt from `schema.sql` on every run, wiped between tests), and its own
+server on port 4310 with test-only secrets — your `backend/.env` is never read.
+Seeded people all share the password in `e2e/support/seed.cjs`.
+
 ## Database migrations
 
 `backend/src/db/schema.sql` only ever runs `CREATE TABLE IF NOT EXISTS` — it

@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { api, NotificationItem } from '../api/client';
+import { api, NotificationItem, LOANS_CHANGED_EVENT } from '../api/client';
 import { timeAgo } from '../utils/timeAgo';
 
 export const POLL_INTERVAL_MS = 60 * 1000;
@@ -40,7 +40,15 @@ export default function NotificationBell({ collectionId }: { collectionId?: numb
       }
     }
     navigate('/loans');
+    window.dispatchEvent(new Event(LOANS_CHANGED_EVENT));
     void load();
+  }
+
+  // Opening the bell checks for anything new, rather than showing what we
+  // had as of the last minute-by-minute check.
+  function toggle(): void {
+    if (!open) void load();
+    setOpen(o => !o);
   }
 
   async function markAllRead(): Promise<void> {
@@ -59,7 +67,7 @@ export default function NotificationBell({ collectionId }: { collectionId?: numb
         type="button"
         aria-label={label}
         aria-expanded={open}
-        onClick={() => setOpen(o => !o)}
+        onClick={toggle}
         style={{ background: 'none', border: 'none', color: '#e8e0d0', cursor: 'pointer', padding: '4px', position: 'relative', fontSize: '18px', lineHeight: 1 }}
       >
         <span aria-hidden="true">🔔</span>

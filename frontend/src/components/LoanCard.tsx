@@ -77,6 +77,25 @@ export default function LoanCard({ loan, now, otherOpenRequests, onUpdated }: Lo
 
   const hasChanges = Object.keys(changedTerms()).length > 0;
 
+  // What happens next, from where this person stands. The handoff is the
+  // owner's to confirm, in person, once both keys are turned.
+  function nextStep(): string {
+    if (myKey && theirKey) {
+      return isOwner
+        ? 'You\'re both agreed. When you meet and hand it over, confirm the handoff.'
+        : `Agreed! ${them} will confirm the handoff when you meet.`;
+    }
+    if (myKey) {
+      return isOwner
+        ? `Waiting on ${them} to approve. Once they do, you'll confirm the handoff here when you meet.`
+        : `Waiting on ${them} to approve.`;
+    }
+    if (theirKey) return `${them} approved these terms — approve too to agree.`;
+    return isOwner
+      ? 'Set the duration and agree on when, where, and how — then you both approve.'
+      : `Agree on when, where, and how — ${them} sets the duration. Then you both approve.`;
+  }
+
   async function run(path: string, options: RequestInit & { json?: unknown } = { method: 'POST' }): Promise<void> {
     setError('');
     setBusy(true);
@@ -156,6 +175,10 @@ export default function LoanCard({ loan, now, otherOpenRequests, onUpdated }: Lo
             <span style={{ color: theirKey ? '#27ae60' : '#8a7d6a' }}>🔑 {them}: {theirKey ? 'approved' : 'not yet'}</span>
           </div>
 
+          <p style={{ fontSize: '13px', color: myKey && theirKey ? '#27ae60' : '#8a7d6a', marginBottom: '10px' }}>
+            {nextStep()}
+          </p>
+
           <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
             {!myKey && (
               <button
@@ -169,16 +192,11 @@ export default function LoanCard({ loan, now, otherOpenRequests, onUpdated }: Lo
                 Approve terms
               </button>
             )}
-            {myKey && !theirKey && (
-              <span style={{ fontSize: '13px', color: '#8a7d6a' }}>Waiting on {them} to approve.</span>
-            )}
-            {myKey && theirKey && (isOwner ? (
+            {myKey && theirKey && isOwner && (
               <button type="button" className="btn-primary" disabled={busy} onClick={() => void run(`/api/loans/${loan.id}/handoff`)} style={{ padding: '6px 14px', fontSize: '13px' }}>
                 Confirm handoff
               </button>
-            ) : (
-              <span style={{ fontSize: '13px', color: '#8a7d6a' }}>Agreed! {them} will confirm the handoff when you meet.</span>
-            ))}
+            )}
             {otherOpenRequests > 0 && (
               <button type="button" className="btn-secondary" disabled={busy} onClick={() => void run(`/api/loans/${loan.id}/apply-terms-to-all`)} style={{ padding: '6px 14px', fontSize: '13px' }}>
                 Apply these terms to all requests with {them}

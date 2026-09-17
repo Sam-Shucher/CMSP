@@ -1,10 +1,12 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { api, Loan, MyHolds } from '../api/client';
+import { api, Loan, MyHolds, LOANS_CHANGED_EVENT } from '../api/client';
 import LoanCard from '../components/LoanCard';
 
 // How often the "time left" countdowns re-render.
 const TICK_MS = 60 * 1000;
+// How often to check for changes the other person made.
+const REFRESH_MS = 30 * 1000;
 
 const rowStyle: React.CSSProperties = {
   display: 'flex', alignItems: 'center', gap: '12px', padding: '10px 14px', marginBottom: '8px',
@@ -42,9 +44,27 @@ export default function LoansPage(): React.ReactElement {
     }
   }, []);
 
+  // The other person acts from their own screen, so keep up: reload when a
+  // notification is opened, when you come back to the tab, and every so often.
   useEffect(() => {
-    void loadLoans();
-    void loadHolds();
+    const reload = (): void => {
+      void loadLoans();
+      void loadHolds();
+    };
+    const reloadIfVisible = (): void => {
+      if (document.visibilityState === 'visible') reload();
+    };
+    reload();
+    window.addEventListener(LOANS_CHANGED_EVENT, reload);
+    window.addEventListener('focus', reload);
+    document.addEventListener('visibilitychange', reloadIfVisible);
+    const timer = setInterval(reloadIfVisible, REFRESH_MS);
+    return () => {
+      window.removeEventListener(LOANS_CHANGED_EVENT, reload);
+      window.removeEventListener('focus', reload);
+      document.removeEventListener('visibilitychange', reloadIfVisible);
+      clearInterval(timer);
+    };
   }, [loadLoans, loadHolds]);
 
   async function holdAction(path: string): Promise<void> {

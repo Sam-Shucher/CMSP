@@ -44,6 +44,10 @@ export async function api<T = unknown>(
 
 export const SESSION_ENDED_EVENT = 'mini-library:session-ended';
 
+// Something about your loans or holds may have changed (a notification was
+// opened) — the Loans page reloads, even if you're already looking at it.
+export const LOANS_CHANGED_EVENT = 'mini-library:loans-changed';
+
 // Where a 401 just means "wrong email or password", not an ended session.
 const SIGN_IN_FORMS = ['/api/auth/login', '/api/auth/register'];
 

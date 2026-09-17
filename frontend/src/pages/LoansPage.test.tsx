@@ -1,9 +1,9 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, within, waitFor } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { render, screen, within, waitFor, act } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import LoansPage from './LoansPage';
-import { Loan } from '../api/client';
+import { Loan, LOANS_CHANGED_EVENT } from '../api/client';
 
 const ALICE = { id: 10, username: 'alice', displayName: 'Alice' };
 const BOB = { id: 20, username: 'bob', displayName: 'Bob' };
@@ -138,6 +138,56 @@ describe('LoansPage — holds', () => {
     await screen.findByText('Beholder');
     expect(screen.queryByRole('region', { name: /waiting in line/i })).not.toBeInTheDocument();
     expect(screen.queryByRole('region', { name: /notify me/i })).not.toBeInTheDocument();
+  });
+});
+
+describe('LoansPage — keeping up with the other person', () => {
+  beforeEach(() => {
+    nextId = 1;
+    vi.stubGlobal('fetch', vi.fn());
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  // First load shows Bob hasn't approved; every later load shows he has.
+  function mockChangingLoans() {
+    mockLoans(
+      [makeLoan({ miniName: 'Dire Wolf', role: 'owner', counterpart: BOB, ownerApproved: true })],
+      [makeLoan({ miniName: 'Dire Wolf', role: 'owner', counterpart: BOB, ownerApproved: true, borrowerApproved: true, stage: 'agreed' })],
+    );
+  }
+
+  it('reloads when a notification is opened (even while already on this page)', async () => {
+    mockChangingLoans();
+    renderLoans();
+    await screen.findByText(/waiting on bob/i);
+
+    act(() => { window.dispatchEvent(new Event(LOANS_CHANGED_EVENT)); });
+
+    expect(await screen.findByRole('button', { name: 'Confirm handoff' })).toBeInTheDocument();
+  });
+
+  it('reloads when you come back to the tab', async () => {
+    mockChangingLoans();
+    renderLoans();
+    await screen.findByText(/waiting on bob/i);
+
+    act(() => { window.dispatchEvent(new Event('focus')); });
+
+    expect(await screen.findByRole('button', { name: 'Confirm handoff' })).toBeInTheDocument();
+  });
+
+  it('checks for changes on its own every 30 seconds', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    mockChangingLoans();
+    renderLoans();
+    await screen.findByText(/waiting on bob/i);
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+
+    expect(await screen.findByRole('button', { name: 'Confirm handoff' })).toBeInTheDocument();
   });
 });
 

@@ -178,6 +178,46 @@ describe('LoanCard — negotiating terms', () => {
   });
 });
 
+describe('LoanCard — what to do next', () => {
+  beforeEach(() => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({})));
+  });
+
+  const owner = { role: 'owner' as const, counterpart: { id: 20, username: 'bob', displayName: 'Bob' } };
+
+  it('tells the owner how it works before anyone has approved', () => {
+    renderCard(makeLoan({ ...owner }));
+    expect(screen.getByText('Set the duration and agree on when, where, and how — then you both approve.')).toBeInTheDocument();
+  });
+
+  it('tells the borrower how it works before anyone has approved', () => {
+    renderCard(makeLoan());
+    expect(screen.getByText('Agree on when, where, and how — Alice sets the duration. Then you both approve.')).toBeInTheDocument();
+  });
+
+  it('asks you to approve when the other person already has', () => {
+    renderCard(makeLoan({ ...COMPLETE_TERMS, ownerApproved: true }));
+    expect(screen.getByText('Alice approved these terms — approve too to agree.')).toBeInTheDocument();
+  });
+
+  it('tells the owner, while waiting, that the handoff button will appear here', () => {
+    renderCard(makeLoan({ ...COMPLETE_TERMS, ...owner, ownerApproved: true }));
+    expect(screen.getByText('Waiting on Bob to approve. Once they do, you\'ll confirm the handoff here when you meet.')).toBeInTheDocument();
+  });
+
+  it('tells the borrower who they are waiting on', () => {
+    renderCard(makeLoan({ ...COMPLETE_TERMS, borrowerApproved: true }));
+    expect(screen.getByText('Waiting on Alice to approve.')).toBeInTheDocument();
+  });
+
+  it('once agreed, tells the owner to confirm the handoff when they meet — right beside the button', () => {
+    renderCard(makeLoan({ ...COMPLETE_TERMS, ...owner, stage: 'agreed', ownerApproved: true, borrowerApproved: true }));
+
+    expect(screen.getByText('You\'re both agreed. When you meet and hand it over, confirm the handoff.')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Confirm handoff' })).toBeInTheDocument();
+  });
+});
+
 describe('LoanCard — apply terms to all', () => {
   beforeEach(() => {
     vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({ updated: 2 })));

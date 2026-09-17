@@ -3,7 +3,7 @@ import { render, screen, waitFor, act } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Routes, Route } from 'react-router-dom';
 import NotificationBell, { POLL_INTERVAL_MS } from './NotificationBell';
-import { NotificationItem } from '../api/client';
+import { NotificationItem, LOANS_CHANGED_EVENT } from '../api/client';
 
 function jsonResponse(body: unknown): Response {
   return { ok: true, status: 200, json: async () => body } as Response;
@@ -123,6 +123,30 @@ describe('NotificationBell', () => {
     await userEvent.click(screen.getByRole('button', { name: /moved up/i }));
 
     expect(await screen.findByText('Loans page')).toBeInTheDocument();
+  });
+
+  it('tells the Loans page to reload when a notification is opened', async () => {
+    mockInbox({ unread: 1, items: [item({ id: 7 })] });
+    const listener = vi.fn();
+    window.addEventListener(LOANS_CHANGED_EVENT, listener);
+    renderBell();
+    await userEvent.click(await screen.findByRole('button', { name: /notifications \(1 unread\)/i }));
+
+    await userEvent.click(screen.getByRole('button', { name: /your turn/i }));
+
+    await waitFor(() => expect(listener).toHaveBeenCalledTimes(1));
+    window.removeEventListener(LOANS_CHANGED_EVENT, listener);
+  });
+
+  it('checks for new notifications when opened, not just once a minute', async () => {
+    const inbox = mockInbox({ unread: 0, items: [] });
+    renderBell();
+    await screen.findByRole('button', { name: /^notifications$/i });
+
+    inbox.set({ unread: 1, items: [item({ message: 'Bob requested Owlbear' })] });
+    await userEvent.click(screen.getByRole('button', { name: /^notifications/i }));
+
+    expect(await screen.findByText('Bob requested Owlbear')).toBeInTheDocument();
   });
 
   it('marks all as read', async () => {

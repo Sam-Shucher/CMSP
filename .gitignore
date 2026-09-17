@@ -6,6 +6,10 @@ backend/dist/
 frontend/dist/
 backend/uploads/
 coverage/
+e2e/.auth/
+e2e/.uploads/
+test-results/
+playwright-report/
 *.tsbuildinfo
 backend/.env
 .env

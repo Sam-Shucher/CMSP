@@ -1,0 +1,135 @@
+import { test, expect, createMini, TINY_PNG, apiCall } from './support/fixtures';
+
+// Adding, viewing, editing, taking on a quest, and deleting minis — including
+// real photo uploads, which are only shown to members of the mini's group.
+
+test('adding a mini with a photo, and other members seeing it', async ({ as }) => {
+  const olivia = await as('olivia');
+  const bruno = await as('bruno');
+
+  await olivia.goto('/');
+  await olivia.getByRole('link', { name: 'Add Mini' }).first().click();
+  await olivia.getByLabel(/Name/).fill('Tabaxi Bard');
+  await olivia.getByLabel('Description').fill('Manufacturer: WizKids\nScale: 28mm\nSeries: Nolzur\'s');
+  await olivia.getByLabel(/Tags/).fill('bard, painted');
+  await olivia.getByLabel(/Price/).fill('12.50');
+  await olivia.getByTestId('image-input').setInputFiles({ name: 'bard.png', mimeType: 'image/png', buffer: TINY_PNG });
+  await olivia.getByRole('button', { name: 'Add to Collection' }).click();
+
+  await expect(olivia.getByRole('heading', { name: 'The Collection' })).toBeVisible();
+  await expect(olivia.getByText('Tabaxi Bard')).toBeVisible();
+
+  // Bruno sees it, with a photo that actually loads (served only to members, under the site's security rules).
+  await bruno.goto('/');
+  const photo = bruno.getByRole('img', { name: 'Tabaxi Bard' });
+  await expect(photo).toBeVisible();
+  await expect.poll(() => photo.evaluate((img: HTMLImageElement) => img.naturalWidth)).toBeGreaterThan(0);
+  await expect(bruno.getByText('$12.50')).toBeVisible();
+
+  // The description only appears in the detail view.
+  await expect(bruno.getByText('Scale: 28mm')).toHaveCount(0);
+  await bruno.getByText('Tabaxi Bard').click();
+  await expect(bruno.getByText(/Scale: 28mm/)).toBeVisible();
+});
+
+test('searching tolerates typos and tags filter the list', async ({ as }) => {
+  const olivia = await as('olivia');
+  await createMini(olivia, 'Tabaxi Bard', { tags: 'bard' });
+  await createMini(olivia, 'Goblin Grunt', { tags: 'goblin' });
+
+  await olivia.goto('/');
+  await olivia.getByPlaceholder(/Search/).fill('tabaxe');
+  await expect(olivia.getByText('Tabaxi Bard')).toBeVisible();
+  await expect(olivia.getByText('Goblin Grunt')).toHaveCount(0);
+
+  await olivia.getByPlaceholder(/Search/).fill('');
+  await olivia.getByRole('button', { name: 'goblin', exact: true }).click();
+  await expect(olivia.getByText('Goblin Grunt')).toBeVisible();
+  await expect(olivia.getByText('Tabaxi Bard')).toHaveCount(0);
+});
+
+test('only the owner can edit, and deleting needs the name typed exactly', async ({ as }) => {
+  const olivia = await as('olivia');
+  const bruno = await as('bruno');
+  await createMini(olivia, 'Dire Wolf');
+
+  await bruno.goto('/');
+  await expect(bruno.getByText('Dire Wolf')).toBeVisible();
+  await expect(bruno.getByRole('link', { name: 'Edit' })).toHaveCount(0);
+
+  await olivia.goto('/');
+  await olivia.getByRole('link', { name: 'Edit' }).click();
+  await olivia.getByLabel(/Name/).fill('Dire Wolf Alpha');
+  await olivia.getByRole('button', { name: 'Save Changes' }).click();
+  await expect(olivia.getByText('Dire Wolf Alpha')).toBeVisible();
+
+  await olivia.getByRole('link', { name: 'Edit' }).click();
+  await olivia.getByRole('button', { name: 'Delete Mini' }).click();
+  const confirm = olivia.getByRole('button', { name: 'Confirm Delete' });
+  await expect(confirm).toBeDisabled();
+  await olivia.getByLabel(/Type/).fill('Dire Wolf');
+  await expect(confirm).toBeDisabled();
+  await olivia.getByLabel(/Type/).fill('Dire Wolf Alpha');
+  await confirm.click();
+
+  await expect(olivia.getByText('No minis found')).toBeVisible();
+});
+
+test('a mini that is requested can\'t be deleted, and the owner is told why', async ({ as }) => {
+  const olivia = await as('olivia');
+  const bruno = await as('bruno');
+  const miniId = await createMini(olivia, 'Dire Wolf');
+  await apiCall(bruno, 'POST', '/api/cart', { miniId });
+  await apiCall(bruno, 'POST', '/api/cart/checkout');
+
+  await olivia.goto(`/minis/${miniId}/edit`);
+  await olivia.getByRole('button', { name: 'Delete Mini' }).click();
+  await olivia.getByLabel(/Type/).fill('Dire Wolf');
+  await olivia.getByRole('button', { name: 'Confirm Delete' }).click();
+
+  await expect(olivia.getByText(/active request or loan/)).toBeVisible();
+});
+
+test('a back-by date more than a year away is refused with a clear message', async ({ as }) => {
+  const olivia = await as('olivia');
+  await createMini(olivia, 'Owlbear');
+
+  await olivia.goto('/');
+  await olivia.getByText('Owlbear').click();
+  await olivia.getByLabel('Back by (optional)').fill(`${new Date().getFullYear() + 3}-01-15`);
+  await olivia.getByRole('button', { name: 'Take on a quest' }).click();
+
+  await expect(olivia.getByText('Back-by date must be within a year')).toBeVisible();
+  await expect(olivia.getByRole('button', { name: 'Take on a quest' })).toBeVisible();
+});
+
+test('taking your own mini on a quest and bringing it back', async ({ as }) => {
+  const olivia = await as('olivia');
+  const bruno = await as('bruno');
+  await createMini(olivia, 'Beholder');
+
+  // Two weeks out, as the date picker value and as it's shown ("Oct 15").
+  const due = new Date(Date.now() + 14 * 86_400_000);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const backBy = `${due.getFullYear()}-${pad(due.getMonth() + 1)}-${pad(due.getDate())}`;
+  const shown = due.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+
+  await olivia.goto('/');
+  await olivia.getByText('Beholder').click();
+  await olivia.getByLabel('Back by (optional)').fill(backBy);
+  await olivia.getByRole('button', { name: 'Take on a quest' }).click();
+  await expect(olivia.getByText(`On a quest with you · back by ${shown}`)).toBeVisible();
+
+  await bruno.goto('/');
+  await expect(bruno.locator('.badge-on_quest')).toHaveText('On a Quest');
+  await bruno.getByText('Beholder').click();
+  await expect(bruno.getByRole('button', { name: `Not available — on a quest with its owner (back by ${shown})` })).toBeDisabled();
+  await expect(bruno.getByRole('button', { name: 'Add to cart' })).toHaveCount(0);
+
+  await olivia.getByRole('button', { name: 'Bring it back' }).click();
+  await expect(olivia.getByRole('button', { name: 'Take on a quest' })).toBeVisible();
+
+  await bruno.reload();
+  await bruno.getByText('Beholder').click();
+  await expect(bruno.getByRole('button', { name: 'Add to cart' })).toBeEnabled();
+});

@@ -20,6 +20,7 @@ npm run dev                                 # both servers (root)
 npm --prefix backend run test               # backend unit tests — mocked DB
 npm --prefix backend run test:integration   # backend tests against real MariaDB (needs docker compose -f docker-compose.test.yml up -d)
 npm --prefix frontend run test              # frontend tests
+npm run test:e2e                            # Playwright end-to-end (builds first; needs the same Docker MariaDB)
 npm --prefix backend run build              # tsc + copies db/migrations/*.sql into dist/
 ```
 
