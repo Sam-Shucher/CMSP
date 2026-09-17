@@ -1,33 +1,19 @@
 import React, { useRef, useState } from 'react';
+import { ACCEPTED_PHOTO_TYPES } from '../utils/photoFiles';
 
 type ImageDropzoneProps = {
-  file: File | null;
-  previewUrl: string | null;
-  onSelect: (file: File) => void;
-  onClear: () => void;
+  onFiles: (files: File[]) => void;
 };
 
-// Reusable photo picker: click to open the file browser, or drag an image
-// straight onto the box. Shared by the "Add Mini" and "Edit Mini" forms.
-export default function ImageDropzone({ file, previewUrl, onSelect, onClear }: ImageDropzoneProps): React.ReactElement {
+// Photo picker box: click to open the file browser, or drag photos straight
+// onto it. Several at once is fine — MultiImagePicker decides what fits.
+export default function ImageDropzone({ onFiles }: ImageDropzoneProps): React.ReactElement {
   const fileRef = useRef<HTMLInputElement>(null);
-  const [dropError, setDropError] = useState<string>('');
   const [dragActive, setDragActive] = useState<boolean>(false);
 
-  function isImage(f: File): boolean {
-    return /^image\//.test(f.type);
-  }
-
   function handleFiles(fileList: FileList | null): void {
-    const picked = fileList?.[0];
-    if (!picked) return;
-
-    if (!isImage(picked)) {
-      setDropError('Only image files are allowed (jpg, png, gif, webp)');
-      return;
-    }
-    setDropError('');
-    onSelect(picked);
+    const files = Array.from(fileList ?? []);
+    if (files.length > 0) onFiles(files);
   }
 
   function handleDrop(e: React.DragEvent<HTMLDivElement>): void {
@@ -43,6 +29,7 @@ export default function ImageDropzone({ file, previewUrl, onSelect, onClear }: I
         tabIndex={0}
         data-testid="image-dropzone"
         onClick={() => fileRef.current?.click()}
+        onKeyDown={(e: React.KeyboardEvent<HTMLDivElement>) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fileRef.current?.click(); } }}
         onDragOver={(e: React.DragEvent<HTMLDivElement>) => { e.preventDefault(); setDragActive(true); }}
         onDragLeave={() => setDragActive(false)}
         onDrop={handleDrop}
@@ -61,44 +48,28 @@ export default function ImageDropzone({ file, previewUrl, onSelect, onClear }: I
         onMouseEnter={(e: React.MouseEvent<HTMLDivElement>) => (e.currentTarget.style.borderColor = '#c9a84c')}
         onMouseLeave={(e: React.MouseEvent<HTMLDivElement>) => { if (!dragActive) e.currentTarget.style.borderColor = '#3d3629'; }}
       >
-        {previewUrl ? (
-          <img src={previewUrl} alt="Preview" style={{ maxWidth: '100%', maxHeight: '300px', objectFit: 'contain' }} />
-        ) : (
-          <div style={{ textAlign: 'center', color: '#8a7d6a', padding: '0 16px' }}>
-            <div style={{ fontSize: '32px', marginBottom: '8px' }}>📷</div>
-            <p style={{ fontSize: '13px' }}>
-              Click here to upload from your file system, or just drag the picture here
-            </p>
-            <p style={{ fontSize: '12px', marginTop: '4px' }}>JPG, PNG, GIF, WebP — max 10 MB</p>
-          </div>
-        )}
+        <div style={{ textAlign: 'center', color: '#8a7d6a', padding: '0 16px' }}>
+          <div style={{ fontSize: '32px', marginBottom: '8px' }}>📷</div>
+          <p style={{ fontSize: '13px' }}>
+            Click here to upload from your file system, or just drag the pictures here
+          </p>
+          <p style={{ fontSize: '12px', marginTop: '4px' }}>JPG, PNG, GIF, WebP — max 10 MB each</p>
+        </div>
       </div>
 
-      {/* Hidden file input — only image types accepted */}
+      {/* Hidden file input. Cleared after each pick so the same photo can be picked again. */}
       <input
         ref={fileRef}
         type="file"
-        accept="image/*"
+        accept={ACCEPTED_PHOTO_TYPES.join(',')}
+        multiple
         data-testid="image-input"
-        onChange={(e: React.ChangeEvent<HTMLInputElement>) => handleFiles(e.target.files)}
+        onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
+          handleFiles(e.target.files);
+          e.target.value = '';
+        }}
         style={{ display: 'none' }}
       />
-
-      {dropError && <p className="error-msg" style={{ marginTop: '6px' }}>{dropError}</p>}
-
-      {/* File info + remove button, shown once an image is selected */}
-      {file && (
-        <p style={{ fontSize: '12px', color: '#8a7d6a', marginTop: '6px' }}>
-          {file.name} ({(file.size / 1024 / 1024).toFixed(1)} MB)
-          <button
-            type="button"
-            onClick={onClear}
-            style={{ marginLeft: '10px', background: 'none', border: 'none', color: '#c0392b', cursor: 'pointer', fontSize: '12px', padding: 0 }}
-          >
-            Remove
-          </button>
-        </p>
-      )}
     </div>
   );
 }

@@ -140,6 +140,14 @@ describe('DashboardPage — browsing, search, and tags', () => {
     return vi.mocked(fetch).mock.calls.map(([u]) => String(u)).filter(u => u.startsWith('/api/minis?'));
   }
 
+  it('keeps a pasted search to the 100 characters the server accepts', async () => {
+    mockBrowse();
+    renderDashboard({ userId: 2, username: 'other', role: 'user' });
+    await screen.findByText('Dire Wolf');
+
+    expect(screen.getByPlaceholderText(/search/i)).toHaveAttribute('maxLength', '100');
+  });
+
   it('searches as you type, sending the text to the server', async () => {
     mockBrowse();
     renderDashboard({ userId: 2, username: 'other', role: 'user' });

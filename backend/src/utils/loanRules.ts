@@ -29,6 +29,8 @@ export type RuleFailure = { ok: false; status: 400 | 403 | 409; error: string };
 
 export const MAX_DURATION_DAYS = 365;
 const MAX_TEXT_LENGTH = 255;
+const MIN_YEAR = 2000;
+const MAX_YEAR = 2100;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 export function roleOf(loan: { borrowerId: number; ownerId: number }, userId: number): LoanRole | null {
@@ -78,6 +80,11 @@ export function parseTermsPatch(
     const when = typeof input.when === 'string' ? new Date(input.when) : null;
     if (!when || Number.isNaN(when.getTime())) {
       return { ok: false, status: 400, error: 'When must be a valid date and time' };
+    }
+    // The date picker accepts a year typed as "26" or "20266" — neither is a real plan.
+    const year = when.getUTCFullYear();
+    if (year < MIN_YEAR || year > MAX_YEAR) {
+      return { ok: false, status: 400, error: 'That date doesn\'t look right — check the year' };
     }
     patch.handoffWhen = when;
   }

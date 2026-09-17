@@ -20,7 +20,53 @@ describe('MiniForm', () => {
     expect(screen.getByLabelText(/name/i)).toHaveValue('Dire Wolf');
     expect(screen.getByLabelText(/description/i)).toHaveValue('A wolf');
     expect(screen.getByLabelText(/tags/i)).toHaveValue('dragon,painted');
-    expect(screen.getByLabelText(/price/i)).toHaveValue(12.5);
+    expect(screen.getByLabelText(/price/i)).toHaveValue('12.50');
+  });
+
+  // A number box silently turns "12,50" into 1250 in Chrome.
+  it('accepts a price written with a comma, sending it with a dot', async () => {
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+    render(
+      <MiniForm initialValues={{ ...EMPTY_VALUES, name: 'Dire Wolf' }} submitLabel="Save" submittingLabel="Saving…" onSubmit={onSubmit} onCancel={vi.fn()} />
+    );
+
+    await userEvent.type(screen.getByLabelText(/price/i), '12,50');
+    expect(screen.getByLabelText(/price/i)).toHaveValue('12,50');
+    await userEvent.click(screen.getByRole('button', { name: /save/i }));
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ price: '12.50' }), [], []));
+  });
+
+  it('asks for at most two decimal places', async () => {
+    const onSubmit = vi.fn();
+    render(
+      <MiniForm initialValues={{ ...EMPTY_VALUES, name: 'Dire Wolf', price: '12.999' }} submitLabel="Save" submittingLabel="Saving…" onSubmit={onSubmit} onCancel={vi.fn()} />
+    );
+
+    await userEvent.click(screen.getByRole('button', { name: /save/i }));
+
+    expect(await screen.findByText('Use at most 2 decimal places, like 12.50.')).toBeInTheDocument();
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it('treats a name made only of invisible characters as blank', async () => {
+    const onSubmit = vi.fn();
+    render(
+      <MiniForm initialValues={{ ...EMPTY_VALUES, name: '​​' }} submitLabel="Save" submittingLabel="Saving…" onSubmit={onSubmit} onCancel={vi.fn()} />
+    );
+
+    await userEvent.click(screen.getByRole('button', { name: /save/i }));
+
+    expect(await screen.findByText('Give your mini a name.')).toBeInTheDocument();
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it('previews tags the way they will be saved — lowercase, without repeats', () => {
+    render(
+      <MiniForm initialValues={{ ...EMPTY_VALUES, tags: 'Red, red, RED, , Dragon' }} submitLabel="Save" submittingLabel="Saving…" onSubmit={vi.fn()} onCancel={vi.fn()} />
+    );
+
+    expect(Array.from(document.querySelectorAll('.tag')).map(t => t.textContent)).toEqual(['red', 'dragon']);
   });
 
   it('submits trimmed values when the form is valid', async () => {
@@ -207,7 +253,7 @@ describe('MiniForm', () => {
 
     expect(screen.getByLabelText(/name/i)).toHaveAttribute('maxLength', '255');
     expect(screen.getByLabelText(/description/i)).toHaveAttribute('maxLength', '5000');
-    expect(screen.getByLabelText(/price/i)).toHaveAttribute('max', '9999.99');
+    expect(screen.getByLabelText(/price/i)).toHaveAttribute('inputMode', 'decimal'); // number keypad on phones
   });
 
   it('rejects a price above 9999.99 before sending', async () => {

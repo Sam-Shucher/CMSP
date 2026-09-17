@@ -111,7 +111,9 @@ export default function AdminPage(): React.ReactElement {
       if (pendingDelete.kind === 'email') {
         await api(`/api/admin/approved-emails/${pendingDelete.id}`, { method: 'DELETE' });
       } else {
-        await api(`/api/admin/users/${pendingDelete.id}`, { method: 'DELETE' });
+        // The server says what else went with them (their minis, their account).
+        const result = await api<{ message?: string }>(`/api/admin/users/${pendingDelete.id}`, { method: 'DELETE' });
+        if (result.message) setSuccess(result.message);
       }
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Failed to remove');

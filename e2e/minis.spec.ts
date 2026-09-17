@@ -32,6 +32,42 @@ test('adding a mini with a photo, and other members seeing it', async ({ as }) =
   await expect(bruno.getByText(/Scale: 28mm/)).toBeVisible();
 });
 
+test('picking several phone photos at once, with a file that isn\'t really a photo among them', async ({ as }) => {
+  const olivia = await as('olivia');
+  await olivia.goto('/upload');
+
+  // Real JPEGs, as a phone camera would make them (drawn in the browser).
+  const photos = await olivia.evaluate(async () => {
+    const make = async (hue: number) => {
+      const canvas = new OffscreenCanvas(1600, 1200);
+      const g = canvas.getContext('2d')!;
+      g.fillStyle = `hsl(${hue}, 40%, 35%)`; g.fillRect(0, 0, 1600, 1200);
+      g.fillStyle = '#d2b48c'; g.beginPath(); g.arc(800, 500, 200, 0, Math.PI * 2); g.fill();
+      const bytes = new Uint8Array(await (await canvas.convertToBlob({ type: 'image/jpeg', quality: 0.9 })).arrayBuffer());
+      return Array.from(bytes);
+    };
+    return [await make(30), await make(200)];
+  });
+
+  await olivia.getByLabel(/Name/).fill('Owlbear');
+  await olivia.getByLabel(/Price/).fill('12,50');
+  await olivia.getByTestId('image-input').setInputFiles([
+    { name: 'IMG_0001.jpg', mimeType: 'image/jpeg', buffer: Buffer.from(photos[0]) },
+    { name: 'shopping list.png', mimeType: 'image/png', buffer: Buffer.from('eggs, milk, more paint') },
+    { name: 'IMG_0002.jpg', mimeType: 'image/jpeg', buffer: Buffer.from(photos[1]) },
+  ]);
+
+  await expect(olivia.getByText('"shopping list.png" doesn\'t look like a photo we can open.')).toBeVisible();
+  await expect(olivia.getByRole('img', { name: 'Preview' })).toHaveCount(2);
+  await olivia.getByRole('button', { name: 'Add to Collection' }).click();
+
+  const bruno = await as('bruno');
+  await bruno.goto('/');
+  await expect(bruno.getByText('$12.50')).toBeVisible();
+  await bruno.getByText('Owlbear').click();
+  await expect(bruno.getByText('1 / 2')).toBeVisible();
+});
+
 test('searching tolerates typos and tags filter the list', async ({ as }) => {
   const olivia = await as('olivia');
   await createMini(olivia, 'Tabaxi Bard', { tags: 'bard' });

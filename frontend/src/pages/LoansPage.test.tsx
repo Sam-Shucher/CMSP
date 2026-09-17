@@ -27,6 +27,7 @@ function makeLoan(overrides: Partial<Loan> = {}): Loan {
     borrowerApproved: false,
     ownerApproved: false,
     handedOffAt: null,
+    receivedAt: null,
     dueAt: null,
     returnedAt: null,
     createdAt: '2026-09-01T00:00:00.000Z',

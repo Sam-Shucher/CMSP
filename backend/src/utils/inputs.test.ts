@@ -20,6 +20,18 @@ describe('requiredText', () => {
   it('rejects text over the limit, naming the limit', () => {
     expect(requiredText('x'.repeat(21), 'Name', 20)).toEqual({ ok: false, error: 'Name must be 20 characters or fewer' });
   });
+
+  it.each([
+    ['a zero-width space', '​'],
+    ['zero-width joiners and a byte-order mark', '‍﻿ ‌'],
+    ['a right-to-left mark', '‏'],
+  ])('treats text that is only invisible characters (%s) as blank', (_why, value) => {
+    expect(requiredText(value, 'Name', 20)).toEqual({ ok: false, error: 'Name is required' });
+  });
+
+  it('still accepts emoji built with invisible joiners', () => {
+    expect(requiredText('👩‍👩‍👧', 'Name', 20)).toEqual({ ok: true, value: '👩‍👩‍👧' });
+  });
 });
 
 describe('optionalText', () => {
@@ -27,6 +39,7 @@ describe('optionalText', () => {
     expect(optionalText(undefined, 'Phone', 20)).toEqual({ ok: true, value: null });
     expect(optionalText(null, 'Phone', 20)).toEqual({ ok: true, value: null });
     expect(optionalText('  ', 'Phone', 20)).toEqual({ ok: true, value: null });
+    expect(optionalText('​', 'Phone', 20)).toEqual({ ok: true, value: null });
   });
 
   it('trims a present value', () => {

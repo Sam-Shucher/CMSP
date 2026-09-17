@@ -19,8 +19,16 @@ export const LIMITS = {
   password: 1024,
 } as const;
 
+// Whitespace plus invisible formatting characters (zero-width spaces, joiners,
+// direction marks). Text made only of these looks blank on screen.
+const INVISIBLE = /[\s\p{Cf}]/gu;
+
+function looksBlank(value: string): boolean {
+  return value.replace(INVISIBLE, '') === '';
+}
+
 export function requiredText(value: unknown, label: string, max: number): Check<string> {
-  if (typeof value !== 'string' || !value.trim()) {
+  if (typeof value !== 'string' || looksBlank(value)) {
     return { ok: false, error: `${label} is required` };
   }
   const trimmed = value.trim();
@@ -34,7 +42,7 @@ export function optionalText(value: unknown, label: string, max: number): Check<
   if (value === undefined || value === null) return { ok: true, value: null };
   if (typeof value !== 'string') return { ok: false, error: `${label} must be text` };
   const trimmed = value.trim();
-  if (!trimmed) return { ok: true, value: null };
+  if (looksBlank(trimmed)) return { ok: true, value: null };
   if (trimmed.length > max) {
     return { ok: false, error: `${label} must be ${max} characters or fewer` };
   }

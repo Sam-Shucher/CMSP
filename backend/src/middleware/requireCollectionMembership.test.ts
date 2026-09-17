@@ -104,6 +104,40 @@ describe('requireCollectionMembership', () => {
     expect(execute).toHaveBeenCalledWith(expect.stringContaining('role'), [7, 5]);
   });
 
+  // A tab left open on one group, after switching groups in another tab, would
+  // otherwise quietly act in the other group (adding a mini there, for example).
+  it('refuses a page that still thinks it is in a different group', async () => {
+    const req = {
+      user: { userId: 1, username: 'owner', role: 'user', collectionId: 5 },
+      headers: { 'x-collection-id': '4' },
+    } as unknown as CollectionRequest;
+    const res = mockRes();
+    const next = vi.fn();
+
+    await requireCollectionMembership(req, res, next);
+
+    expect(res.status).toHaveBeenCalledWith(409);
+    expect(res.json).toHaveBeenCalledWith({
+      error: 'You switched groups in another tab — this page has been updated to match. Please try again.',
+      code: 'group_changed',
+    });
+    expect(next).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it('carries on when the page is in the same group as the session', async () => {
+    execute.mockResolvedValueOnce([[{ role: 'user' }]]);
+    const req = {
+      user: { userId: 1, username: 'owner', role: 'user', collectionId: 5 },
+      headers: { 'x-collection-id': '5' },
+    } as unknown as CollectionRequest;
+    const next = vi.fn();
+
+    await requireCollectionMembership(req, mockRes(), next);
+
+    expect(next).toHaveBeenCalledWith();
+  });
+
   it('rejects with 400 when no collection has been selected yet', async () => {
     const req = { user: { userId: 1, username: 'owner', role: 'user' } } as unknown as CollectionRequest;
     const res = mockRes();

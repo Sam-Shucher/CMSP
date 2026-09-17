@@ -232,6 +232,21 @@ export default function LoanCard({ loan, now, otherOpenRequests, onUpdated }: Lo
           <p style={{ color: '#8a7d6a' }}>
             {isOwner ? `With ${them}` : `Borrowed from ${them}`} · due {new Date(loan.dueAt).toLocaleString()}
           </p>
+          {/* The borrower's side of the handoff record. The loan already started when the owner confirmed. */}
+          {loan.receivedAt ? (
+            <p style={{ color: '#27ae60', marginTop: '6px' }}>
+              {isOwner ? `✓ ${them} confirmed they got it` : '✓ You confirmed you got it'}
+            </p>
+          ) : isOwner ? (
+            <p style={{ color: '#8a7d6a', marginTop: '6px' }}>{them} hasn't confirmed they got it yet.</p>
+          ) : (
+            <div style={{ display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap', marginTop: '8px' }}>
+              <span style={{ color: '#8a7d6a' }}>Have it? Let {them} know you got it.</span>
+              <button type="button" className="btn-primary" disabled={busy} onClick={() => void run(`/api/loans/${loan.id}/received`)} style={{ padding: '6px 14px', fontSize: '13px' }}>
+                Got it
+              </button>
+            </div>
+          )}
           {isOwner && (
             <button type="button" className="btn-primary" disabled={busy} onClick={() => void run(`/api/loans/${loan.id}/return`)} style={{ marginTop: '8px', padding: '6px 14px', fontSize: '13px' }}>
               Mark returned

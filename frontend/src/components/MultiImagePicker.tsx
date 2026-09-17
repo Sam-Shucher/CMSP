@@ -1,5 +1,6 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import ImageDropzone from './ImageDropzone';
+import { photoProblem } from '../utils/photoFiles';
 
 const MAX_IMAGES = 3;
 
@@ -8,34 +9,63 @@ type MultiImagePickerProps = {
   onChange: (keptExisting: string[], newFiles: File[]) => void;
 };
 
-// Lets you keep/remove a mini's existing photos and add new ones, up to
-// MAX_IMAGES total. Reuses ImageDropzone as the "add another" affordance.
-export default function MultiImagePicker({ existingPaths, onChange }: MultiImagePickerProps): React.ReactElement {
-  const [kept, setKept]       = useState<string[]>(existingPaths);
-  const [newFiles, setNewFiles] = useState<File[]>([]);
-  const [previews, setPreviews] = useState<string[]>([]);
+type NewPhoto = { id: number; file: File; preview: string };
 
-  const total = kept.length + newFiles.length;
+let nextPhotoId = 1;
+
+// Lets you keep/remove a mini's existing photos and add new ones, up to
+// MAX_IMAGES total. Each picked photo is checked first (type, size, that it
+// really opens) so problems are explained before anything is uploaded.
+export default function MultiImagePicker({ existingPaths, onChange }: MultiImagePickerProps): React.ReactElement {
+  const [kept, setKept]         = useState<string[]>(existingPaths);
+  const [added, setAdded]       = useState<NewPhoto[]>([]);
+  const [problems, setProblems] = useState<string[]>([]);
+
+  // Checking photos takes a moment; these always hold the latest selection,
+  // so two quick picks in a row can't overwrite each other.
+  const keptRef = useRef(kept);
+  const addedRef = useRef(added);
+
+  const total = kept.length + added.length;
+
+  function update(nextKept: string[], nextAdded: NewPhoto[]): void {
+    keptRef.current = nextKept;
+    addedRef.current = nextAdded;
+    setKept(nextKept);
+    setAdded(nextAdded);
+    onChange(nextKept, nextAdded.map(p => p.file));
+  }
+
+  // Release the preview images when leaving the page.
+  useEffect(() => () => addedRef.current.forEach(p => URL.revokeObjectURL(p.preview)), []);
 
   function removeExisting(path: string): void {
-    const next = kept.filter(p => p !== path);
-    setKept(next);
-    onChange(next, newFiles);
+    update(keptRef.current.filter(p => p !== path), addedRef.current);
   }
 
   function removeNew(index: number): void {
-    const nextFiles = newFiles.filter((_, i) => i !== index);
-    const nextPreviews = previews.filter((_, i) => i !== index);
-    setNewFiles(nextFiles);
-    setPreviews(nextPreviews);
-    onChange(kept, nextFiles);
+    const photo = addedRef.current[index];
+    if (photo) URL.revokeObjectURL(photo.preview);
+    update(keptRef.current, addedRef.current.filter((_, i) => i !== index));
   }
 
-  function addFile(file: File): void {
-    const nextFiles = [...newFiles, file];
-    setNewFiles(nextFiles);
-    setPreviews([...previews, URL.createObjectURL(file)]);
-    onChange(kept, nextFiles);
+  async function addFiles(files: File[]): Promise<void> {
+    const checked = await Promise.all(files.map(async file => ({ file, problem: await photoProblem(file) })));
+
+    const messages: string[] = [];
+    const accepted: NewPhoto[] = [];
+    for (const { file, problem } of checked) {
+      if (problem) {
+        messages.push(problem);
+      } else if (keptRef.current.length + addedRef.current.length + accepted.length >= MAX_IMAGES) {
+        messages.push(`Only ${MAX_IMAGES} photos fit — "${file.name}" wasn't added.`);
+      } else {
+        accepted.push({ id: nextPhotoId++, file, preview: URL.createObjectURL(file) });
+      }
+    }
+
+    setProblems(messages);
+    if (accepted.length > 0) update(keptRef.current, [...addedRef.current, ...accepted]);
   }
 
   return (
@@ -47,19 +77,23 @@ export default function MultiImagePicker({ existingPaths, onChange }: MultiImage
             <button type="button" onClick={() => removeExisting(path)} style={removeButtonStyle}>Remove</button>
           </div>
         ))}
-        {newFiles.map((file: File, i: number) => (
-          <div key={`${file.name}-${i}`} style={thumbWrapStyle}>
-            <img src={previews[i]} alt="Preview" style={thumbImgStyle} />
+        {added.map((photo: NewPhoto, i: number) => (
+          <div key={photo.id} style={thumbWrapStyle}>
+            <img src={photo.preview} alt="Preview" style={thumbImgStyle} />
             <button type="button" onClick={() => removeNew(i)} style={removeButtonStyle}>Remove</button>
           </div>
         ))}
       </div>
 
       {total < MAX_IMAGES ? (
-        <ImageDropzone file={null} previewUrl={null} onSelect={addFile} onClear={() => {}} />
+        <ImageDropzone onFiles={(files: File[]) => void addFiles(files)} />
       ) : (
         <p style={{ fontSize: '12px', color: '#8a7d6a' }}>{MAX_IMAGES} of {MAX_IMAGES} photos used — remove one to add another.</p>
       )}
+
+      {problems.map((message: string) => (
+        <p key={message} className="error-msg" style={{ marginTop: '6px' }}>{message}</p>
+      ))}
     </div>
   );
 }

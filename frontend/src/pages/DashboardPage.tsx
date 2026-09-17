@@ -94,6 +94,7 @@ export default function DashboardPage(): React.ReactElement {
           style={{ maxWidth: '360px' }}
           type="search"
           placeholder="Search by name or description…"
+          maxLength={100}
           value={search}
           onChange={(e: React.ChangeEvent<HTMLInputElement>) => setSearch(e.target.value)}
         />

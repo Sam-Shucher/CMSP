@@ -96,7 +96,7 @@ CREATE TABLE IF NOT EXISTS mini_images (
 
 CREATE TABLE IF NOT EXISTS tags (
   id   INT PRIMARY KEY AUTO_INCREMENT,
-  name VARCHAR(100) UNIQUE NOT NULL
+  name VARCHAR(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin UNIQUE NOT NULL -- exact: 🔥 ≠ 🐉, cafe ≠ café
 );
 
 CREATE TABLE IF NOT EXISTS mini_tags (
@@ -137,6 +137,7 @@ CREATE TABLE IF NOT EXISTS loans (
   borrower_approved BOOLEAN NOT NULL DEFAULT FALSE,
   owner_approved    BOOLEAN NOT NULL DEFAULT FALSE,
   handed_off_at     DATETIME NULL,
+  received_at       DATETIME NULL, -- borrower's "Got it", after the handoff
   due_at            DATETIME NULL,
   returned_at       DATETIME NULL,
   cancelled_by      INT NULL,

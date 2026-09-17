@@ -66,6 +66,26 @@ test.describe('groups and roles', () => {
     await expect(ada).toHaveURL(/\/$/); // not an admin in dojo
   });
 
+  test('a tab left open on one group catches up after switching groups in another tab', async ({ as }) => {
+    const tabA = await as('ada');
+    await tabA.goto('/');
+    await tabA.getByRole('button', { name: /^Chicago/ }).click();
+    await tabA.goto('/upload');
+    await tabA.getByLabel(/Name/).fill('Meant for Chicago');
+
+    const tabB = await tabA.context().newPage();
+    await tabB.goto('/');
+    await tabB.getByRole('button', { name: 'Chicago (Switch)' }).click();
+    await tabB.getByRole('button', { name: /^dojo/ }).click();
+    await expect(tabB.getByRole('button', { name: 'dojo (Switch)' })).toBeVisible();
+
+    // Tab A still shows Chicago. Saving must not quietly add the mini to dojo.
+    await tabA.getByRole('button', { name: 'Add to Collection' }).click();
+    await expect(tabA.getByRole('status')).toHaveText(/You switched to dojo in another tab, so this tab switched too\./);
+    await expect(tabA.getByRole('button', { name: 'dojo (Switch)' })).toBeVisible();
+    expect(await query("SELECT id FROM minis WHERE name = 'Meant for Chicago'")).toEqual([]);
+  });
+
   test('a regular member can\'t reach the admin panel by typing its address', async ({ as }) => {
     const bruno = await as('bruno');
     await bruno.goto('/admin');

@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import MultiImagePicker from './MultiImagePicker';
 import FieldError from './FieldError';
 import { useValidatedForm } from '../hooks/useValidatedForm';
+import { looksBlank, normalizePrice, priceProblem } from '../utils/validation';
 
 // Same limits the server enforces (backend/src/utils/inputs.ts and the price
 // column) — checked here too so people see the problem before uploading.
@@ -9,7 +10,6 @@ const MAX_NAME_LENGTH = 255;
 const MAX_DESCRIPTION_LENGTH = 5000;
 const MAX_TAGS = 20;
 const MAX_TAG_LENGTH = 50;
-const MAX_PRICE = 9999.99;
 
 export type MiniFormValues = {
   name: string;
@@ -40,15 +40,8 @@ export default function MiniForm({
   // Problems are pointed out under each field after a pause, on leaving the
   // field, or on save — never mid-keystroke (see useValidatedForm).
   const form = useValidatedForm<MiniFormValues>(initialValues, {
-    name: value => (value.trim() ? null : 'Give your mini a name.'),
-    price: value => {
-      if (!value.trim()) return null;
-      const amount = Number(value);
-      if (Number.isNaN(amount)) return 'Enter a price like 12.50, or leave it blank.';
-      if (amount < 0) return 'Price can\'t be negative.';
-      if (amount > MAX_PRICE) return `Price must be ${MAX_PRICE} or less.`;
-      return null;
-    },
+    name: value => (looksBlank(value) ? 'Give your mini a name.' : null),
+    price: priceProblem,
     tags: value => {
       const tagNames = new Set(value.split(',').map(t => t.trim().toLowerCase()).filter(Boolean));
       if (tagNames.size > MAX_TAGS) return `Use ${MAX_TAGS} tags or fewer.`;
@@ -77,7 +70,7 @@ export default function MiniForm({
     setLoading(true);
 
     try {
-      await onSubmit({ name: name.trim(), description, tags, price }, newImages, keptImages);
+      await onSubmit({ name: name.trim(), description, tags, price: normalizePrice(price) }, newImages, keptImages);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Something went wrong');
     } finally {
@@ -134,7 +127,8 @@ export default function MiniForm({
         {/* Live tag preview — split on commas and render each as a chip */}
         {tags && (
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: '5px', marginTop: '8px' }}>
-            {tags.split(',').map((t: string) => t.trim()).filter(Boolean).map((t: string) => (
+            {/* Shown the way the server saves them: lowercase, each once */}
+            {[...new Set(tags.split(',').map((t: string) => t.trim().toLowerCase()).filter(Boolean))].map((t: string) => (
               <span key={t} className="tag">{t}</span>
             ))}
           </div>
@@ -151,10 +145,9 @@ export default function MiniForm({
         </label>
         <input
           {...form.field('price', 'mini-price')}
-          type="number"
-          min="0"
-          max={MAX_PRICE}
-          step="0.01"
+          type="text"
+          inputMode="decimal"
+          autoComplete="off"
           placeholder="0.00"
         />
         <FieldError id="mini-price" message={form.errorFor('price')} />

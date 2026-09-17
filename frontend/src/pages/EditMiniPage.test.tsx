@@ -42,7 +42,7 @@ describe('EditMiniPage', () => {
     expect(await screen.findByLabelText(/name/i)).toHaveValue('Dire Wolf');
     expect(screen.getByLabelText(/description/i)).toHaveValue('A wolf');
     expect(screen.getByLabelText(/tags/i)).toHaveValue('dragon,painted');
-    expect(screen.getByLabelText(/price/i)).toHaveValue(12.5);
+    expect(screen.getByLabelText(/price/i)).toHaveValue('12.50');
   });
 
   it('shows the error instead of a form when the mini cannot be loaded (e.g. another collection\'s)', async () => {

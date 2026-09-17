@@ -30,6 +30,18 @@ export async function requireCollectionMembership(
     return;
   }
 
+  // The page says which group it's showing. If that's not the session's group,
+  // the person switched groups in another tab — acting now would quietly land
+  // in the other group (a mini added there, a request sent there).
+  const pageGroup = req.headers?.['x-collection-id'];
+  if (typeof pageGroup === 'string' && Number(pageGroup) !== collectionId) {
+    res.status(409).json({
+      error: 'You switched groups in another tab — this page has been updated to match. Please try again.',
+      code: 'group_changed',
+    });
+    return;
+  }
+
   try {
     const [rows] = await pool.execute<RowDataPacket[]>(
       'SELECT cm.role FROM collection_memberships cm WHERE cm.user_id = ? AND cm.collection_id = ?',

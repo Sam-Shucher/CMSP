@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useEffect, useRef, useState } from 'react';
 import { BrowserRouter, Routes, Route, Navigate, Link, useNavigate } from 'react-router-dom';
-import { api, User, Collection, SESSION_ENDED_EVENT } from './api/client';
+import { api, User, Collection, SESSION_ENDED_EVENT, GROUP_CHANGED_EVENT, setActiveGroup } from './api/client';
 import LoginPage from './pages/LoginPage';
 import RegisterPage from './pages/RegisterPage';
 import DashboardPage from './pages/DashboardPage';
@@ -75,16 +75,8 @@ function NavBar(): React.ReactElement | null {
   }
 
   return (
-    <nav style={{
-      background: '#252219',
-      borderBottom: '1px solid #3d3629',
-      padding: '0 24px',
-      display: 'flex',
-      alignItems: 'center',
-      gap: '24px',
-      height: '56px',
-    }}>
-      <span style={{ fontFamily: 'Cinzel, serif', color: '#c9a84c', fontSize: '18px', marginRight: 'auto' }}>
+    <nav className="app-nav">
+      <span className="app-nav-brand">
         ⚔ Mini Library
       </span>
       {activeCollection && (
@@ -144,7 +136,7 @@ function AdminRoute({ children }: { children: React.ReactNode }): React.ReactEle
 // itself provides the context, so it can't consume it in the same component).
 // ---------------------------------------------------------------------------
 
-function AppBody(): React.ReactElement {
+function AppBody({ groupNotice, onDismissGroupNotice }: { groupNotice?: string; onDismissGroupNotice: () => void }): React.ReactElement {
   const { user, loading, collections, selectCollection } = useAuth();
 
   if (loading) {
@@ -168,7 +160,14 @@ function AppBody(): React.ReactElement {
   return (
     <>
       <NavBar />
-      <Routes>
+      {groupNotice && (
+        <div role="status" className="group-notice">
+          <span>{groupNotice}</span>
+          <button type="button" onClick={onDismissGroupNotice} aria-label="Dismiss">×</button>
+        </div>
+      )}
+      {/* Keyed by group, so every page reloads its data when the group changes. */}
+      <Routes key={user?.collectionId ?? 'none'}>
         {/* Public routes — accessible without logging in */}
         <Route path="/login"    element={<LoginPage />} />
         <Route path="/register" element={<RegisterPage />} />
@@ -253,6 +252,31 @@ export default function App(): React.ReactElement {
   // for someone who was actually signed in.
   const userRef = useRef<User | null>(user);
   userRef.current = user;
+
+  // Every request says which group this tab is showing (see api/client.ts).
+  // Set during render, not in an effect, so a page's first request already carries it.
+  setActiveGroup(user?.collectionId);
+
+  // Another tab switched groups: catch this tab up, and say why the page changed.
+  const [groupNotice, setGroupNotice] = useState<string | undefined>(undefined);
+  useEffect(() => {
+    async function onGroupChanged(): Promise<void> {
+      if (!userRef.current) return;
+      try {
+        const loadedUser = await api<User>('/api/auth/me');
+        const myCollections = await api<Collection[]>('/api/auth/collections');
+        setCollections(myCollections);
+        setUser(loadedUser);
+        const name = myCollections.find((c: Collection) => c.id === loadedUser.collectionId)?.name ?? 'another group';
+        setGroupNotice(`You switched to ${name} in another tab, so this tab switched too.`);
+      } catch {
+        // A failed check leaves things as they were; the next request will try again.
+      }
+    }
+    const listener = (): void => void onGroupChanged();
+    window.addEventListener(GROUP_CHANGED_EVENT, listener);
+    return () => window.removeEventListener(GROUP_CHANGED_EVENT, listener);
+  }, []);
   useEffect(() => {
     function onSessionEnded(event: Event): void {
       if (!userRef.current) return;
@@ -266,7 +290,7 @@ export default function App(): React.ReactElement {
   return (
     <AuthContext.Provider value={{ user, loading, setUser, collections, selectCollection, refreshSession, sessionNotice }}>
       <BrowserRouter>
-        <AppBody />
+        <AppBody groupNotice={groupNotice} onDismissGroupNotice={() => setGroupNotice(undefined)} />
       </BrowserRouter>
     </AuthContext.Provider>
   );

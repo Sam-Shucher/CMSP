@@ -72,6 +72,21 @@ describe('parseTermsPatch', () => {
     expect(parseTermsPatch({ when: 'next tuesday-ish' }, 'owner')).toMatchObject({ ok: false, status: 400 });
   });
 
+  // datetime-local happily takes a year typed as "26" (year 0026) or "20266".
+  // Year 26 used to be stored as 1926; year 20266 crashed the request.
+  it.each([
+    ['a two-digit year', '0026-10-01T18:30:00.000Z'],
+    ['an extra digit in the year', '+020266-10-01T18:30:00.000Z'],
+    ['the distant past', '1899-12-31T18:30:00.000Z'],
+  ])('rejects %s, asking to check the year', (_why, when) => {
+    expect(parseTermsPatch({ when }, 'owner')).toEqual({ ok: false, status: 400, error: 'That date doesn\'t look right — check the year' });
+  });
+
+  it('accepts ordinary dates, including one that already passed', () => {
+    expect(parseTermsPatch({ when: '2025-12-31T23:00:00.000Z' }, 'owner')).toMatchObject({ ok: true });
+    expect(parseTermsPatch({ when: '2099-01-01T00:00:00.000Z' }, 'owner')).toMatchObject({ ok: true });
+  });
+
   it('rejects a date that is not a string at all', () => {
     expect(parseTermsPatch({ when: 1760000000000 }, 'owner')).toMatchObject({ ok: false, status: 400 });
     expect(parseTermsPatch({ when: null }, 'owner')).toMatchObject({ ok: false, status: 400 });

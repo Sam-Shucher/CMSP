@@ -56,7 +56,12 @@ SQL step for the person deploying this.
   (admin routes add `requireAdmin` *after* it). Roles are **per collection**
   (`collection_memberships.role`); `users.role` is legacy and unused. The cookie
   holds no role — `requireCollectionMembership` loads it from the database.
-  Things in another collection return **404**, not 403.
+  Things in another collection return **404**, not 403. The frontend sends the group
+  a page is showing as `X-Collection-Id`; a mismatch with the session (switched in
+  another tab) is refused with 409 `group_changed` so nothing lands in the wrong group.
+- **Removing a member** goes through `services/membership.ts`: refused while a mini is
+  out on loan with/from them; otherwise their requests are cancelled (with notices),
+  holds/cart cleared, and their minis in that group removed.
 - **Sessions:** `requireAuth` checks the signed cookie *and* its row in `sessions`
   (`db/sessions.ts`). Unit tests replace that module with an always-live stand-in
   (`src/test/unitSetup.ts`); integration tests use real session rows via
@@ -69,8 +74,8 @@ SQL step for the person deploying this.
 - **Input:** validate every body/query value with `backend/src/utils/inputs.ts`
   (type + length) before it reaches the database. Query strings can be arrays or
   objects; JSON can be any type.
-- **Uploads:** saved names come from the checked image type, never the uploader's
-  filename. Photos are served only to members of the mini's collection
+- **Uploads:** saved names come from the file's actual bytes (`utils/imageType.ts`),
+  never the uploader's filename or claimed type — a text file renamed .png is refused. Photos are served only to members of the mini's collection
   (`requireImageAccess`). Client-supplied image paths must be checked against
   what the mini already has. Any error response deletes that request's uploaded
   files; `maintenance/housekeeping.ts` sweeps unreferenced files hourly — if you

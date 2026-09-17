@@ -187,3 +187,54 @@ textarea[aria-invalid="true"] {
   border: 1px solid #af7ac5;
   color: #c39bd3;
 }
+/* ---- Top navigation ------------------------------------------------------ */
+.app-nav {
+  background: var(--bg-card);
+  border-bottom: 1px solid var(--border);
+  padding: 0 24px;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 24px;
+  min-height: 56px;
+}
+.app-nav-brand {
+  font-family: 'Cinzel', serif;
+  color: var(--accent);
+  font-size: 18px;
+  margin-right: auto;
+}
+
+/* Phones: the brand gets its own row and the links wrap underneath, instead of
+   pushing the page wider than the screen. */
+@media (max-width: 700px) {
+  .app-nav {
+    gap: 6px 16px;
+    padding: 8px 14px;
+  }
+  .app-nav-brand {
+    flex-basis: 100%;
+    font-size: 16px;
+  }
+}
+
+/* Shown when another tab switched groups and this one followed. */
+.group-notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  background: rgba(201, 168, 76, 0.12);
+  border-bottom: 1px solid var(--accent-dim);
+  color: var(--text);
+  font-size: 14px;
+  padding: 8px 24px;
+}
+.group-notice button {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 18px;
+  line-height: 1;
+}

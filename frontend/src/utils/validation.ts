@@ -50,6 +50,31 @@ export function validateEmail(email: string): ValidationResult {
   return { valid: true };
 }
 
+// Same rule as the server: text made only of spaces and invisible characters
+// (zero-width spaces, joiners, direction marks) looks blank, so it is blank.
+export function looksBlank(value: string): boolean {
+  return value.replace(/[\s\p{Cf}]/gu, '') === '';
+}
+
+// Prices are typed as dollars and cents. A comma works as the decimal point too
+// ("12,50"), since a number box would silently turn that into 1250.
+const MAX_PRICE = 9999.99;
+
+export function normalizePrice(value: string): string {
+  const trimmed = value.trim();
+  return /^\d*,\d+$/.test(trimmed) ? trimmed.replace(',', '.') : trimmed;
+}
+
+export function priceProblem(value: string): string | null {
+  const price = normalizePrice(value);
+  if (!price) return null;
+  if (price.startsWith('-')) return 'Price can\'t be negative.';
+  if (/^\d*\.\d{3,}$/.test(price)) return 'Use at most 2 decimal places, like 12.50.';
+  if (!/^(\d+(\.\d{1,2})?|\.\d{1,2})$/.test(price)) return 'Enter a price like 12.50, or leave it blank.';
+  if (Number(price) > MAX_PRICE) return `Price must be ${MAX_PRICE} or less.`;
+  return null;
+}
+
 export function validatePassword(password: string): ValidationResult {
   if ([...password].length < PASSWORD_MIN_CHARS) {
     return { valid: false, error: `Password must be at least ${PASSWORD_MIN_CHARS} characters` };

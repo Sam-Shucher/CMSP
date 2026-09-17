@@ -2,7 +2,7 @@ import { test, expect, createMini } from './support/fixtures';
 import { Page } from '@playwright/test';
 
 // The whole borrowing journey, two people in two browser windows:
-// browse → cart → checkout → negotiate → both approve → handoff → adventuring → returned.
+// browse → cart → checkout → negotiate → both approve → handoff → "got it" → adventuring → returned.
 
 async function openBell(page: Page) {
   await page.getByRole('button', { name: /^Notifications/ }).click();
@@ -78,6 +78,17 @@ test('borrowing a mini from request to return, with the handoff confirmed by the
   await expect(brunoCard).toContainText('Adventuring');
   await expect(brunoCard).toContainText(/left/);
   await expect(brunoCard.getByRole('button', { name: 'Mark returned' })).toHaveCount(0);
+
+  // --- Bruno confirms he got it; Olivia is told and sees the ✓ (the clock already started at her handoff) ---
+  await expect(oliviaCard).toContainText('Bruno Borrower hasn\'t confirmed they got it yet.');
+  await expect(oliviaCard.getByRole('button', { name: 'Got it' })).toHaveCount(0);
+  await brunoCard.getByRole('button', { name: 'Got it' }).click();
+  await expect(brunoCard).toContainText('✓ You confirmed you got it');
+  await expect(brunoCard.getByRole('button', { name: 'Got it' })).toHaveCount(0);
+
+  await openNotification(olivia, /Bruno Borrower confirmed they got Dire Wolf/);
+  await expect(oliviaCard).toContainText('✓ Bruno Borrower confirmed they got it');
+  await expect(oliviaCard).toContainText(/6d 23h left|7d 0h left/);
 
   // --- Everyone else sees it's out ---
   await bruno.goto('/');

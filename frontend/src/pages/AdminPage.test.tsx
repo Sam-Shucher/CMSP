@@ -310,4 +310,30 @@ describe('AdminPage — type-to-confirm deletion', () => {
       expect(fetch).toHaveBeenCalledWith('/api/admin/users/2', expect.objectContaining({ method: 'DELETE' }))
     );
   });
+
+  it('says what the removal did, in the server\'s words', async () => {
+    mockAdminApi((url, init) => url === '/api/admin/users/2' && init?.method === 'DELETE'
+      ? jsonResponse({ message: 'Removed from this group — their 2 minis here were removed too' }) : undefined);
+    renderAdminPage();
+    await screen.findByText('grunt');
+
+    await userEvent.click(within(rowFor('grunt')).getByRole('button', { name: /remove from group/i }));
+    await userEvent.type(await screen.findByLabelText(/type/i), 'grunt');
+    await userEvent.click(screen.getByRole('button', { name: /^confirm delete$/i }));
+
+    expect(await screen.findByText('Removed from this group — their 2 minis here were removed too')).toBeInTheDocument();
+  });
+
+  it('explains why a member with a mini out on loan can\'t be removed yet', async () => {
+    mockAdminApi((url, init) => url === '/api/admin/users/2' && init?.method === 'DELETE'
+      ? errorResponse('Grunt has 1 mini out on loan in this group — it needs to be marked returned first') : undefined);
+    renderAdminPage();
+    await screen.findByText('grunt');
+
+    await userEvent.click(within(rowFor('grunt')).getByRole('button', { name: /remove from group/i }));
+    await userEvent.type(await screen.findByLabelText(/type/i), 'grunt');
+    await userEvent.click(screen.getByRole('button', { name: /^confirm delete$/i }));
+
+    expect(await screen.findByText(/needs to be marked returned first/)).toBeInTheDocument();
+  });
 });

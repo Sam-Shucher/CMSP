@@ -30,6 +30,7 @@ interface LoanRow extends RowDataPacket {
   borrower_approved: number;
   owner_approved: number;
   handed_off_at: Date | null;
+  received_at: Date | null;
   due_at: Date | null;
   returned_at: Date | null;
   created_at: Date;
@@ -94,6 +95,7 @@ function serializeLoan(row: LoanRow, userId: number) {
     borrowerApproved: snapshot.borrowerApproved,
     ownerApproved: snapshot.ownerApproved,
     handedOffAt: iso(row.handed_off_at),
+    receivedAt: iso(row.received_at),
     dueAt: iso(row.due_at),
     returnedAt: iso(row.returned_at),
     createdAt: iso(row.created_at),
@@ -254,6 +256,27 @@ router.post('/:id/handoff', withLoan(async (req, res, row) => {
   );
   if (update.affectedRows === 0) return fail(res, NOT_NEGOTIATING);
   await events.handedOff(row.id);
+  await sendLoan(req, res, row.id);
+}));
+
+// POST /api/loans/:id/received
+// Borrower confirms they have the mini. The owner's handoff already started
+// the loan; this is the borrower's side of the record, and doesn't move the clock.
+router.post('/:id/received', withLoan(async (req, res, row) => {
+  if (row.borrower_id !== req.user!.userId) {
+    return fail(res, { ok: false, status: 403, error: 'Only the borrower can confirm they got it' });
+  }
+  const cannotConfirm: RuleFailure = { ok: false, status: 409, error: row.received_at
+    ? 'You already confirmed you got it'
+    : 'You can confirm you got it once the owner has confirmed the handoff' };
+  if (row.status !== 'adventuring' || row.received_at) return fail(res, cannotConfirm);
+
+  const [update] = await pool.execute<ResultSetHeader>(
+    `UPDATE loans SET received_at = ? WHERE id = ? AND status = 'adventuring' AND received_at IS NULL`,
+    [nowToTheSecond(), row.id]
+  );
+  if (update.affectedRows === 0) return fail(res, { ok: false, status: 409, error: 'This loan changed — refresh and try again' });
+  await events.received(row.id);
   await sendLoan(req, res, row.id);
 }));
 

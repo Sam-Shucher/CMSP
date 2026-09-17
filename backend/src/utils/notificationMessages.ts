@@ -3,7 +3,7 @@
 export type NotificationType =
   | 'hold_placed' | 'your_turn' | 'hold_became_request' | 'moved_up' | 'spot_opened' | 'mini_removed'
   | 'request_created' | 'terms_proposed' | 'terms_approved' | 'request_cancelled'
-  | 'handed_off' | 'returned' | 'overdue';
+  | 'handed_off' | 'received' | 'returned' | 'overdue';
 
 const MAX_LENGTH = 255; // notifications.message column
 
@@ -22,8 +22,11 @@ export const messages = {
   termsAppliedToAll: (name: string, count: number) =>
     `${name} updated the terms on ${count} other request${count === 1 ? '' : 's'} with you`,
   requestCancelled: (name: string, mini: string) => `${name} cancelled the request for ${mini}`,
+  requestCancelledByRemoval: (name: string, mini: string) =>
+    `${name} is no longer in the group, so the request for ${mini} was cancelled`,
   handedOff: (owner: string, mini: string, dueAt: Date) =>
     `${owner} confirmed the handoff — ${mini} is adventuring with you until ${dueAt.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`,
+  received: (borrower: string, mini: string) => `${borrower} confirmed they got ${mini}`,
   returned: (owner: string, mini: string) => `${owner} marked ${mini} as returned`,
   overdue: (mini: string) => `${mini} is overdue`,
 };

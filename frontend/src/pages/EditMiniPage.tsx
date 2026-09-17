@@ -65,7 +65,7 @@ export default function EditMiniPage(): React.ReactElement {
           name: mini.name,
           description: mini.description ?? '',
           tags: mini.tags.join(','),
-          price: String(mini.price),
+          price: Number(mini.price).toFixed(2),
         }}
         initialImages={mini.images}
         submitLabel="Save Changes"

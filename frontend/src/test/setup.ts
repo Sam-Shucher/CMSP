@@ -5,3 +5,6 @@ import '@testing-library/jest-dom';
 if (!URL.createObjectURL) {
   URL.createObjectURL = (): string => 'blob:mock-preview-url';
 }
+if (!URL.revokeObjectURL) {
+  URL.revokeObjectURL = (): void => {};
+}

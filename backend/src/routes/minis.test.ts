@@ -389,7 +389,8 @@ describe('hostile or oversized input', () => {
     const res = await request(app).get("/api/minis?tag=x' OR '1'='1").set('Cookie', authCookie(OWNER));
 
     expect(res.status).toBe(200);
-    expect(execute).toHaveBeenCalledWith(expect.not.stringContaining("OR '1'='1"), [COLLECTION_A, "x' OR '1'='1"]);
+    // (lowercased, like every saved tag)
+    expect(execute).toHaveBeenCalledWith(expect.not.stringContaining("OR '1'='1"), [COLLECTION_A, "x' or '1'='1"]);
   });
 
   const createWith = (fields: Record<string, string>) => {
@@ -477,7 +478,7 @@ describe('POST /api/minis — validation', () => {
     expect(res.body.error).toMatch(/name is required/i);
   });
 
-  it.each(['-1', 'twelve'])('rejects a price of "%s" with 400', async (price) => {
+  it.each(['-1', 'twelve', '0x10', '1e3', '12.999', '12,50', 'Infinity', '1.'])('rejects a price of "%s" with 400', async (price) => {
     execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED);
 
     const res = await request(app)
@@ -488,6 +489,31 @@ describe('POST /api/minis — validation', () => {
 
     expect(res.status).toBe(400);
     expect(res.body.error).toMatch(/price/i);
+  });
+
+  it.each([['12', 12], ['12.5', 12.5], ['12.50', 12.5], ['.75', 0.75], [' 9999.99 ', 9999.99]])('accepts a price of "%s"', async (price, saved) => {
+    execute
+      .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
+      .mockResolvedValueOnce([{ insertId: 42 }])
+      .mockResolvedValue([{}]);
+
+    const res = await request(app)
+      .post('/api/minis')
+      .set('Cookie', authCookie(OWNER))
+      .field('name', 'Dire Wolf')
+      .field('price', price);
+
+    expect(res.status).toBe(201);
+    expect(execute).toHaveBeenCalledWith(expect.stringContaining('INSERT INTO minis'), expect.arrayContaining([saved]));
+  });
+
+  it('rejects a name made only of invisible characters', async () => {
+    execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED);
+
+    const res = await request(app).post('/api/minis').set('Cookie', authCookie(OWNER)).field('name', '​');
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/name is required/i);
   });
 
   it('saves a trimmed name, a missing price as 0, and normalized tags', async () => {
@@ -543,8 +569,9 @@ describe('upload hardening', () => {
   }
 
   // A file named evil.html that merely CLAIMS to be image/png would otherwise
-  // be saved as .html and served back as a live web page on this site.
-  it('names saved files by the image type, never by the uploader\'s filename', async () => {
+  // be saved as .html and served back as a live web page on this site. The
+  // extension comes from what the file really is.
+  it('names saved files by what the image really is, never by the uploader\'s filename or claimed type', async () => {
     execute
       .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
       .mockResolvedValueOnce([{ insertId: 42 }])
@@ -557,14 +584,35 @@ describe('upload hardening', () => {
       .set('Cookie', authCookie(OWNER))
       .field('name', 'Dire Wolf')
       .attach('images', tinyPng(), { filename: 'evil.html', contentType: 'image/png' })
-      .attach('images', tinyPng(), { filename: 'photo', contentType: 'image/jpeg' })
-      .attach('images', tinyPng(), { filename: 'x.php.webp', contentType: 'image/webp' });
+      .attach('images', tinyPng(), { filename: 'photo.jpg', contentType: 'image/jpeg' }) // a PNG renamed .jpg
+      .attach('images', Buffer.concat([Buffer.from('RIFF'), Buffer.from([0x24, 0, 0, 0]), Buffer.from('WEBPVP8 ')]), { filename: 'x.php.webp', contentType: 'image/webp' });
 
     expect(res.status).toBe(201);
-    const [png, jpeg, webp] = savedImagePaths();
+    const [png, renamed, webp] = savedImagePaths();
     expect(png).toMatch(/^\/uploads\/[a-z0-9-]+\.png$/);
-    expect(jpeg).toMatch(/^\/uploads\/[a-z0-9-]+\.jpg$/);
+    expect(renamed).toMatch(/^\/uploads\/[a-z0-9-]+\.png$/);
     expect(webp).toMatch(/^\/uploads\/[a-z0-9-]+\.webp$/);
+  });
+
+  it.each([
+    ['a text file renamed .png', Buffer.from('this is my shopping list'), 'notes.png', 'image/png'],
+    ['HTML renamed .jpg', Buffer.from('<html><script>alert(1)</script></html>'), 'x.jpg', 'image/jpeg'],
+    ['an empty file', Buffer.alloc(0), 'empty.jpg', 'image/jpeg'],
+  ])('refuses %s that claims to be an image, naming the file, and keeps nothing', async (_why, content, filename, contentType) => {
+    execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED);
+    const before = new Set(fs.readdirSync(uploadsDir()));
+
+    const res = await request(app)
+      .post('/api/minis')
+      .set('Cookie', authCookie(OWNER))
+      .field('name', 'Dire Wolf')
+      .attach('images', tinyPng(), 'good.png')
+      .attach('images', content, { filename, contentType });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe(`"${filename}" isn't a photo we can open — use a JPG, PNG, GIF, or WebP`);
+    expect(execute).not.toHaveBeenCalledWith(expect.stringContaining('INSERT INTO minis'), expect.anything());
+    await vi.waitFor(() => expect(fs.readdirSync(uploadsDir()).filter(f => !before.has(f))).toEqual([]));
   });
 
   it.each([

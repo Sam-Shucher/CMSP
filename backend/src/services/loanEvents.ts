@@ -100,6 +100,16 @@ export function requestCancelled(loanId: number, actorId: number): Promise<void>
   });
 }
 
+// The person was removed from the group; tell whoever was on the other side.
+export function requestCancelledByRemoval(loanId: number, removedUserId: number): Promise<void> {
+  return safely('request cancelled by removal', async () => {
+    const loan = await loadLoan(loanId);
+    if (!loan) return;
+    const { otherId, actorName } = sides(loan, removedUserId);
+    await notify([otherId], { ...base(loan), type: 'request_cancelled', message: messages.requestCancelledByRemoval(actorName, loan.mini_name) });
+  });
+}
+
 export function handedOff(loanId: number): Promise<void> {
   return safely('handed off', async () => {
     const loan = await loadLoan(loanId);
@@ -107,6 +117,14 @@ export function handedOff(loanId: number): Promise<void> {
     await notify([loan.borrower_id], {
       ...base(loan), type: 'handed_off', message: messages.handedOff(loan.owner_name, loan.mini_name, new Date(loan.due_at)),
     });
+  });
+}
+
+export function received(loanId: number): Promise<void> {
+  return safely('received', async () => {
+    const loan = await loadLoan(loanId);
+    if (!loan) return;
+    await notify([loan.owner_id], { ...base(loan), type: 'received', message: messages.received(loan.borrower_name, loan.mini_name) });
   });
 }
 

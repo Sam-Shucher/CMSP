@@ -13,13 +13,16 @@ export async function api<T = unknown>(
   // If the caller passed a FormData body (file upload), don't set Content-Type —
   // the browser sets it automatically with the correct multipart boundary.
   const isFormData = options?.body instanceof FormData;
+  // Which group this page is showing, so the server can refuse if another tab
+  // has since switched the session to a different group.
+  const groupHeader: Record<string, string> = activeGroup === undefined ? {} : { 'X-Collection-Id': String(activeGroup) };
 
   const res = await fetch(path, {
     ...options,
     credentials: 'include', // sends the httpOnly auth cookie on every request
     headers: isFormData
-      ? (options?.headers ?? {})
-      : { 'Content-Type': 'application/json', ...(options?.headers ?? {}) },
+      ? { ...groupHeader, ...(options?.headers ?? {}) }
+      : { 'Content-Type': 'application/json', ...groupHeader, ...(options?.headers ?? {}) },
     // If `json` was provided, serialize it; otherwise use `body` as-is (FormData or undefined)
     body: options?.json !== undefined ? JSON.stringify(options.json) : options?.body,
   });
@@ -35,6 +38,10 @@ export async function api<T = unknown>(
     if (res.status === 401 && !SIGN_IN_FORMS.includes(path)) {
       window.dispatchEvent(new CustomEvent(SESSION_ENDED_EVENT, { detail: message }));
     }
+    // Another tab switched groups; App catches this tab up.
+    if ((data as { code?: string }).code === 'group_changed') {
+      window.dispatchEvent(new Event(GROUP_CHANGED_EVENT));
+    }
     // Throw with the server's error message so callers can display it directly
     throw new Error(message);
   }
@@ -43,6 +50,16 @@ export async function api<T = unknown>(
 }
 
 export const SESSION_ENDED_EVENT = 'mini-library:session-ended';
+
+// The session's group was switched in another tab of this browser.
+export const GROUP_CHANGED_EVENT = 'mini-library:group-changed';
+
+let activeGroup: number | undefined;
+
+// Called by App whenever the group this tab is showing changes.
+export function setActiveGroup(collectionId: number | undefined): void {
+  activeGroup = collectionId;
+}
 
 // Something about your loans or holds may have changed (a notification was
 // opened) — the Loans page reloads, even if you're already looking at it.
@@ -151,6 +168,7 @@ export type Loan = {
   borrowerApproved: boolean;
   ownerApproved: boolean;
   handedOffAt: string | null;
+  receivedAt: string | null; // borrower's "Got it", after the handoff
   dueAt: string | null;
   returnedAt: string | null;
   createdAt: string;

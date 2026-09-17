@@ -46,7 +46,7 @@ describe('hostile text from other members renders as plain text', () => {
       id: 1, miniId: 1, miniName: XSS, miniImage: null, role: 'owner',
       counterpart: { id: 2, username: 'x', displayName: SCRIPT },
       status: 'adventuring', stage: 'adventuring', handoffWhen: null, handoffWhere: XSS, handoffHow: SCRIPT,
-      durationDays: 7, borrowerApproved: true, ownerApproved: true, handedOffAt: null,
+      durationDays: 7, borrowerApproved: true, ownerApproved: true, handedOffAt: null, receivedAt: null,
       dueAt: new Date(Date.now() + 86_400_000).toISOString(), returnedAt: null, createdAt: '2026-01-01T00:00:00.000Z',
     };
     const { container } = render(<LoanCard loan={loan} now={new Date()} otherOpenRequests={0} onUpdated={vi.fn()} />);

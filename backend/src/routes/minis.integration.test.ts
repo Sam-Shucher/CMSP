@@ -14,6 +14,13 @@ import { createTestSession } from '../test/dbHelpers';
 
 const app = createApp();
 
+// A real (1×1) PNG — uploads are checked to be actual images.
+const PNG_BYTES = Buffer.from(
+  '89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000a49444154789c6300010000050001' +
+  '0d0a2db40000000049454e44ae426082',
+  'hex'
+);
+
 beforeAll(async () => {
   try {
     await pool.query('SELECT 1');
@@ -212,6 +219,41 @@ describe('Collection isolation (real database)', () => {
   });
 });
 
+describe('Tags people actually type (real database)', () => {
+  // The database used to compare tag names ignoring accents, and treated every
+  // emoji as equal — so tagging 🔥 on a mini gave it someone else's 🐉 tag.
+  it('keeps tags that differ only by emoji or accent apart', async () => {
+    const { userId, collectionId } = await createTestUser();
+    const cookie = authCookie({ userId, username: 'owner', role: 'user', collectionId });
+
+    const dragon = await request(app).post('/api/minis').set('Cookie', cookie).field('name', 'Dragon').field('tags', '🐉, café');
+    const fire = await request(app).post('/api/minis').set('Cookie', cookie).field('name', 'Fire Elemental').field('tags', '🔥, cafe');
+
+    expect((await request(app).get(`/api/minis/${dragon.body.miniId}`).set('Cookie', cookie)).body.tags.sort()).toEqual(['café', '🐉'].sort());
+    expect((await request(app).get(`/api/minis/${fire.body.miniId}`).set('Cookie', cookie)).body.tags.sort()).toEqual(['cafe', '🔥'].sort());
+
+    const filtered = await request(app).get(`/api/minis?tag=${encodeURIComponent('🔥')}`).set('Cookie', cookie);
+    expect(filtered.body.map((m: { name: string }) => m.name)).toEqual(['Fire Elemental']);
+    expect((await request(app).get('/api/minis/tags').set('Cookie', cookie)).body).toHaveLength(4);
+  });
+});
+
+describe('Photos that aren\'t really photos (real database)', () => {
+  it('refuses a text file named .png and leaves no mini behind', async () => {
+    const { userId, collectionId } = await createTestUser();
+    const cookie = authCookie({ userId, username: 'owner', role: 'user', collectionId });
+
+    const res = await request(app)
+      .post('/api/minis')
+      .set('Cookie', cookie)
+      .field('name', 'Not A Photo')
+      .attach('images', Buffer.from('my shopping list'), { filename: 'notes.png', contentType: 'image/png' });
+
+    expect(res.status).toBe(400);
+    expect((await request(app).get('/api/minis').set('Cookie', cookie)).body).toEqual([]);
+  });
+});
+
 describe('Multiple photos per mini (real database)', () => {
   it('creates a mini with tags AND multiple photos without duplicating tags (the cross-join trap)', async () => {
     const { userId, collectionId } = await createTestUser();
@@ -222,9 +264,9 @@ describe('Multiple photos per mini (real database)', () => {
       .set('Cookie', cookie)
       .field('name', 'Beholder')
       .field('tags', 'boss,painted')
-      .attach('images', Buffer.from('fake-png-bytes'), { filename: 'a.png', contentType: 'image/png' })
-      .attach('images', Buffer.from('fake-png-bytes'), { filename: 'b.png', contentType: 'image/png' })
-      .attach('images', Buffer.from('fake-png-bytes'), { filename: 'c.png', contentType: 'image/png' });
+      .attach('images', PNG_BYTES, { filename: 'a.png', contentType: 'image/png' })
+      .attach('images', PNG_BYTES, { filename: 'b.png', contentType: 'image/png' })
+      .attach('images', PNG_BYTES, { filename: 'c.png', contentType: 'image/png' });
     expect(createRes.status).toBe(201);
 
     const res = await request(app).get(`/api/minis/${createRes.body.miniId}`).set('Cookie', cookie);
@@ -242,9 +284,9 @@ describe('Multiple photos per mini (real database)', () => {
       .post('/api/minis')
       .set('Cookie', cookie)
       .field('name', 'Beholder')
-      .attach('images', Buffer.from('fake-png-bytes'), { filename: 'a.png', contentType: 'image/png' })
-      .attach('images', Buffer.from('fake-png-bytes'), { filename: 'b.png', contentType: 'image/png' })
-      .attach('images', Buffer.from('fake-png-bytes'), { filename: 'c.png', contentType: 'image/png' });
+      .attach('images', PNG_BYTES, { filename: 'a.png', contentType: 'image/png' })
+      .attach('images', PNG_BYTES, { filename: 'b.png', contentType: 'image/png' })
+      .attach('images', PNG_BYTES, { filename: 'c.png', contentType: 'image/png' });
 
     const getRes = await request(app).get(`/api/minis/${createRes.body.miniId}`).set('Cookie', cookie);
     const editRes = await request(app)
@@ -252,7 +294,7 @@ describe('Multiple photos per mini (real database)', () => {
       .set('Cookie', cookie)
       .field('name', 'Beholder')
       .field('existingImages', JSON.stringify(getRes.body.images))
-      .attach('images', Buffer.from('fake-png-bytes'), { filename: 'd.png', contentType: 'image/png' });
+      .attach('images', PNG_BYTES, { filename: 'd.png', contentType: 'image/png' });
 
     expect(editRes.status).toBe(400);
   });

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { api, SESSION_ENDED_EVENT } from './client';
+import { api, SESSION_ENDED_EVENT, GROUP_CHANGED_EVENT, setActiveGroup } from './client';
 
 function response(body: unknown, init: { ok?: boolean; statusText?: string; badJson?: boolean } = {}): Response {
   return {
@@ -108,6 +108,35 @@ describe('api()', () => {
 
     expect(listener).not.toHaveBeenCalled();
     window.removeEventListener(SESSION_ENDED_EVENT, listener);
+  });
+
+  it('tells the server which group the page is showing', async () => {
+    vi.mocked(fetch).mockResolvedValue(response({}));
+    setActiveGroup(5);
+
+    await api('/api/minis');
+    await api('/api/minis', { method: 'POST', body: new FormData() });
+
+    expect(vi.mocked(fetch).mock.calls[0][1]?.headers).toMatchObject({ 'X-Collection-Id': '5' });
+    expect(vi.mocked(fetch).mock.calls[1][1]?.headers).toMatchObject({ 'X-Collection-Id': '5' });
+
+    setActiveGroup(undefined);
+    await api('/api/auth/me');
+    expect(vi.mocked(fetch).mock.calls[2][1]?.headers).not.toHaveProperty('X-Collection-Id');
+  });
+
+  it('announces when the group was switched in another tab', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce({
+      ...response({ error: 'You switched groups in another tab — this page has been updated to match. Please try again.', code: 'group_changed' }, { ok: false }),
+      status: 409,
+    } as Response);
+    const listener = vi.fn();
+    window.addEventListener(GROUP_CHANGED_EVENT, listener);
+
+    await expect(api('/api/minis', { method: 'POST', body: new FormData() })).rejects.toThrow(/another tab/);
+
+    expect(listener).toHaveBeenCalledTimes(1);
+    window.removeEventListener(GROUP_CHANGED_EVENT, listener);
   });
 
   it('lets a network failure propagate to the caller', async () => {

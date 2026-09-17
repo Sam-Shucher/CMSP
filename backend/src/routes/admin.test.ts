@@ -5,8 +5,12 @@ import { authCookie } from '../test/helpers';
 vi.mock('../db/connection', () => ({
   pool: { execute: vi.fn() },
 }));
+vi.mock('../services/membership', () => ({
+  removeMember: vi.fn(),
+}));
 
 import { pool } from '../db/connection';
+import { removeMember } from '../services/membership';
 import { createApp } from '../app';
 
 const app = createApp();
@@ -25,6 +29,7 @@ const MEMBERSHIP_AS_USER = [[{ role: 'user' }]];
 
 beforeEach(() => {
   execute.mockReset();
+  vi.mocked(removeMember).mockReset();
 });
 
 describe('Collection access control', () => {
@@ -266,45 +271,64 @@ describe('PATCH /api/admin/users/:id/role', () => {
 });
 
 describe('DELETE /api/admin/users/:id (remove from collection)', () => {
-  it('removes the membership but keeps the account when they belong to other collections too', async () => {
-    execute
-      .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)     // admin's own membership check
-      .mockResolvedValueOnce([[{ id: 5 }]])             // target is a member of this collection
-      .mockResolvedValueOnce([{}])                       // DELETE FROM collection_memberships
-      .mockResolvedValueOnce([[{ count: 1 }]]);          // still a member of 1 other collection
+  // What removal does to loans, minis, and holds is covered against the real
+  // database in admin.integration.test.ts; these check the route's replies.
+  it('removes them from the active collection only', async () => {
+    execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED);
+    vi.mocked(removeMember).mockResolvedValueOnce({ ok: true, accountDeleted: false, minisRemoved: 2 });
 
     const res = await request(app)
       .delete('/api/admin/users/2')
       .set('Cookie', authCookie(ADMIN));
 
     expect(res.status).toBe(200);
-    expect(execute).not.toHaveBeenCalledWith(expect.stringContaining('DELETE FROM users'), expect.anything());
+    expect(res.body.message).toBe('Removed from this group — their 2 minis here were removed too');
+    expect(removeMember).toHaveBeenCalledWith(2, COLLECTION_A);
   });
 
-  it('also deletes the account when this was their last collection', async () => {
-    execute
-      .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
-      .mockResolvedValueOnce([[{ id: 5 }]])
-      .mockResolvedValueOnce([{}])
-      .mockResolvedValueOnce([[{ count: 0 }]])
-      .mockResolvedValueOnce([{}]); // DELETE FROM users
+  it('says so when the account was deleted too', async () => {
+    execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED);
+    vi.mocked(removeMember).mockResolvedValueOnce({ ok: true, accountDeleted: true, minisRemoved: 0 });
 
     const res = await request(app)
       .delete('/api/admin/users/2')
       .set('Cookie', authCookie(ADMIN));
 
-    expect(res.status).toBe(200);
-    expect(execute).toHaveBeenCalledWith(expect.stringContaining('DELETE FROM users'), ['2']);
+    expect(res.body.message).toMatch(/account was deleted too/);
+  });
+
+  it('passes on a refusal, such as a mini still out on loan', async () => {
+    execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED);
+    vi.mocked(removeMember).mockResolvedValueOnce({ ok: false, status: 409, error: 'Grunt has 1 mini out on loan in this group — it needs to be marked returned first' });
+
+    const res = await request(app)
+      .delete('/api/admin/users/2')
+      .set('Cookie', authCookie(ADMIN));
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toMatch(/out on loan/);
   });
 
   it('returns 404 for a user who is not a member of the admin\'s active collection', async () => {
-    execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED).mockResolvedValueOnce([[]]);
+    execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED);
+    vi.mocked(removeMember).mockResolvedValueOnce({ ok: false, status: 404, error: 'User not found in this collection' });
 
     const res = await request(app)
       .delete('/api/admin/users/2')
       .set('Cookie', authCookie(ADMIN));
 
     expect(res.status).toBe(404);
+  });
+
+  it('returns 404 for an id that isn\'t a number, without looking anyone up', async () => {
+    execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED);
+
+    const res = await request(app)
+      .delete('/api/admin/users/abc')
+      .set('Cookie', authCookie(ADMIN));
+
+    expect(res.status).toBe(404);
+    expect(removeMember).not.toHaveBeenCalled();
   });
 
   it('blocks removing your own membership from your own active collection', async () => {
@@ -338,6 +362,7 @@ describe('database failures', () => {
     ['DELETE users/:id', () => request(app).delete('/api/admin/users/2').set('Cookie', authCookie(ADMIN))],
   ])('%s returns a generic 500', async (_route, send) => {
     execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED).mockRejectedValue(new Error('connection lost'));
+    vi.mocked(removeMember).mockRejectedValue(new Error('connection lost'));
     vi.spyOn(console, 'error').mockImplementation(() => {});
 
     const res = await send();

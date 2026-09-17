@@ -37,6 +37,7 @@ function loanRow(overrides: Record<string, unknown> = {}) {
     borrower_approved: 1,
     owner_approved: 1,
     handed_off_at: null,
+    received_at: null,
     due_at: null,
     returned_at: null,
     created_at: new Date('2026-09-01T00:00:00.000Z'),
@@ -87,6 +88,19 @@ describe('loans — someone else changed the loan at the same moment', () => {
     expect(res.status).toBe(409);
   });
 
+  it('confirming you got it returns 409 when the loan changed in between, and never records it twice', async () => {
+    execute
+      .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
+      .mockResolvedValueOnce([[loanRow({ status: 'adventuring', due_at: new Date('2026-10-15T18:00:00.000Z'), received_at: null })]])
+      .mockResolvedValueOnce(NO_ROWS_CHANGED);
+
+    const res = await request(app).post('/api/loans/5/received').set('Cookie', authCookie(BORROWER));
+
+    expect(res.status).toBe(409);
+    const update = execute.mock.calls.find(([sql]) => String(sql).includes('UPDATE loans'))!;
+    expect(update[0]).toMatch(/status = 'adventuring' AND received_at IS NULL/);
+  });
+
   it('every state-changing UPDATE re-checks the status it expects', async () => {
     execute
       .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
@@ -119,6 +133,7 @@ describe('loans — scoping', () => {
     ['PATCH terms', () => request(app).patch('/api/loans/5/terms').send({ where: 'x' })],
     ['POST approve', () => request(app).post('/api/loans/5/approve')],
     ['POST handoff', () => request(app).post('/api/loans/5/handoff')],
+    ['POST received', () => request(app).post('/api/loans/5/received')],
     ['POST return', () => request(app).post('/api/loans/5/return')],
     ['POST cancel', () => request(app).post('/api/loans/5/cancel')],
     ['POST apply-terms-to-all', () => request(app).post('/api/loans/5/apply-terms-to-all')],
@@ -140,7 +155,7 @@ describe('loans — database failures', () => {
     expect(res.body).toEqual({ error: 'Server error' });
   });
 
-  it.each(['approve', 'handoff', 'return', 'cancel', 'apply-terms-to-all'])('POST %s returns a generic 500', async (action) => {
+  it.each(['approve', 'handoff', 'received', 'return', 'cancel', 'apply-terms-to-all'])('POST %s returns a generic 500', async (action) => {
     execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED).mockRejectedValue(new Error('connection lost'));
 
     const res = await request(app).post(`/api/loans/5/${action}`).set('Cookie', authCookie(OWNER));

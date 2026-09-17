@@ -37,7 +37,7 @@ function proposeTerms(who: TestUser, loanId: number, body: Record<string, unknow
   return request(app).patch(`/api/loans/${loanId}/terms`).set('Cookie', who.cookie).send(body);
 }
 
-function act(who: TestUser, loanId: number, action: 'approve' | 'handoff' | 'return' | 'cancel' | 'apply-terms-to-all') {
+function act(who: TestUser, loanId: number, action: 'approve' | 'handoff' | 'received' | 'return' | 'cancel' | 'apply-terms-to-all') {
   return request(app).post(`/api/loans/${loanId}/${action}`).set('Cookie', who.cookie);
 }
 
@@ -307,6 +307,51 @@ describe('handoff and return', () => {
 
     await act(bystander, nextLoan, 'cancel');
     expect((await request(app).delete(`/api/minis/${miniId}`).set('Cookie', owner.cookie)).status).toBe(200);
+  });
+});
+
+describe('the borrower confirming they got it', () => {
+  it('the owner\'s handoff starts the loan on its own; the borrower\'s "got it" is recorded for both to see', async () => {
+    const loanId = await requestMini(borrower, await createMini(owner, 'Dire Wolf'));
+    await agreeOnTerms(loanId, 14);
+
+    const handoff = await act(owner, loanId, 'handoff');
+    expect(handoff.body).toMatchObject({ status: 'adventuring', receivedAt: null });
+
+    const res = await act(borrower, loanId, 'received');
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('adventuring');
+    expect(res.body.receivedAt).not.toBeNull();
+    expect(res.body.dueAt).toBe(handoff.body.dueAt); // the clock doesn't move
+
+    const ownerView = (await request(app).get('/api/loans').set('Cookie', owner.cookie)).body;
+    expect(ownerView[0].receivedAt).toBe(res.body.receivedAt);
+  });
+
+  it('only the borrower can confirm it, and only while the mini is out with them', async () => {
+    const loanId = await requestMini(borrower, await createMini(owner, 'Dire Wolf'));
+
+    expect((await act(borrower, loanId, 'received')).status).toBe(409); // still negotiating
+    await agreeOnTerms(loanId);
+    expect((await act(borrower, loanId, 'received')).status).toBe(409); // agreed, not handed off
+
+    await act(owner, loanId, 'handoff');
+    expect((await act(owner, loanId, 'received')).status).toBe(403);
+    expect((await act(bystander, loanId, 'received')).status).toBe(404);
+  });
+
+  it('refuses a second confirmation, and one after the mini is back', async () => {
+    const first = await requestMini(borrower, await createMini(owner, 'Dire Wolf'));
+    await agreeOnTerms(first);
+    await act(owner, first, 'handoff');
+    await act(borrower, first, 'received');
+    expect((await act(borrower, first, 'received')).status).toBe(409);
+
+    const second = await requestMini(borrower, await createMini(owner, 'Owlbear'));
+    await agreeOnTerms(second);
+    await act(owner, second, 'handoff');
+    await act(owner, second, 'return');
+    expect((await act(borrower, second, 'received')).status).toBe(409);
   });
 });
 

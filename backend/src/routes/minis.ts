@@ -11,6 +11,7 @@ import { activeLoanStatusSql, miniStatusFrom } from '../utils/miniStatus';
 import { requiredText, optionalText, tagList, LIMITS, Check } from '../utils/inputs';
 import { uploadsDir as configuredUploadsDir } from '../config';
 import { parseBackBy } from '../utils/quest';
+import { detectImageType, IMAGE_HEADER_BYTES } from '../utils/imageType';
 import { promoteNextHold, announceMiniRemoved } from '../services/holds';
 
 const router = Router();
@@ -107,6 +108,39 @@ function handleUploadError(err: unknown, _req: Request, res: Response, next: Nex
   next(err);
 }
 
+// Runs after multer has saved the files: checks each one really is an image
+// (not, say, a text file renamed .png) and gives it the extension of what it
+// actually is. Anything else is refused by name — and discardUploadsIfRejected
+// then deletes everything this request saved.
+function verifyImageContents(req: Request, res: Response, next: NextFunction): void {
+  const files = (req.files as Express.Multer.File[] | undefined) ?? [];
+  for (const file of files) {
+    const head = Buffer.alloc(IMAGE_HEADER_BYTES);
+    const fd = fs.openSync(file.path, 'r');
+    let bytesRead: number;
+    try {
+      bytesRead = fs.readSync(fd, head, 0, IMAGE_HEADER_BYTES, 0);
+    } finally {
+      fs.closeSync(fd);
+    }
+
+    const ext = detectImageType(head.subarray(0, bytesRead));
+    if (!ext) {
+      const shownName = file.originalname.slice(0, 80);
+      res.status(400).json({ error: `"${shownName}" isn't a photo we can open — use a JPG, PNG, GIF, or WebP` });
+      return;
+    }
+    if (path.extname(file.filename) !== ext) {
+      const renamed = `${path.basename(file.filename, path.extname(file.filename))}${ext}`;
+      const renamedPath = path.join(path.dirname(file.path), renamed);
+      fs.renameSync(file.path, renamedPath);
+      file.filename = renamed;
+      file.path = renamedPath;
+    }
+  }
+  next();
+}
+
 // ---------------------------------------------------------------------------
 // Row types — these tell TypeScript the shape of each DB row we SELECT
 // ---------------------------------------------------------------------------
@@ -188,6 +222,7 @@ function serializeMini(row: MiniRow) {
 
 // The most a mini's price column (DECIMAL(6,2)) can hold.
 const MAX_PRICE = 9999.99;
+const PRICE_PATTERN = /^(\d+(\.\d{1,2})?|\.\d{1,2})$/;
 
 interface MiniFields {
   name: string;
@@ -205,16 +240,17 @@ function parseMiniFields(body: Record<string, unknown>): Check<MiniFields> {
   const tags = tagList(body.tags);
   if (!tags.ok) return tags;
 
-  // price arrives as a string from multipart form-data — default to 0 when omitted,
-  // and reject anything that isn't a non-negative number the column can hold
+  // price arrives as a string from multipart form-data — default to 0 when omitted.
+  // Plain dollars-and-cents only: "0x10" or "1e3" are numbers to JavaScript but
+  // not prices anyone typed, and "12.999" would be silently rounded.
   const rawPrice = typeof body.price === 'string' ? body.price.trim() : '';
-  const price = rawPrice ? Number(rawPrice) : 0;
   if (body.price !== undefined && typeof body.price !== 'string') {
-    return { ok: false, error: 'Price must be a non-negative number' };
+    return { ok: false, error: 'Price must be a number like 12.50' };
   }
-  if (!Number.isFinite(price) || price < 0) {
-    return { ok: false, error: 'Price must be a non-negative number' };
+  if (rawPrice && !PRICE_PATTERN.test(rawPrice)) {
+    return { ok: false, error: 'Price must be a number like 12.50' };
   }
+  const price = rawPrice ? Number(rawPrice) : 0;
   if (price > MAX_PRICE) {
     return { ok: false, error: `Price must be ${MAX_PRICE} or less` };
   }
@@ -280,7 +316,8 @@ router.get('/', async (req: CollectionRequest, res: Response): Promise<void> => 
     }
   }
   const search = (q as { value: string | null }).value;
-  const tag = (tagFilter as { value: string | null }).value;
+  // Saved tags are lowercase and compared exactly, so the filter is too.
+  const tag = (tagFilter as { value: string | null }).value?.toLowerCase() ?? null;
 
   try {
     // The collection filter is always present; tag (a controlled pill, not
@@ -363,7 +400,7 @@ router.get('/:id', async (req: CollectionRequest, res: Response): Promise<void> 
 // POST /api/minis
 // Creates a new mini in the caller's active collection. Expects multipart/form-data.
 // Fields: name (required), description, tags (comma-separated), images (0-3 files).
-router.post('/', discardUploadsIfRejected, upload.array('images', MAX_IMAGES), handleUploadError, async (req: CollectionRequest, res: Response): Promise<void> => {
+router.post('/', discardUploadsIfRejected, upload.array('images', MAX_IMAGES), handleUploadError, verifyImageContents, async (req: CollectionRequest, res: Response): Promise<void> => {
   const files = (req.files as Express.Multer.File[] | undefined) ?? [];
 
   const fields = parseMiniFields((req.body ?? {}) as Record<string, unknown>);
@@ -398,7 +435,7 @@ router.post('/', discardUploadsIfRejected, upload.array('images', MAX_IMAGES), h
 // Expects multipart/form-data. `existingImages` is a JSON array of image
 // paths (from the mini's current photos) to keep; any new files in the
 // `images` field are appended after them, capped at MAX_IMAGES total.
-router.patch('/:id', discardUploadsIfRejected, upload.array('images', MAX_IMAGES), handleUploadError, async (req: CollectionRequest, res: Response): Promise<void> => {
+router.patch('/:id', discardUploadsIfRejected, upload.array('images', MAX_IMAGES), handleUploadError, verifyImageContents, async (req: CollectionRequest, res: Response): Promise<void> => {
   const miniId = req.params.id;
   const existingImages = (req.body as Record<string, unknown> | undefined)?.existingImages;
   const newFiles = (req.files as Express.Multer.File[] | undefined) ?? [];

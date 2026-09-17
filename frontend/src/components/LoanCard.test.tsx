@@ -24,6 +24,7 @@ function makeLoan(overrides: Partial<Loan> = {}): Loan {
     borrowerApproved: false,
     ownerApproved: false,
     handedOffAt: null,
+    receivedAt: null,
     dueAt: null,
     returnedAt: null,
     createdAt: '2026-09-01T00:00:00.000Z',
@@ -330,6 +331,39 @@ describe('LoanCard — handoff, adventuring, and return', () => {
     renderCard(makeLoan({ ...agreed, role: 'borrower', status: 'adventuring', stage: 'adventuring', dueAt }));
 
     expect(screen.queryByRole('button', { name: /mark returned/i })).not.toBeInTheDocument();
+  });
+
+  it('lets the borrower confirm they got it', async () => {
+    const dueAt = new Date(Date.now() + DAY).toISOString();
+    const { onUpdated } = renderCard(makeLoan({ ...agreed, role: 'borrower', status: 'adventuring', stage: 'adventuring', dueAt }));
+
+    expect(screen.getByText('Have it? Let Alice know you got it.')).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Got it' }));
+
+    await waitFor(() => expect(onUpdated).toHaveBeenCalled());
+    expect(lastRequest()).toMatchObject({ url: '/api/loans/7/received', method: 'POST' });
+  });
+
+  it('shows the borrower they already confirmed, with no button to press again', () => {
+    const dueAt = new Date(Date.now() + DAY).toISOString();
+    renderCard(makeLoan({ ...agreed, role: 'borrower', status: 'adventuring', stage: 'adventuring', dueAt, receivedAt: new Date().toISOString() }));
+
+    expect(screen.getByText('✓ You confirmed you got it')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Got it' })).not.toBeInTheDocument();
+  });
+
+  it('tells the owner whether the borrower has confirmed they got it — without a button for it', () => {
+    const dueAt = new Date(Date.now() + DAY).toISOString();
+    const owner = { role: 'owner' as const, counterpart: { id: 20, username: 'bob', displayName: 'Bob' } };
+    const loan = makeLoan({ ...agreed, ...owner, status: 'adventuring', stage: 'adventuring', dueAt });
+
+    const { unmount } = render(<LoanCard loan={loan} now={new Date()} otherOpenRequests={0} onUpdated={vi.fn()} />);
+    expect(screen.getByText('Bob hasn\'t confirmed they got it yet.')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Got it' })).not.toBeInTheDocument();
+    unmount();
+
+    renderCard({ ...loan, receivedAt: new Date().toISOString() });
+    expect(screen.getByText('✓ Bob confirmed they got it')).toBeInTheDocument();
   });
 
   it('shows a finished loan without any actions', () => {

@@ -237,6 +237,32 @@ describe('App — your role depends on the group you enter', () => {
   });
 });
 
+describe('App — switching groups in another tab', () => {
+  it('catches up and says so, when this tab was still showing the old group', async () => {
+    const collections = [{ id: 5, name: 'Chicago' }, { id: 6, name: 'dojo' }];
+    let otherTabSwitched = false;
+    mockServer({
+      ...LOGGED_IN_ROUTES,
+      '/api/auth/collections': collections,
+      '/api/auth/me': () => jsonResponse(otherTabSwitched ? { ...USER, collectionId: 6 } : USER),
+      '/api/loans': (init?: RequestInit) => {
+        const pageGroup = (init?.headers as Record<string, string> | undefined)?.['X-Collection-Id'];
+        return otherTabSwitched && pageGroup === '5'
+          ? ({ ok: false, status: 409, statusText: 'Conflict', json: async () => ({ error: 'You switched groups in another tab — this page has been updated to match. Please try again.', code: 'group_changed' }) } as Response)
+          : jsonResponse([]);
+      },
+    });
+    render(<App />);
+    await screen.findByRole('button', { name: /chicago \(switch\)/i });
+
+    otherTabSwitched = true;
+    await userEvent.click(screen.getByRole('link', { name: 'Loans' }));
+
+    expect(await screen.findByRole('button', { name: /dojo \(switch\)/i })).toBeInTheDocument();
+    expect(screen.getByRole('status')).toHaveTextContent('You switched to dojo in another tab, so this tab switched too.');
+  });
+});
+
 describe('App — when a session ends', () => {
   it('sends you back to sign in with an explanation when the server says your session is over', async () => {
     let sessionAlive = true;

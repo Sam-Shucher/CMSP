@@ -106,6 +106,20 @@ describe('loan notifications', () => {
     expect((await inbox(borrower)).items[0]).toMatchObject({ type: 'returned', message: 'owner display marked Dire Wolf as returned' });
   });
 
+  it('tells the owner when the borrower confirms they got it', async () => {
+    const { loanId } = await requestMini();
+    await terms(borrower, loanId, { when: WHEN, where: 'Game store', how: 'In person' });
+    await terms(owner, loanId, { durationDays: 7 });
+    await act(borrower, loanId, 'approve');
+    await act(owner, loanId, 'handoff');
+    const borrowerInboxBefore = (await inbox(borrower)).items.length;
+
+    await act(borrower, loanId, 'received');
+
+    expect((await inbox(owner)).items[0]).toMatchObject({ type: 'received', loanId, message: 'borrower display confirmed they got Dire Wolf' });
+    expect((await inbox(borrower)).items).toHaveLength(borrowerInboxBefore); // not told about their own action
+  });
+
   it('tells the other side once when terms are applied to several requests', async () => {
     const first = await requestMini('Dire Wolf');
     await requestMini('Owlbear');

@@ -5,7 +5,7 @@ import { requireAuth } from '../middleware/requireAuth';
 import { requireAdmin } from '../middleware/requireAdmin';
 import { requireCollectionMembership, CollectionRequest } from '../middleware/requireCollectionMembership';
 import { emailAddress } from '../utils/inputs';
-import { dropHoldsInCollection } from '../services/holds';
+import { removeMember } from '../services/membership';
 
 const router = Router();
 
@@ -36,10 +36,6 @@ interface UserAdminRow extends RowDataPacket {
   neighborhood: string | null;
   role: string;
   created_at: string;
-}
-
-interface MembershipCountRow extends RowDataPacket {
-  count: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -186,46 +182,37 @@ router.patch('/users/:id/role', async (req: CollectionRequest, res: Response): P
 
 // DELETE /api/admin/users/:id
 // Removes this user's membership in the admin's active collection — not a
-// global account delete. If that was their last collection anywhere, the
-// account itself is also removed (an account with zero collection access
-// is orphaned and pointless to keep). Blocked for your own membership so
-// an admin can't lock themselves out of the collection they're acting in.
+// global account delete. Refused while a mini is out on loan with or from
+// them; otherwise their open requests, holds, cart, and minis in this group
+// are tidied away (services/membership.ts). If that was their last
+// collection anywhere, the account itself is also removed. Blocked for your
+// own membership so an admin can't lock themselves out.
 router.delete('/users/:id', async (req: CollectionRequest, res: Response): Promise<void> => {
-  if (Number(req.params.id) === req.user!.userId) {
+  const userId = Number(req.params.id);
+  if (userId === req.user!.userId) {
     res.status(400).json({ error: 'You cannot remove yourself from this collection' });
+    return;
+  }
+  if (!Number.isInteger(userId) || userId <= 0) {
+    res.status(404).json({ error: 'User not found in this collection' });
     return;
   }
 
   try {
-    const [membershipRows] = await pool.execute<RowDataPacket[]>(
-      'SELECT id FROM collection_memberships WHERE user_id = ? AND collection_id = ?',
-      [req.params.id, req.collectionId!]
-    );
-    if (membershipRows.length === 0) {
-      res.status(404).json({ error: 'User not found in this collection' });
+    const result = await removeMember(userId, req.collectionId!);
+    if (!result.ok) {
+      res.status(result.status).json({ error: result.error });
       return;
     }
-
-    // Their places in this group's hold lines go too; people behind them move up.
-    await dropHoldsInCollection(Number(req.params.id), req.collectionId!);
-
-    await pool.execute<ResultSetHeader>(
-      'DELETE FROM collection_memberships WHERE user_id = ? AND collection_id = ?',
-      [req.params.id, req.collectionId!]
-    );
-
-    const [countRows] = await pool.execute<MembershipCountRow[]>(
-      'SELECT COUNT(*) AS count FROM collection_memberships WHERE user_id = ?',
-      [req.params.id]
-    );
-
-    if (countRows[0].count === 0) {
-      await pool.execute<ResultSetHeader>('DELETE FROM users WHERE id = ?', [req.params.id]);
-      res.json({ message: 'Removed from this collection — that was their last one, so the account was deleted too' });
+    if (result.accountDeleted) {
+      res.json({ message: 'Removed from this group — that was their last one, so the account was deleted too' });
       return;
     }
-
-    res.json({ message: 'Removed from this collection' });
+    res.json({
+      message: result.minisRemoved === 0
+        ? 'Removed from this group'
+        : `Removed from this group — their ${result.minisRemoved} ${result.minisRemoved === 1 ? 'mini' : 'minis'} here ${result.minisRemoved === 1 ? 'was' : 'were'} removed too`,
+    });
   } catch (err: unknown) {
     console.error(err);
     res.status(500).json({ error: 'Server error' });
