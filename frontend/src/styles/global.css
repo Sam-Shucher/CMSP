@@ -102,6 +102,19 @@ button:disabled {
   font-size: 14px;
 }
 
+/* Inline message under a form field (see components/FieldError.tsx) */
+.field-error {
+  color: #e74c3c;
+  font-size: 12px;
+  margin-top: 5px;
+}
+.field-error[hidden] { display: none; }
+
+input[aria-invalid="true"],
+textarea[aria-invalid="true"] {
+  border-color: var(--danger);
+}
+
 .success-msg {
   background: rgba(39, 174, 96, 0.15);
   border: 1px solid var(--success);

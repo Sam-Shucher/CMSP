@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { render, screen, waitFor, fireEvent, act } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Routes, Route } from 'react-router-dom';
 import LoginPage from './LoginPage';
@@ -26,6 +26,76 @@ async function signIn(email: string, password: string) {
   await userEvent.type(screen.getByLabelText(/password/i), password);
   await userEvent.click(screen.getByRole('button', { name: /sign in/i }));
 }
+
+describe('LoginPage — when problems are pointed out', () => {
+  beforeEach(() => {
+    vi.stubGlobal('fetch', vi.fn());
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const emailInput = () => screen.getByLabelText(/email/i);
+  const type = (input: HTMLElement, value: string) => fireEvent.change(input, { target: { value } });
+
+  it('turns off the browser\'s own validation popups', () => {
+    renderLoginPage();
+    expect(document.querySelector('form')).toHaveAttribute('novalidate');
+  });
+
+  it('says nothing while you\'re still typing an email', () => {
+    renderLoginPage();
+
+    type(emailInput(), 'd');
+    act(() => { vi.advanceTimersByTime(1000); });
+    type(emailInput(), 'dtg');
+
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(emailInput()).toHaveAttribute('aria-invalid', 'false');
+  });
+
+  it('points out an incomplete email after you pause for 3 seconds', () => {
+    renderLoginPage();
+
+    type(emailInput(), 'dtg');
+    act(() => { vi.advanceTimersByTime(3000); });
+
+    expect(screen.getByRole('alert')).toHaveTextContent('Enter an email like name@example.com.');
+    expect(emailInput()).toHaveAttribute('aria-invalid', 'true');
+  });
+
+  it('points it out as soon as you move on to the password', () => {
+    renderLoginPage();
+
+    type(emailInput(), 'dtg');
+    fireEvent.blur(emailInput());
+
+    expect(screen.getByRole('alert')).toHaveTextContent('Enter an email like name@example.com.');
+  });
+
+  it('clears the message once the email is fixed', () => {
+    renderLoginPage();
+    type(emailInput(), 'dtg');
+    fireEvent.blur(emailInput());
+
+    type(emailInput(), 'dtg@example.com');
+    fireEvent.blur(emailInput());
+
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('on Sign In, shows every problem and sends nothing', () => {
+    renderLoginPage();
+
+    fireEvent.click(screen.getByRole('button', { name: /sign in/i }));
+
+    expect(screen.getByText('Enter your email address.')).toBeInTheDocument();
+    expect(screen.getByText('Enter your password.')).toBeInTheDocument();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+});
 
 describe('LoginPage', () => {
   beforeEach(() => {

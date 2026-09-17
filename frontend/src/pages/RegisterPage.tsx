@@ -2,10 +2,11 @@ import React, { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { api } from '../api/client';
 import { useAuth } from '../App';
-import { validateUsername, validatePassword } from '../utils/validation';
+import { validateUsername, validatePassword, validateEmail } from '../utils/validation';
+import { useValidatedForm } from '../hooks/useValidatedForm';
+import FieldError from '../components/FieldError';
 
 // All fields the registration form tracks.
-// Defined as a named type so we can use keyof FormState for type-safe field updates.
 type FormState = {
   email: string;
   username: string;
@@ -16,55 +17,42 @@ type FormState = {
   confirm: string; // password confirmation — only used client-side, never sent to the server
 };
 
+const EMPTY: FormState = { email: '', username: '', displayName: '', phone: '', neighborhood: '', password: '', confirm: '' };
+
 export default function RegisterPage(): React.ReactElement {
   const { refreshSession } = useAuth();
   const navigate = useNavigate();
 
-  const [form, setForm]       = useState<FormState>({ email: '', username: '', displayName: '', phone: '', neighborhood: '', password: '', confirm: '' });
+  // Problems are pointed out after a pause, on leaving a field, or on Create
+  // Account — never mid-keystroke, and each under its own field. The optional
+  // fields only have length limits, which the inputs themselves enforce.
+  const form = useValidatedForm<FormState>(EMPTY, {
+    email: value => validateEmail(value).error ?? null,
+    username: value => (value ? validateUsername(value).error ?? null : 'Choose a username.'),
+    password: value => validatePassword(value).error ?? null,
+    confirm: (value, all) => (!value ? 'Type your password again.' : value !== all.password ? 'Passwords don\'t match.' : null),
+  });
   const [error, setError]     = useState<string>('');
   const [loading, setLoading] = useState<boolean>(false);
-
-  // Returns a change handler for a specific form field.
-  // Using `keyof FormState` ensures only valid field names can be passed in —
-  // TypeScript will error if you accidentally type 'passwrod' etc.
-  function set(field: keyof FormState) {
-    return (e: React.ChangeEvent<HTMLInputElement>): void => {
-      setForm(prev => ({ ...prev, [field]: e.target.value }));
-    };
-  }
 
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>): Promise<void> {
     e.preventDefault();
     setError('');
+    if (!form.validateAll()) return;
 
-    // Client-side validation — catches simple mistakes before hitting the server
-    const usernameResult = validateUsername(form.username);
-    if (!usernameResult.valid) {
-      setError(usernameResult.error!);
-      return;
-    }
-    const passwordResult = validatePassword(form.password);
-    if (!passwordResult.valid) {
-      setError(passwordResult.error!);
-      return;
-    }
-    if (form.password !== form.confirm) {
-      setError('Passwords do not match');
-      return;
-    }
-
+    const values = form.values;
     setLoading(true);
     try {
       // The server will check if this email is on a collection's invite list
       await api('/api/auth/register', {
         method: 'POST',
         json: {
-          email: form.email,
-          username: form.username,
-          displayName: form.displayName || form.username,
-          phone: form.phone || undefined,
-          neighborhood: form.neighborhood || undefined,
-          password: form.password,
+          email: values.email.trim(),
+          username: values.username,
+          displayName: values.displayName || values.username,
+          phone: values.phone || undefined,
+          neighborhood: values.neighborhood || undefined,
+          password: values.password,
           // confirm is NOT sent — it was only used for client-side validation
         },
       });
@@ -88,17 +76,21 @@ export default function RegisterPage(): React.ReactElement {
           You need an invite email to register.
         </p>
 
-        <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '13px' }}>
+        {/* noValidate: no browser popups — our own messages show under each field */}
+        <form onSubmit={handleSubmit} noValidate style={{ display: 'flex', flexDirection: 'column', gap: '13px' }}>
+          {/* Problems the server reports, like an email that isn't invited */}
           {error && <div className="error-msg">{error}</div>}
 
           <div>
             <label style={labelStyle} htmlFor="email">Email (must be on the invite list)</label>
-            <input id="email" type="email" value={form.email} onChange={set('email')} placeholder="your@email.com" required autoFocus />
+            <input {...form.field('email', 'email')} type="email" autoComplete="email" placeholder="your@email.com" required autoFocus />
+            <FieldError id="email" message={form.errorFor('email')} />
           </div>
 
           <div>
             <label style={labelStyle} htmlFor="username">Username</label>
-            <input id="username" type="text" value={form.username} onChange={set('username')} placeholder="dungeon_master_42" required maxLength={32} />
+            <input {...form.field('username', 'username')} type="text" autoComplete="username" placeholder="dungeon_master_42" required maxLength={32} />
+            <FieldError id="username" message={form.errorFor('username')} />
           </div>
 
           <div>
@@ -106,7 +98,7 @@ export default function RegisterPage(): React.ReactElement {
               Display Name{' '}
               <span style={{ color: '#8a7d6a', fontWeight: 400 }}>(optional)</span>
             </label>
-            <input id="displayName" type="text" value={form.displayName} onChange={set('displayName')} placeholder="Merric the Bard" maxLength={100} />
+            <input {...form.field('displayName', 'displayName')} type="text" placeholder="Merric the Bard" maxLength={100} />
           </div>
 
           <div>
@@ -114,7 +106,7 @@ export default function RegisterPage(): React.ReactElement {
               Phone{' '}
               <span style={{ color: '#8a7d6a', fontWeight: 400 }}>(optional)</span>
             </label>
-            <input id="phone" type="tel" value={form.phone} onChange={set('phone')} placeholder="555-123-4567" maxLength={20} />
+            <input {...form.field('phone', 'phone')} type="tel" autoComplete="tel" placeholder="555-123-4567" maxLength={20} />
           </div>
 
           <div>
@@ -122,17 +114,19 @@ export default function RegisterPage(): React.ReactElement {
               Neighborhood{' '}
               <span style={{ color: '#8a7d6a', fontWeight: 400 }}>(optional)</span>
             </label>
-            <input id="neighborhood" type="text" value={form.neighborhood} onChange={set('neighborhood')} placeholder="Downtown" maxLength={100} />
+            <input {...form.field('neighborhood', 'neighborhood')} type="text" placeholder="Downtown" maxLength={100} />
           </div>
 
           <div>
             <label style={labelStyle} htmlFor="password">Password</label>
-            <input id="password" type="password" value={form.password} onChange={set('password')} placeholder="At least 8 characters, any kind" required maxLength={72} />
+            <input {...form.field('password', 'password')} type="password" autoComplete="new-password" placeholder="At least 8 characters, any kind" required maxLength={72} />
+            <FieldError id="password" message={form.errorFor('password')} />
           </div>
 
           <div>
             <label style={labelStyle} htmlFor="confirm">Confirm Password</label>
-            <input id="confirm" type="password" value={form.confirm} onChange={set('confirm')} placeholder="••••••••" required maxLength={72} />
+            <input {...form.field('confirm', 'confirm')} type="password" autoComplete="new-password" placeholder="••••••••" required maxLength={72} />
+            <FieldError id="confirm" message={form.errorFor('confirm')} />
           </div>
 
           <button className="btn-primary" type="submit" disabled={loading} style={{ marginTop: '6px', padding: '12px' }}>

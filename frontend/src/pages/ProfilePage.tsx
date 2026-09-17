@@ -2,6 +2,8 @@ import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../api/client';
 import { useAuth } from '../App';
+import { useValidatedForm } from '../hooks/useValidatedForm';
+import FieldError from '../components/FieldError';
 
 type Profile = {
   id: number;
@@ -20,9 +22,12 @@ export default function ProfilePage(): React.ReactElement {
   const [profile, setProfile] = useState<Profile | null>(null);
   const [confirmingLogoutAll, setConfirmingLogoutAll] = useState<boolean>(false);
 
-  const [displayName, setDisplayName]   = useState<string>('');
-  const [phone, setPhone]               = useState<string>('');
-  const [neighborhood, setNeighborhood] = useState<string>('');
+  // Problems are pointed out under the field after a pause, on leaving it, or
+  // on save (see useValidatedForm). Phone and neighborhood only have length
+  // limits, which the inputs enforce.
+  const form = useValidatedForm({ displayName: '', phone: '', neighborhood: '' }, {
+    displayName: value => (value.trim() ? null : 'Display name can\'t be blank — it\'s how others see you.'),
+  });
 
   const [error, setError]     = useState<string>('');
   const [success, setSuccess] = useState<string>('');
@@ -34,9 +39,7 @@ export default function ProfilePage(): React.ReactElement {
     api<Profile>('/api/users/me')
       .then((p: Profile) => {
         setProfile(p);
-        setDisplayName(p.display_name);
-        setPhone(p.phone ?? '');
-        setNeighborhood(p.neighborhood ?? '');
+        form.reset({ displayName: p.display_name, phone: p.phone ?? '', neighborhood: p.neighborhood ?? '' });
       })
       .catch((err: unknown) => setLoadError(err instanceof Error ? err.message : 'Failed to load your profile'));
   }, []);
@@ -46,16 +49,13 @@ export default function ProfilePage(): React.ReactElement {
     setError('');
     setSuccess('');
 
-    if (!displayName.trim()) {
-      setError('Display name is required');
-      return;
-    }
+    if (!form.validateAll()) return;
 
     setLoading(true);
     try {
       const updated = await api<Profile>('/api/users/me', {
         method: 'PATCH',
-        json: { displayName, phone, neighborhood },
+        json: form.values,
       });
       setProfile(updated);
       setSuccess('Profile updated');
@@ -105,39 +105,22 @@ export default function ProfilePage(): React.ReactElement {
 
         <div>
           <label style={labelStyle} htmlFor="profile-display-name">Display Name</label>
-          <input
-            id="profile-display-name"
-            type="text"
-            value={displayName}
-            onChange={(e: React.ChangeEvent<HTMLInputElement>) => setDisplayName(e.target.value)}
-            maxLength={100}
-          />
+          <input {...form.field('displayName', 'profile-display-name')} type="text" maxLength={100} />
+          <FieldError id="profile-display-name" message={form.errorFor('displayName')} />
         </div>
 
         <div>
           <label style={labelStyle} htmlFor="profile-phone">
             Phone <span style={{ color: '#8a7d6a', textTransform: 'none', fontSize: '11px' }}>(optional)</span>
           </label>
-          <input
-            id="profile-phone"
-            type="tel"
-            value={phone}
-            onChange={(e: React.ChangeEvent<HTMLInputElement>) => setPhone(e.target.value)}
-            maxLength={20}
-          />
+          <input {...form.field('phone', 'profile-phone')} type="tel" maxLength={20} />
         </div>
 
         <div>
           <label style={labelStyle} htmlFor="profile-neighborhood">
             Neighborhood <span style={{ color: '#8a7d6a', textTransform: 'none', fontSize: '11px' }}>(optional)</span>
           </label>
-          <input
-            id="profile-neighborhood"
-            type="text"
-            value={neighborhood}
-            onChange={(e: React.ChangeEvent<HTMLInputElement>) => setNeighborhood(e.target.value)}
-            maxLength={100}
-          />
+          <input {...form.field('neighborhood', 'profile-neighborhood')} type="text" maxLength={100} />
         </div>
 
         <button className="btn-primary" type="submit" disabled={loading} style={{ padding: '12px' }}>

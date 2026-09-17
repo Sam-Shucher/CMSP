@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { render, screen, waitFor, within, fireEvent, act } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import AdminPage from './AdminPage';
 import { AuthContext } from '../App';
@@ -98,6 +98,55 @@ describe('AdminPage — invite list', () => {
     renderAdminPage();
 
     expect(await screen.findByText(/not a member of this collection/i)).toBeInTheDocument();
+  });
+});
+
+describe('AdminPage — invite email checks', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('turns off the browser\'s own validation popup on the invite box', async () => {
+    mockAdminApi();
+    renderAdminPage();
+    await screen.findByText('friend@example.com');
+
+    expect(screen.getByPlaceholderText('friend@example.com').closest('form')).toHaveAttribute('novalidate');
+  });
+
+  it('explains an incomplete email under the box and invites nobody', async () => {
+    mockAdminApi();
+    renderAdminPage();
+    await screen.findByText('friend@example.com');
+
+    fireEvent.change(screen.getByPlaceholderText('friend@example.com'), { target: { value: 'newfriend' } });
+    fireEvent.click(screen.getByRole('button', { name: /add email/i }));
+
+    expect(screen.getByRole('alert')).toHaveTextContent('Enter an email like name@example.com.');
+    expect(fetch).not.toHaveBeenCalledWith('/api/admin/approved-emails', expect.objectContaining({ method: 'POST' }));
+  });
+
+  it('asks for an address when the box is empty', async () => {
+    mockAdminApi();
+    renderAdminPage();
+    await screen.findByText('friend@example.com');
+
+    fireEvent.click(screen.getByRole('button', { name: /add email/i }));
+
+    expect(screen.getByRole('alert')).toHaveTextContent('Enter the email address to invite.');
+  });
+
+  it('waits for a 3-second pause before pointing out a problem while typing', async () => {
+    mockAdminApi();
+    renderAdminPage();
+    await screen.findByText('friend@example.com');
+    vi.useFakeTimers();
+
+    fireEvent.change(screen.getByPlaceholderText('friend@example.com'), { target: { value: 'newfr' } });
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+
+    act(() => { vi.advanceTimersByTime(3000); });
+    expect(screen.getByRole('alert')).toHaveTextContent('Enter an email like name@example.com.');
   });
 });
 

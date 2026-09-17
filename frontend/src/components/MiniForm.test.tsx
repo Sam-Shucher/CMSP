@@ -1,5 +1,5 @@
-import { describe, it, expect, vi } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { render, screen, waitFor, fireEvent, act } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import MiniForm from './MiniForm';
 
@@ -82,7 +82,7 @@ describe('MiniForm', () => {
 
     await userEvent.click(screen.getByRole('button', { name: /save/i }));
 
-    expect(await screen.findByText(/name is required/i)).toBeInTheDocument();
+    expect(await screen.findByText('Give your mini a name.')).toBeInTheDocument();
     expect(onSubmit).not.toHaveBeenCalled();
   });
 
@@ -196,7 +196,7 @@ describe('MiniForm', () => {
 
     await userEvent.click(screen.getByRole('button', { name: /save/i }));
 
-    expect(await screen.findByText(/price must be a non-negative number/i)).toBeInTheDocument();
+    expect(await screen.findByText('Enter a price like 12.50, or leave it blank.')).toBeInTheDocument();
     expect(onSubmit).not.toHaveBeenCalled();
   });
 
@@ -224,7 +224,7 @@ describe('MiniForm', () => {
 
     await userEvent.click(screen.getByRole('button', { name: /save/i }));
 
-    expect(await screen.findByText(/9999\.99 or less/i)).toBeInTheDocument();
+    expect(await screen.findByText('Price must be 9999.99 or less.')).toBeInTheDocument();
     expect(onSubmit).not.toHaveBeenCalled();
   });
 
@@ -237,7 +237,7 @@ describe('MiniForm', () => {
       />
     );
     await userEvent.click(screen.getByRole('button', { name: /save/i }));
-    expect(await screen.findByText(/at most 20 tags/i)).toBeInTheDocument();
+    expect(await screen.findByText('Use 20 tags or fewer.')).toBeInTheDocument();
     unmount();
 
     render(
@@ -247,7 +247,7 @@ describe('MiniForm', () => {
       />
     );
     await userEvent.click(screen.getByRole('button', { name: /save/i }));
-    expect(await screen.findByText(/50 characters or fewer/i)).toBeInTheDocument();
+    expect(await screen.findByText('Keep each tag to 50 characters or fewer.')).toBeInTheDocument();
 
     expect(onSubmit).not.toHaveBeenCalled();
   });
@@ -269,7 +269,46 @@ describe('MiniForm', () => {
     await user.type(screen.getByLabelText(/price/i), '-5');
     await user.click(screen.getByRole('button', { name: /save/i }));
 
-    expect(await screen.findByText(/price must be a non-negative number/i)).toBeInTheDocument();
+    expect(await screen.findByText('Price can\'t be negative.')).toBeInTheDocument();
     expect(onSubmit).not.toHaveBeenCalled();
+  });
+});
+
+describe('MiniForm — when problems are pointed out', () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  const renderForm = (values = EMPTY_VALUES) => render(
+    <MiniForm initialValues={values} submitLabel="Save" submittingLabel="Saving…" onSubmit={vi.fn()} onCancel={vi.fn()} />
+  );
+  const errorUnder = (label: RegExp) =>
+    document.getElementById(screen.getByLabelText(label).getAttribute('aria-describedby')!);
+
+  it('says nothing about the price while you type, then explains after a 3-second pause', () => {
+    renderForm();
+
+    fireEvent.change(screen.getByLabelText(/price/i), { target: { value: '-5' } });
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+
+    act(() => { vi.advanceTimersByTime(3000); });
+    expect(errorUnder(/price/i)).toHaveTextContent('Price can\'t be negative.');
+  });
+
+  it('explains a tag problem under the tags field when you leave it', () => {
+    renderForm();
+
+    fireEvent.change(screen.getByLabelText(/tags/i), { target: { value: 'x'.repeat(51) } });
+    fireEvent.blur(screen.getByLabelText(/tags/i));
+
+    expect(errorUnder(/tags/i)).toHaveTextContent('Keep each tag to 50 characters or fewer.');
+  });
+
+  it('shows the name problem under the name field on save', () => {
+    renderForm();
+
+    fireEvent.click(screen.getByRole('button', { name: /save/i }));
+
+    expect(errorUnder(/name/i)).toHaveTextContent('Give your mini a name.');
+    expect(screen.getByLabelText(/name/i)).toHaveAttribute('aria-invalid', 'true');
   });
 });

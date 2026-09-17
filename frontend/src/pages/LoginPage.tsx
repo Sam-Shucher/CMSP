@@ -2,26 +2,33 @@ import React, { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { api } from '../api/client';
 import { useAuth } from '../App';
+import { useValidatedForm } from '../hooks/useValidatedForm';
+import FieldError from '../components/FieldError';
+import { validateEmail } from '../utils/validation';
 
 export default function LoginPage(): React.ReactElement {
   const { refreshSession, sessionNotice } = useAuth();
   const navigate = useNavigate();
 
-  // Controlled inputs — each has its own state string
-  const [email, setEmail]       = useState<string>('');
-  const [password, setPassword] = useState<string>('');
+  // Problems are pointed out after a pause, on leaving a field, or on Sign In —
+  // never mid-keystroke (see useValidatedForm).
+  const form = useValidatedForm({ email: '', password: '' }, {
+    email: value => validateEmail(value).error ?? null,
+    password: value => (value ? null : 'Enter your password.'),
+  });
   const [error, setError]       = useState<string>('');
   const [loading, setLoading]   = useState<boolean>(false);
 
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>): Promise<void> {
     e.preventDefault(); // prevent the browser from doing a full page reload
     setError('');
+    if (!form.validateAll()) return;
     setLoading(true);
 
     try {
       await api('/api/auth/login', {
         method: 'POST',
-        json: { email, password },
+        json: { email: form.values.email.trim(), password: form.values.password },
       });
       // Re-fetch the session from the server rather than trusting this
       // response body directly — it picks up collectionId (and re-derives
@@ -44,7 +51,8 @@ export default function LoginPage(): React.ReactElement {
           Sign in to browse and share your collection
         </p>
 
-        <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+        {/* noValidate: no browser popups — our own messages show under each field */}
+        <form onSubmit={handleSubmit} noValidate style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
           {/* Why they were signed out (e.g. logged out on another device), unless a newer error replaced it */}
           {sessionNotice && !error && <div className="error-msg" role="status">{sessionNotice}</div>}
 
@@ -54,26 +62,26 @@ export default function LoginPage(): React.ReactElement {
           <div>
             <label htmlFor="login-email" style={labelStyle}>Email</label>
             <input
-              id="login-email"
+              {...form.field('email', 'login-email')}
               type="email"
-              value={email}
-              onChange={(e: React.ChangeEvent<HTMLInputElement>) => setEmail(e.target.value)}
+              autoComplete="email"
               placeholder="your@email.com"
               required
               autoFocus
             />
+            <FieldError id="login-email" message={form.errorFor('email')} />
           </div>
 
           <div>
             <label htmlFor="login-password" style={labelStyle}>Password</label>
             <input
-              id="login-password"
+              {...form.field('password', 'login-password')}
               type="password"
-              value={password}
-              onChange={(e: React.ChangeEvent<HTMLInputElement>) => setPassword(e.target.value)}
+              autoComplete="current-password"
               placeholder="••••••••"
               required
             />
+            <FieldError id="login-password" message={form.errorFor('password')} />
           </div>
 
           <button

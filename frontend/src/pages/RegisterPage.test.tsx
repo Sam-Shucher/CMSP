@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { render, screen, waitFor, fireEvent, act } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import RegisterPage from './RegisterPage';
@@ -36,6 +36,86 @@ async function fillForm(
   await user.type(screen.getByLabelText(/confirm password/i), values.confirm);
   await user.click(screen.getByRole('button', { name: /create account/i }));
 }
+
+describe('RegisterPage — when problems are pointed out', () => {
+  beforeEach(() => {
+    vi.stubGlobal('fetch', vi.fn());
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const type = (label: RegExp, value: string) => fireEvent.change(screen.getByLabelText(label), { target: { value } });
+  const leave = (label: RegExp) => fireEvent.blur(screen.getByLabelText(label));
+  const errorUnder = (label: RegExp) => {
+    const input = screen.getByLabelText(label);
+    return document.getElementById(input.getAttribute('aria-describedby')!);
+  };
+
+  it('turns off the browser\'s own validation popups', () => {
+    renderRegisterPage();
+    expect(document.querySelector('form')).toHaveAttribute('novalidate');
+  });
+
+  it('says nothing while typing, then explains after a 3-second pause', () => {
+    renderRegisterPage();
+
+    type(/email/i, 'dtg');
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+
+    act(() => { vi.advanceTimersByTime(3000); });
+    expect(errorUnder(/email/i)).toHaveTextContent('Enter an email like name@example.com.');
+  });
+
+  it('explains a username problem when you move to the next field', () => {
+    renderRegisterPage();
+
+    type(/^username$/i, 'bob smith');
+    leave(/^username$/i);
+
+    expect(errorUnder(/^username$/i)).toHaveTextContent(/letters, numbers, and underscores/i);
+    expect(screen.getByLabelText(/^username$/i)).toHaveAttribute('aria-invalid', 'true');
+  });
+
+  it('shows each message under its own field, not in one box at the top', () => {
+    renderRegisterPage();
+
+    type(/^password$/i, 'short');
+    leave(/^password$/i);
+    type(/confirm password/i, 'shorts');
+    leave(/confirm password/i);
+
+    expect(errorUnder(/^password$/i)).toHaveTextContent(/at least 8 characters/i);
+    expect(errorUnder(/confirm password/i)).toHaveTextContent('Passwords don\'t match.');
+  });
+
+  it('updates the confirmation message as soon as the passwords match', () => {
+    renderRegisterPage();
+    type(/^password$/i, 'validpass1');
+    type(/confirm password/i, 'validpass');
+    leave(/confirm password/i);
+    expect(errorUnder(/confirm password/i)).toHaveTextContent('Passwords don\'t match.');
+
+    type(/confirm password/i, 'validpass1');
+    leave(/confirm password/i);
+
+    expect(errorUnder(/confirm password/i)).not.toBeVisible();
+  });
+
+  it('on Create Account, shows every problem and sends nothing', () => {
+    renderRegisterPage();
+
+    fireEvent.click(screen.getByRole('button', { name: /create account/i }));
+
+    expect(errorUnder(/email/i)).toHaveTextContent('Enter your email address.');
+    expect(errorUnder(/^username$/i)).toHaveTextContent(/choose a username/i);
+    expect(errorUnder(/^password$/i)).toHaveTextContent(/at least 8 characters/i);
+    expect(errorUnder(/confirm password/i)).toHaveTextContent('Type your password again.');
+    expect(fetch).not.toHaveBeenCalled();
+  });
+});
 
 describe('RegisterPage validation', () => {
   beforeEach(() => {
@@ -87,7 +167,7 @@ describe('RegisterPage validation', () => {
     renderRegisterPage();
     await fillForm({ confirm: 'different1' });
 
-    expect(await screen.findByText(/passwords do not match/i)).toBeInTheDocument();
+    expect(await screen.findByText('Passwords don\'t match.')).toBeInTheDocument();
     expect(fetch).not.toHaveBeenCalled();
   });
 

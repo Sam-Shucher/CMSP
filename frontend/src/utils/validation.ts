@@ -36,6 +36,20 @@ export function validateUsername(username: string): ValidationResult {
   return { valid: true };
 }
 
+// Same rule the server applies (backend/src/utils/inputs.ts): one @, something
+// on each side, a dot in the domain, no spaces or quotes, 255 characters max.
+const EMAIL_MAX = 255;
+const EMAIL_PATTERN = /^[^\s@'"<>;]+@[^\s@'"<>;]+\.[^\s@'"<>;]+$/;
+
+export function validateEmail(email: string): ValidationResult {
+  const trimmed = email.trim();
+  if (!trimmed) return { valid: false, error: 'Enter your email address.' };
+  if (trimmed.length > EMAIL_MAX || !EMAIL_PATTERN.test(trimmed)) {
+    return { valid: false, error: 'Enter an email like name@example.com.' };
+  }
+  return { valid: true };
+}
+
 export function validatePassword(password: string): ValidationResult {
   if ([...password].length < PASSWORD_MIN_CHARS) {
     return { valid: false, error: `Password must be at least ${PASSWORD_MIN_CHARS} characters` };

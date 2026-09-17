@@ -139,7 +139,8 @@ describe('ProfilePage', () => {
     await userEvent.clear(nameInput);
     await userEvent.click(screen.getByRole('button', { name: /save/i }));
 
-    expect(await screen.findByText(/display name is required/i)).toBeInTheDocument();
+    expect(await screen.findByText(/display name can't be blank/i)).toBeInTheDocument();
+    expect(nameInput).toHaveAttribute('aria-invalid', 'true');
     expect(fetch).toHaveBeenCalledTimes(1); // only the initial GET, no PATCH
   });
 });

@@ -2,6 +2,9 @@ import React, { useEffect, useState, useCallback } from 'react';
 import { api } from '../api/client';
 import { useAuth } from '../App';
 import ConfirmDeleteModal from '../components/ConfirmDeleteModal';
+import FieldError from '../components/FieldError';
+import { useValidatedForm } from '../hooks/useValidatedForm';
+import { validateEmail } from '../utils/validation';
 
 // Shape of a row from GET /api/admin/approved-emails
 type ApprovedEmail = {
@@ -35,7 +38,9 @@ export default function AdminPage(): React.ReactElement {
   const activeCollectionName = collections.find(c => c.id === currentUser?.collectionId)?.name ?? '';
   const [emails, setEmails]     = useState<ApprovedEmail[]>([]);
   const [users, setUsers]       = useState<UserRow[]>([]);
-  const [newEmail, setNewEmail] = useState<string>('');
+  const invite = useValidatedForm({ email: '' }, {
+    email: value => (value.trim() ? validateEmail(value).error ?? null : 'Enter the email address to invite.'),
+  });
   const [error, setError]       = useState<string>('');
   const [success, setSuccess]   = useState<string>('');
   const [loading, setLoading]   = useState<boolean>(false);
@@ -67,10 +72,12 @@ export default function AdminPage(): React.ReactElement {
     e.preventDefault();
     setError('');
     setSuccess('');
+    if (!invite.validateAll()) return;
+    const newEmail = invite.values.email.trim();
     setLoading(true);
     try {
       await api('/api/admin/approved-emails', { method: 'POST', json: { email: newEmail } });
-      setNewEmail('');
+      invite.reset();
       setSuccess(`${newEmail} added to the invite list`);
       void fetchData(); // refresh the table
     } catch (err: unknown) {
@@ -130,18 +137,22 @@ export default function AdminPage(): React.ReactElement {
         </p>
 
         {/* Add email form */}
-        <form onSubmit={addEmail} style={{ display: 'flex', gap: '10px', marginBottom: '20px' }}>
-          <input
-            type="email"
-            value={newEmail}
-            onChange={(e: React.ChangeEvent<HTMLInputElement>) => setNewEmail(e.target.value)}
-            placeholder="friend@example.com"
-            required
-            style={{ flex: 1 }}
-          />
-          <button className="btn-primary" type="submit" disabled={loading} style={{ whiteSpace: 'nowrap' }}>
-            {loading ? 'Adding…' : 'Add Email'}
-          </button>
+        {/* noValidate: no browser popup — our own message shows under the box */}
+        <form onSubmit={addEmail} noValidate style={{ marginBottom: '20px' }}>
+          <div style={{ display: 'flex', gap: '10px' }}>
+            <input
+              {...invite.field('email', 'invite-email')}
+              type="email"
+              aria-label="Email to invite"
+              placeholder="friend@example.com"
+              required
+              style={{ flex: 1 }}
+            />
+            <button className="btn-primary" type="submit" disabled={loading} style={{ whiteSpace: 'nowrap' }}>
+              {loading ? 'Adding…' : 'Add Email'}
+            </button>
+          </div>
+          <FieldError id="invite-email" message={invite.errorFor('email')} />
         </form>
 
         {error   && <div className="error-msg"   style={{ marginBottom: '12px' }}>{error}</div>}

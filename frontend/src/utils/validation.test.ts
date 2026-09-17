@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { validateUsername, validatePassword } from './validation';
+import { validateUsername, validatePassword, validateEmail } from './validation';
 
 describe('validateUsername', () => {
   it('rejects usernames shorter than 4 characters', () => {
@@ -99,5 +99,29 @@ describe('validatePassword', () => {
     const result = validatePassword('short');
     expect(result.valid).toBe(false);
     expect(result.error).toMatch(/at least 8/i);
+  });
+});
+
+describe('validateEmail', () => {
+  it('asks for an email when blank', () => {
+    expect(validateEmail('')).toEqual({ valid: false, error: 'Enter your email address.' });
+    expect(validateEmail('   ')).toEqual({ valid: false, error: 'Enter your email address.' });
+  });
+
+  it.each(['abc', 'abc@', '@example.com', 'abc@example', 'a b@example.com', 'two@@example.com'])(
+    'gives a friendly example for "%s"',
+    (value) => {
+      expect(validateEmail(value)).toEqual({ valid: false, error: 'Enter an email like name@example.com.' });
+    }
+  );
+
+  it('accepts ordinary addresses, ignoring surrounding spaces', () => {
+    expect(validateEmail('me@example.com')).toEqual({ valid: true });
+    expect(validateEmail('  First.Last+minis@mail.co.uk ')).toEqual({ valid: true });
+  });
+
+  it('matches what the server accepts', () => {
+    expect(validateEmail(`${'a'.repeat(250)}@example.com`).valid).toBe(false); // over 255 characters
+    expect(validateEmail("x';--@example.com").valid).toBe(false);             // quotes and semicolons refused server-side
   });
 });
