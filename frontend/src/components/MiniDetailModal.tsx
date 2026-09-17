@@ -57,10 +57,9 @@ export default function MiniDetailModal({ mini, onClose }: MiniDetailModalProps)
           onClick={onClose}
           aria-label="Close"
           style={{
+            ...circleButtonStyle(26),
             position: 'absolute', top: '10px', right: '10px', zIndex: 1,
-            background: 'rgba(0,0,0,0.5)', border: 'none', borderRadius: '50%',
-            width: '32px', height: '32px', color: '#e8e0d0', fontSize: '18px',
-            cursor: 'pointer', lineHeight: 1,
+            fontSize: '16px',
           }}
         >
           ×
@@ -147,20 +146,37 @@ export default function MiniDetailModal({ mini, onClose }: MiniDetailModalProps)
   );
 }
 
+// The global `button` rule (src/styles/global.css) sets padding: 10px 20px
+// on every button. Left on a fixed-size circular button, that padding adds
+// on top of width/height (default box-sizing is content-box), turning the
+// circle into a wide oval — box-sizing: border-box plus padding: 0 here
+// keeps the box exactly `size`, and flex centering keeps the glyph centered
+// regardless of the character's own natural alignment/line-height.
+function circleButtonStyle(size: number): React.CSSProperties {
+  return {
+    boxSizing: 'border-box',
+    padding: 0,
+    width: `${size}px`,
+    height: `${size}px`,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    background: 'rgba(0,0,0,0.5)',
+    border: 'none',
+    borderRadius: '50%',
+    color: '#e8e0d0',
+    cursor: 'pointer',
+    lineHeight: 1,
+  };
+}
+
 function arrowStyle(side: 'left' | 'right'): React.CSSProperties {
   return {
+    ...circleButtonStyle(32),
     position: 'absolute',
     [side]: '10px',
     top: '50%',
     transform: 'translateY(-50%)',
-    background: 'rgba(0,0,0,0.5)',
-    border: 'none',
-    borderRadius: '50%',
-    width: '40px',
-    height: '40px',
-    color: '#e8e0d0',
-    fontSize: '24px',
-    cursor: 'pointer',
-    lineHeight: 1,
+    fontSize: '20px',
   };
 }
