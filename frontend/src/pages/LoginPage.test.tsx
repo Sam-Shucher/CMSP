@@ -40,6 +40,13 @@ describe('LoginPage — when problems are pointed out', () => {
   const emailInput = () => screen.getByLabelText(/email/i);
   const type = (input: HTMLElement, value: string) => fireEvent.change(input, { target: { value } });
 
+  // No email in this app, so the way back in is a person, not a reset link.
+  it('says how to get back in after forgetting a password', () => {
+    renderLoginPage();
+
+    expect(screen.getByText(/ask an admin of your group/i)).toBeInTheDocument();
+  });
+
   it('turns off the browser\'s own validation popups', () => {
     renderLoginPage();
     expect(document.querySelector('form')).toHaveAttribute('novalidate');

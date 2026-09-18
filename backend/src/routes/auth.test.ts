@@ -101,7 +101,7 @@ describe('login timing', () => {
     expect(res.status).toBe(401);
     expect(compare).toHaveBeenCalledTimes(1);
     const [, hash] = compare.mock.calls[0] as [string, string];
-    expect(hash).toMatch(/^\$2[aby]\$12\$/); // same cost as real account hashes
+    expect(hash).toMatch(/^\$2[aby]\$05\$/); // same cost as real account hashes (PASSWORD_COST in vitest.config.ts)
     compare.mockRestore();
   });
 });
@@ -260,9 +260,69 @@ describe('POST /api/auth/register', () => {
   });
 });
 
+describe('POST /api/auth/login — password handling', () => {
+  // The test suites run at bcrypt's cheapest cost (see vitest.config.ts), so
+  // "weaker than we use now" here means cost 4 against the configured 5.
+  const OLD_COST = 4;
+
+  it('re-hashes a password stored at a weaker cost, next time they sign in', async () => {
+    const oldHash = await bcrypt.hash('validpass1', OLD_COST);
+    execute
+      .mockResolvedValueOnce([[{ id: 1, username: 'owner', password_hash: oldHash, display_name: 'Owner' }]])
+      .mockResolvedValueOnce([[{ collection_id: 5, role: 'user' }]])
+      .mockResolvedValue([{ affectedRows: 1 }]);
+
+    const res = await request(app).post('/api/auth/login').send({ email: 'owner@example.com', password: 'validpass1' });
+
+    expect(res.status).toBe(200);
+    // The upgrade happens after the reply, so nobody waits through a second hash.
+    await vi.waitFor(() => {
+      expect(execute).toHaveBeenCalledWith(expect.stringContaining('UPDATE users SET password_hash'), expect.anything());
+    });
+    const update = execute.mock.calls.find(([sql]) => String(sql).includes('UPDATE users SET password_hash'))!;
+    const [newHash, userId] = update[1] as [string, number];
+    expect(newHash).toMatch(/^\$2[aby]\$05\$/); // the configured cost, not 04
+    expect(userId).toBe(1);
+    await expect(bcrypt.compare('validpass1', newHash)).resolves.toBe(true);
+  });
+
+  it('leaves a hash already at the current cost alone', async () => {
+    const currentHash = await bcrypt.hash('validpass1', 5);
+    execute
+      .mockResolvedValueOnce([[{ id: 1, username: 'owner', password_hash: currentHash, display_name: 'Owner' }]])
+      .mockResolvedValueOnce([[{ collection_id: 5, role: 'user' }]]);
+
+    await request(app).post('/api/auth/login').send({ email: 'owner@example.com', password: 'validpass1' });
+
+    expect(execute).not.toHaveBeenCalledWith(expect.stringContaining('UPDATE users SET password_hash'), expect.anything());
+  });
+
+  it('a wrong password never re-hashes anything', async () => {
+    const oldHash = await bcrypt.hash('validpass1', OLD_COST);
+    execute.mockResolvedValueOnce([[{ id: 1, username: 'owner', password_hash: oldHash, display_name: 'Owner' }]]);
+
+    await request(app).post('/api/auth/login').send({ email: 'owner@example.com', password: 'wrongpass1' });
+
+    expect(execute).not.toHaveBeenCalledWith(expect.stringContaining('UPDATE users SET password_hash'), expect.anything());
+  });
+
+  // If the stand-in hash were weaker than a real one, an unknown email would
+  // answer faster than a known one — which is how you enumerate accounts.
+  it('measures an unknown email against a hash of the same strength', async () => {
+    execute.mockResolvedValueOnce([[]]); // no such account
+    const compare = vi.spyOn(bcrypt, 'compare');
+
+    await request(app).post('/api/auth/login').send({ email: 'nobody@example.com', password: 'whatever12' });
+
+    const [, hashUsed] = compare.mock.calls[0] as [string, string];
+    expect(hashUsed).toMatch(/^\$2[aby]\$05\$/);
+    vi.restoreAllMocks();
+  });
+});
+
 describe('POST /api/auth/login', () => {
   it('auto-selects the collection when the user belongs to exactly one', async () => {
-    const passwordHash = await bcrypt.hash('validpass1', 4);
+    const passwordHash = await bcrypt.hash('validpass1', 5);
     execute
       .mockResolvedValueOnce([[{ id: 1, username: 'owner', password_hash: passwordHash, display_name: 'Owner' }]])
       .mockResolvedValueOnce([[{ collection_id: 5, role: 'user' }]]);
@@ -276,7 +336,7 @@ describe('POST /api/auth/login', () => {
   });
 
   it('reports the role the user holds in that one collection', async () => {
-    const passwordHash = await bcrypt.hash('validpass1', 4);
+    const passwordHash = await bcrypt.hash('validpass1', 5);
     execute
       .mockResolvedValueOnce([[{ id: 1, username: 'owner', password_hash: passwordHash, display_name: 'Owner' }]])
       .mockResolvedValueOnce([[{ collection_id: 5, role: 'admin' }]]);
@@ -287,7 +347,7 @@ describe('POST /api/auth/login', () => {
   });
 
   it('starts a new server-side session and puts only its id — not the role — in the cookie', async () => {
-    const passwordHash = await bcrypt.hash('validpass1', 4);
+    const passwordHash = await bcrypt.hash('validpass1', 5);
     execute
       .mockResolvedValueOnce([[{ id: 1, username: 'owner', password_hash: passwordHash, display_name: 'Owner' }]])
       .mockResolvedValueOnce([[{ collection_id: 5, role: 'admin' }]]);
@@ -302,7 +362,7 @@ describe('POST /api/auth/login', () => {
   });
 
   it('does not start a session for a wrong password', async () => {
-    const passwordHash = await bcrypt.hash('validpass1', 4);
+    const passwordHash = await bcrypt.hash('validpass1', 5);
     execute.mockResolvedValueOnce([[{ id: 1, username: 'owner', password_hash: passwordHash, display_name: 'Owner' }]]);
 
     await request(app).post('/api/auth/login').send({ email: 'owner@example.com', password: 'wrongpass1' });
@@ -311,7 +371,7 @@ describe('POST /api/auth/login', () => {
   });
 
   it('leaves the collection unselected when the user belongs to more than one', async () => {
-    const passwordHash = await bcrypt.hash('validpass1', 4);
+    const passwordHash = await bcrypt.hash('validpass1', 5);
     execute
       .mockResolvedValueOnce([[{ id: 1, username: 'owner', password_hash: passwordHash, role: 'user', display_name: 'Owner' }]])
       .mockResolvedValueOnce([[{ collection_id: 5 }, { collection_id: 6 }]]);
@@ -325,7 +385,7 @@ describe('POST /api/auth/login', () => {
   });
 
   it('logs in a user with no collections, leaving the collection unselected', async () => {
-    const passwordHash = await bcrypt.hash('validpass1', 4);
+    const passwordHash = await bcrypt.hash('validpass1', 5);
     execute
       .mockResolvedValueOnce([[{ id: 1, username: 'owner', password_hash: passwordHash, role: 'user', display_name: 'Owner' }]])
       .mockResolvedValueOnce([[]]);
@@ -339,7 +399,7 @@ describe('POST /api/auth/login', () => {
   });
 
   it('matches the email case-insensitively', async () => {
-    const passwordHash = await bcrypt.hash('validpass1', 4);
+    const passwordHash = await bcrypt.hash('validpass1', 5);
     execute
       .mockResolvedValueOnce([[{ id: 1, username: 'owner', password_hash: passwordHash, role: 'user', display_name: 'Owner' }]])
       .mockResolvedValueOnce([[{ collection_id: 5 }]]);
@@ -350,7 +410,7 @@ describe('POST /api/auth/login', () => {
   });
 
   it('rejects a wrong password with 401 and sets no cookie', async () => {
-    const passwordHash = await bcrypt.hash('validpass1', 4);
+    const passwordHash = await bcrypt.hash('validpass1', 5);
     execute.mockResolvedValueOnce([[{ id: 1, username: 'owner', password_hash: passwordHash, role: 'user', display_name: 'Owner' }]]);
 
     const res = await request(app)
@@ -362,7 +422,7 @@ describe('POST /api/auth/login', () => {
   });
 
   it('gives an unknown email the exact same response as a wrong password (no account enumeration)', async () => {
-    const passwordHash = await bcrypt.hash('validpass1', 4);
+    const passwordHash = await bcrypt.hash('validpass1', 5);
     execute.mockResolvedValueOnce([[{ id: 1, username: 'owner', password_hash: passwordHash, role: 'user', display_name: 'Owner' }]]);
     const wrongPassword = await request(app).post('/api/auth/login').send({ email: 'owner@example.com', password: 'wrongpass1' });
 
@@ -433,7 +493,7 @@ describe('GET /api/auth/me', () => {
     const res = await request(app).get('/api/auth/me').set('Cookie', authCookie({ ...USER, collectionId: 5 }));
 
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ userId: 1, username: 'owner', role: 'admin', collectionId: 5 });
+    expect(res.body).toEqual({ userId: 1, username: 'owner', role: 'admin', collectionId: 5, mustChangePassword: false });
     expect(execute).toHaveBeenCalledWith(expect.stringContaining('collection_memberships'), [5, 1]);
   });
 
@@ -442,7 +502,7 @@ describe('GET /api/auth/me', () => {
 
     const res = await request(app).get('/api/auth/me').set('Cookie', authCookie(USER));
 
-    expect(res.body).toEqual({ userId: 1, username: 'owner', role: 'user' });
+    expect(res.body).toEqual({ userId: 1, username: 'owner', role: 'user', mustChangePassword: false });
   });
 
   it('drops a collection the user was removed from, sending them back to the group picker', async () => {

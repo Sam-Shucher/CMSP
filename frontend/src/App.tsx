@@ -12,6 +12,7 @@ import CollectionPicker from './pages/CollectionPicker';
 import CartPage from './pages/CartPage';
 import LoansPage from './pages/LoansPage';
 import NotificationBell from './components/NotificationBell';
+import ChangePasswordForm from './components/ChangePasswordForm';
 
 // ---------------------------------------------------------------------------
 // Auth context
@@ -137,10 +138,27 @@ function AdminRoute({ children }: { children: React.ReactNode }): React.ReactEle
 // ---------------------------------------------------------------------------
 
 function AppBody({ groupNotice, onDismissGroupNotice }: { groupNotice?: string; onDismissGroupNotice: () => void }): React.ReactElement {
-  const { user, loading, collections, selectCollection } = useAuth();
+  const { user, loading, collections, selectCollection, refreshSession } = useAuth();
 
   if (loading) {
     return <div style={{ padding: '40px', textAlign: 'center', color: '#8a7d6a' }}>Loading…</div>;
+  }
+
+  // An admin has given them a temporary password: nothing else until they
+  // pick their own, so a password sent by text isn't left in use.
+  if (user?.mustChangePassword) {
+    return (
+      <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '24px' }}>
+        <div style={{ background: '#252219', border: '1px solid #3d3629', borderRadius: '10px', padding: '32px 36px', width: '100%', maxWidth: '420px' }}>
+          <h1 style={{ fontSize: '20px', color: '#c9a84c', marginBottom: '8px' }}>Choose a new password</h1>
+          <p style={{ color: '#8a7d6a', fontSize: '13px', marginBottom: '22px' }}>
+            You're signed in with a temporary password an admin set for you. Pick your own to carry on —
+            enter the temporary one as your current password.
+          </p>
+          <ChangePasswordForm onChanged={() => void refreshSession()} />
+        </div>
+      </div>
+    );
   }
 
   // Logged in, but no group selected yet — gate everything else on that

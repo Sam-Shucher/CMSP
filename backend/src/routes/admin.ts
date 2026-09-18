@@ -1,5 +1,8 @@
 import { Router } from 'express';
-import { rows, change } from '../db/query';
+import { rows, firstRow, change } from '../db/query';
+import { revokeAllSessions } from '../db/sessions';
+import { hashPassword, temporaryPassword as newTemporaryPassword } from '../utils/passwords';
+import { TEMP_PASSWORD_DAYS } from '../config';
 import { requireAuth } from '../middleware/requireAuth';
 import { requireAdmin } from '../middleware/requireAdmin';
 import { requireCollectionMembership } from '../middleware/requireCollectionMembership';
@@ -155,6 +158,49 @@ router.patch('/users/:id/role', route(async (req, res) => {
     return;
   }
   res.json({ message: 'Role updated' });
+}));
+
+// POST /api/admin/users/:id/reset-password
+// For someone locked out of their account. There's no email here, so this
+// hands the admin a temporary password to pass on in person or by text — the
+// member's phone number is right there in the table. It's shown once and
+// never stored in the clear; their sessions end immediately, and the app
+// makes them choose a new password before doing anything else.
+router.post('/users/:id/reset-password', route(async (req, res) => {
+  const userId = idFrom(req.params.id);
+  if (userId === req.user!.userId) {
+    res.status(400).json({ error: 'Change your own password from your profile instead' });
+    return;
+  }
+
+  const member = userId === null ? null : await firstRow<{ display_name: string; phone: string | null }>(
+    `SELECT u.display_name, u.phone FROM users u
+     JOIN collection_memberships cm ON cm.user_id = u.id
+     WHERE u.id = ? AND cm.collection_id = ?`,
+    [userId, req.collectionId!]
+  );
+  if (!member || userId === null) {
+    res.status(404).json({ error: 'User not found in this collection' });
+    return;
+  }
+
+  const temporaryPassword = newTemporaryPassword();
+  await change(
+    `UPDATE users
+     SET password_hash = ?, must_change_password = TRUE,
+         temp_password_expires_at = NOW() + INTERVAL ? DAY
+     WHERE id = ?`,
+    [await hashPassword(temporaryPassword), TEMP_PASSWORD_DAYS, userId]
+  );
+  // Whoever is signed in as them — including anyone who shouldn't be — is out.
+  await revokeAllSessions(userId);
+
+  res.json({
+    temporaryPassword,
+    displayName: member.display_name,
+    phone: member.phone,
+    expiresInDays: TEMP_PASSWORD_DAYS,
+  });
 }));
 
 // DELETE /api/admin/users/:id

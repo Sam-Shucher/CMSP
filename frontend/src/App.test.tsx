@@ -262,6 +262,38 @@ describe('App — switching groups in another tab', () => {
   });
 });
 
+describe('App — after an admin hands out a temporary password', () => {
+  it('insists on a new password before anything else, then lets them in', async () => {
+    let changed = false;
+    mockServer({
+      ...LOGGED_IN_ROUTES,
+      '/api/auth/me': () => jsonResponse({ ...USER, mustChangePassword: !changed }),
+      '/api/users/me/password': () => { changed = true; return jsonResponse({ message: 'Password changed' }); },
+    });
+    render(<App />);
+
+    // No app, no nav — just the change-password screen.
+    expect(await screen.findByRole('heading', { name: 'Choose a new password' })).toBeInTheDocument();
+    expect(screen.getByText(/temporary password/i)).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Browse' })).not.toBeInTheDocument();
+
+    await userEvent.type(screen.getByLabelText('Current password'), 'the-temporary-one');
+    await userEvent.type(screen.getByLabelText('New password'), 'a brand new password 2');
+    await userEvent.type(screen.getByLabelText('Confirm new password'), 'a brand new password 2');
+    await userEvent.click(screen.getByRole('button', { name: 'Change password' }));
+
+    expect(await screen.findByRole('link', { name: 'Browse' })).toBeInTheDocument();
+  });
+
+  it('leaves everyone else alone', async () => {
+    mockServer(LOGGED_IN_ROUTES);
+    render(<App />);
+
+    expect(await screen.findByRole('link', { name: 'Browse' })).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Choose a new password' })).not.toBeInTheDocument();
+  });
+});
+
 describe('App — when a session ends', () => {
   it('sends you back to sign in with an explanation when the server says your session is over', async () => {
     let sessionAlive = true;

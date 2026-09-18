@@ -38,6 +38,10 @@ CREATE TABLE IF NOT EXISTS users (
   phone         VARCHAR(20)  NULL,
   neighborhood  VARCHAR(100) NULL,
   role          ENUM('user', 'admin') DEFAULT 'user', -- legacy, unused: roles are per collection (collection_memberships.role)
+  -- Set when an admin hands out a temporary password: the app asks for a new
+  -- one before anything else, and the temporary one stops working after a week.
+  must_change_password     BOOLEAN NOT NULL DEFAULT FALSE,
+  temp_password_expires_at DATETIME NULL,
   created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 

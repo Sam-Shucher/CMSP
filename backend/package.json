@@ -9,6 +9,7 @@
     "migrate": "ts-node --transpile-only src/db/runMigrations.ts",
     "cleanup": "node dist/maintenance/cleanup.js",
     "cleanup:dev": "ts-node --transpile-only src/maintenance/cleanup.ts",
+    "bench:hash": "ts-node --transpile-only src/maintenance/benchHash.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:integration": "vitest run --config vitest.integration.config.ts",

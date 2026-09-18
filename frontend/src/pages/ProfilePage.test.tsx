@@ -16,6 +16,23 @@ const PROFILE = {
   role: 'user',
 };
 
+describe('ProfilePage — password', () => {
+  beforeEach(() => {
+    vi.stubGlobal('fetch', vi.fn());
+  });
+
+  it('offers a way to change your own password, and says what it does to other devices', async () => {
+    vi.mocked(fetch).mockResolvedValue({ ok: true, json: async () => PROFILE } as Response);
+
+    render(<MemoryRouter><ProfilePage /></MemoryRouter>);
+    await screen.findByDisplayValue('Owner Name');
+
+    expect(screen.getByRole('heading', { name: 'Password' })).toBeInTheDocument();
+    expect(screen.getByLabelText('Current password')).toBeInTheDocument();
+    expect(screen.getByText(/signs you out everywhere else/i)).toBeInTheDocument();
+  });
+});
+
 describe('ProfilePage', () => {
   beforeEach(() => {
     vi.stubGlobal('fetch', vi.fn());

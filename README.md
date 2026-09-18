@@ -74,6 +74,26 @@ UPDATE collection_memberships SET role = 'admin'
     AND collection_id = (SELECT id FROM collections WHERE name = 'Chicago');
 ```
 
+## Passwords
+
+- Stored as bcrypt hashes with a random salt per password — never in the clear,
+  never logged, never returned by any endpoint.
+- **How slow the hash is** is a setting: `PASSWORD_COST` in `backend/.env`
+  (default 12, chosen for the Pi). Higher is harder to crack and slower to sign
+  in — and the Pi is the machine that pays it, so measure there:
+  ```bash
+  npm --prefix backend run bench:hash
+  ```
+  Change the value, restart, and existing passwords are re-hashed at the new
+  cost as people sign in. Nobody has to reset anything.
+- **Forgotten passwords go through a person**, since the app sends no email: an
+  admin opens the Admin panel, clicks *Reset password* on that member's row, and
+  is shown a temporary password **once**, along with their phone number to text
+  it to. It works for 7 days (`TEMP_PASSWORD_DAYS`), signs that person out
+  everywhere immediately, and the app asks them to choose their own password
+  before they can do anything else. Everyone can also change their own password
+  from their profile at any time.
+
 ## Sessions and cleanup
 
 - Logins are server-side sessions: they end after **2 days unused** or **7 days**

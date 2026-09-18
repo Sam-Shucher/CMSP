@@ -94,7 +94,13 @@ export default function LoginPage(): React.ReactElement {
           </button>
         </form>
 
-        <p style={{ textAlign: 'center', marginTop: '20px', fontSize: '14px', color: '#8a7d6a' }}>
+        {/* There's no email in this app, so a reset goes through a person. */}
+        <p style={{ textAlign: 'center', marginTop: '20px', fontSize: '13px', color: '#8a7d6a' }}>
+          Forgotten your password? Ask an admin of your group — they can set a temporary
+          one and pass it on to you.
+        </p>
+
+        <p style={{ textAlign: 'center', marginTop: '12px', fontSize: '14px', color: '#8a7d6a' }}>
           Don't have an account?{' '}
           <Link to="/register">Register with your invite</Link>
         </p>

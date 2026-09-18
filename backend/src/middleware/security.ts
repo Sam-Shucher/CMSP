@@ -25,8 +25,9 @@ export function securityHeaders(req: Request, res: Response, next: NextFunction)
   res.setHeader('Content-Security-Policy', APP_CSP);
   res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
   if (process.env.NODE_ENV === 'production') {
-    // The site is only ever reached over HTTPS through Cloudflare.
-    res.setHeader('Strict-Transport-Security', 'max-age=15552000');
+    // The site is only ever reached over HTTPS through Cloudflare — including
+    // any subdomain, so a plain-http sibling can't be used to plant a cookie.
+    res.setHeader('Strict-Transport-Security', 'max-age=15552000; includeSubDomains');
   }
   next();
 }

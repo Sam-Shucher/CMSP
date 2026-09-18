@@ -33,6 +33,14 @@ type PendingDelete =
   | { kind: 'email'; id: number; label: string }
   | { kind: 'user'; id: number; label: string };
 
+// What the server hands back after a reset — shown once, then forgotten.
+type IssuedPassword = {
+  temporaryPassword: string;
+  displayName: string;
+  phone: string | null;
+  expiresInDays: number;
+};
+
 export default function AdminPage(): React.ReactElement {
   const { user: currentUser, collections } = useAuth();
   const activeCollectionName = collections.find(c => c.id === currentUser?.collectionId)?.name ?? '';
@@ -45,6 +53,8 @@ export default function AdminPage(): React.ReactElement {
   const [success, setSuccess]   = useState<string>('');
   const [loading, setLoading]   = useState<boolean>(false);
   const [pendingDelete, setPendingDelete] = useState<PendingDelete | null>(null);
+  const [pendingReset, setPendingReset] = useState<{ id: number; username: string } | null>(null);
+  const [issuedPassword, setIssuedPassword] = useState<IssuedPassword | null>(null);
 
   // Fetches both the invite list and the user list in parallel.
   // Wrapped in useCallback so it can be added to the useEffect dependency array without
@@ -99,6 +109,19 @@ export default function AdminPage(): React.ReactElement {
       setError(err instanceof Error ? err.message : 'Failed to change role');
     }
     void fetchData();
+  }
+
+  // Sets a temporary password for someone who's locked out, and shows it once.
+  async function confirmReset(): Promise<void> {
+    if (!pendingReset) return;
+    setError('');
+    setSuccess('');
+    try {
+      setIssuedPassword(await api<IssuedPassword>(`/api/admin/users/${pendingReset.id}/reset-password`, { method: 'POST' }));
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Failed to reset that password');
+    }
+    setPendingReset(null);
   }
 
   // Carries out whatever destructive action is pending, once the modal
@@ -241,6 +264,16 @@ export default function AdminPage(): React.ReactElement {
                         {u.role === 'admin' ? 'Demote' : 'Make Admin'}
                       </button>
                     )}
+                    {/* For someone locked out: hand them a temporary password in person */}
+                    {u.id !== currentUser?.userId && (
+                      <button
+                        className="btn-secondary"
+                        style={{ padding: '4px 10px', fontSize: '12px' }}
+                        onClick={() => setPendingReset({ id: u.id, username: u.username })}
+                      >
+                        Reset password
+                      </button>
+                    )}
                     {u.id !== currentUser?.userId && (
                       <button
                         className="btn-danger"
@@ -257,6 +290,43 @@ export default function AdminPage(): React.ReactElement {
           </tbody>
         </table>
       </section>
+
+      {pendingReset && (
+        <ConfirmDeleteModal
+          title="Reset password"
+          description={`This signs ${pendingReset.username} out everywhere and gives you a temporary password to pass on. They'll choose their own when they next sign in.`}
+          confirmPhrase={pendingReset.username}
+          confirmButtonLabel="Reset password"
+          onConfirm={() => void confirmReset()}
+          onCancel={() => setPendingReset(null)}
+        />
+      )}
+
+      {/* Shown once, right after a reset — the only time this password is readable */}
+      {issuedPassword && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}>
+          <div style={{ background: '#252219', border: '1px solid #3d3629', borderRadius: '10px', padding: '28px', width: '100%', maxWidth: '440px' }}>
+            <h3 style={{ fontSize: '17px', color: '#c9a84c', marginBottom: '10px' }}>
+              Temporary password for {issuedPassword.displayName}
+            </h3>
+            <p style={{ fontSize: '13px', color: '#8a7d6a', marginBottom: '16px' }}>
+              This is the only time it's shown. Text or tell it to them
+              {issuedPassword.phone ? ` on ${issuedPassword.phone}` : ' (no phone number on file)'} — it works for the
+              next {issuedPassword.expiresInDays} days, and the app asks them to choose their own when they sign in.
+            </p>
+            <p data-testid="temporary-password" style={{
+              fontFamily: 'JetBrains Mono, ui-monospace, monospace', fontSize: '20px', letterSpacing: '0.04em',
+              color: '#e8e0d0', background: '#1c1a17', border: '1px solid #3d3629', borderRadius: '6px',
+              padding: '14px', textAlign: 'center', marginBottom: '18px', userSelect: 'all',
+            }}>
+              {issuedPassword.temporaryPassword}
+            </p>
+            <button className="btn-primary" style={{ width: '100%', padding: '10px' }} onClick={() => setIssuedPassword(null)}>
+              Done
+            </button>
+          </div>
+        </div>
+      )}
 
       {pendingDelete && (
         <ConfirmDeleteModal

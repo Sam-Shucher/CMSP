@@ -46,6 +46,16 @@ export async function revokeAllSessions(userId: number): Promise<void> {
   await change('UPDATE sessions SET revoked_at = NOW() WHERE user_id = ? AND revoked_at IS NULL', [userId]);
 }
 
+// Everywhere but here: used when someone changes their own password, so any
+// other device — including whoever might have prompted the change — is signed
+// out, while the person doing it stays where they are.
+export async function revokeOtherSessions(userId: number, keepSessionId: string): Promise<void> {
+  await change(
+    'UPDATE sessions SET revoked_at = NOW() WHERE user_id = ? AND id <> ? AND revoked_at IS NULL',
+    [userId, keepSessionId]
+  );
+}
+
 // Housekeeping: delete sessions that ended (logged out, expired, or went idle)
 // more than a day ago. Returns how many were removed.
 export function purgeEndedSessions(): Promise<number> {

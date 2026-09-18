@@ -41,6 +41,8 @@ export default defineConfig({
       DB_PASS: DB.password,
       DB_NAME: E2E_DB,
       JWT_SECRET: 'e2e-only-secret-0123456789abcdef0123456789abcdef',
+      PASSWORD_COST: '4', // the seeded accounts are hashed this cheaply too; the real cost belongs in production
+
       UPLOADS_DIR,
     },
   },

@@ -199,6 +199,63 @@ describe('AdminPage — roles', () => {
   });
 });
 
+describe('AdminPage — resetting a forgotten password', () => {
+  const RESET = {
+    temporaryPassword: 'abcd-efgh-ijkl-mnop',
+    displayName: 'Grunt',
+    phone: '555-0101',
+    expiresInDays: 7,
+  };
+
+  it('hands over the temporary password to pass on, with their phone number', async () => {
+    mockAdminApi((url, init) => url === '/api/admin/users/2/reset-password' && init?.method === 'POST'
+      ? jsonResponse(RESET) : undefined);
+    renderAdminPage();
+    await screen.findByText('grunt');
+
+    await userEvent.click(within(rowFor('grunt')).getByRole('button', { name: /reset password/i }));
+    await userEvent.type(await screen.findByLabelText(/type/i), 'grunt');
+    await userEvent.click(within(screen.getByTestId('confirm-delete-modal')).getByRole('button', { name: /^reset password$/i }));
+
+    expect(await screen.findByText('abcd-efgh-ijkl-mnop')).toBeInTheDocument();
+    expect(screen.getByText(/555-0101/)).toBeInTheDocument();
+    expect(screen.getByText(/7 days/)).toBeInTheDocument();
+    expect(screen.getByText(/only time/i)).toBeInTheDocument(); // shown once
+  });
+
+  it('asks for the username first, so it can\'t happen on a stray click', async () => {
+    mockAdminApi();
+    renderAdminPage();
+    await screen.findByText('grunt');
+
+    await userEvent.click(within(rowFor('grunt')).getByRole('button', { name: /reset password/i }));
+
+    expect(within(await screen.findByTestId('confirm-delete-modal')).getByRole('button', { name: /^reset password$/i })).toBeDisabled();
+    expect(fetch).not.toHaveBeenCalledWith('/api/admin/users/2/reset-password', expect.anything());
+  });
+
+  it('offers nothing for your own row — you change yours in your profile', async () => {
+    mockAdminApi();
+    renderAdminPage();
+    await screen.findByText('grunt');
+
+    expect(within(rowFor('boss')).queryByRole('button', { name: /reset password/i })).not.toBeInTheDocument();
+  });
+
+  it('shows the server\'s refusal', async () => {
+    mockAdminApi((url, init) => url === '/api/admin/users/2/reset-password' && init?.method === 'POST'
+      ? errorResponse('User not found in this collection') : undefined);
+    renderAdminPage();
+    await screen.findByText('grunt');
+
+    await userEvent.click(within(rowFor('grunt')).getByRole('button', { name: /reset password/i }));
+    await userEvent.type(await screen.findByLabelText(/type/i), 'grunt');
+    await userEvent.click(within(screen.getByTestId('confirm-delete-modal')).getByRole('button', { name: /^reset password$/i }));
+
+    expect(await screen.findByText(/user not found in this collection/i)).toBeInTheDocument();
+  });
+});
+
 describe('AdminPage — your own row', () => {
   it('offers no role change for yourself, so you can\'t lock yourself out', async () => {
     mockAdminApi();

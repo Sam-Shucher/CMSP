@@ -4,6 +4,7 @@ import { api } from '../api/client';
 import { useAuth } from '../App';
 import { useValidatedForm } from '../hooks/useValidatedForm';
 import FieldError from '../components/FieldError';
+import ChangePasswordForm from '../components/ChangePasswordForm';
 
 type Profile = {
   id: number;
@@ -130,6 +131,14 @@ export default function ProfilePage(): React.ReactElement {
           {loading ? 'Saving…' : 'Save'}
         </button>
       </form>
+
+      <div style={{ marginTop: '32px', paddingTop: '20px', borderTop: '1px solid #3d3629' }}>
+        <h3 style={{ fontSize: '15px', color: '#c9a84c', marginBottom: '6px' }}>Password</h3>
+        <p style={{ fontSize: '13px', color: '#8a7d6a', marginBottom: '12px' }}>
+          Changing it signs you out everywhere else, but keeps you signed in here.
+        </p>
+        <ChangePasswordForm />
+      </div>
 
       <div style={{ marginTop: '32px', paddingTop: '20px', borderTop: '1px solid #3d3629' }}>
         <h3 style={{ fontSize: '15px', color: '#c9a84c', marginBottom: '6px' }}>Sessions</h3>

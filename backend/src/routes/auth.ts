@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import bcrypt from 'bcryptjs';
+import crypto from 'crypto';
 import jwt from 'jsonwebtoken';
 import { rows, firstRow, change, insert } from '../db/query';
 import { requireAuth, AuthRequest, JwtPayload } from '../middleware/requireAuth';
@@ -8,6 +8,7 @@ import { jwtSecret, SESSION_LIFETIME_DAYS } from '../config';
 import { rateLimit } from '../middleware/rateLimit';
 import { emailAddress, optionalText, positiveId, LIMITS } from '../utils/inputs';
 import { createSession, revokeSession, revokeAllSessions } from '../db/sessions';
+import { hashPassword, verifyPassword, needsRehash } from '../utils/passwords';
 
 const router = Router();
 
@@ -28,17 +29,24 @@ const loginLimitByAccount = rateLimit({
 const loginLimitByAddress = rateLimit({ windowMs: FIFTEEN_MINUTES, max: 30, key: req => `login-ip:${req.ip}` });
 const registerLimitByAddress = rateLimit({ windowMs: ONE_HOUR, max: 10, key: req => `register-ip:${req.ip}` });
 
-// A real bcrypt hash (cost 12, same as account passwords) of a throwaway value.
-// Logging in with an unknown email still runs a full comparison against this,
-// so the reply takes as long as for a real account and can't reveal which
-// emails have accounts.
-const TIMING_EQUALIZER_HASH = '$2a$12$XJBk3T0MREeco56ZpDVDuOCuiX9O1I9W0cTEAPLrUOziiddPMhTTu';
+// Logging in with an unknown email still runs a full comparison — against a
+// hash of a throwaway value, made at the same cost as everyone's real one — so
+// the reply takes just as long and can't reveal which emails have accounts.
+// Built on the first login rather than at startup, so a slow machine isn't
+// held up booting, and cached for the life of the process.
+let equalizerHash: Promise<string> | null = null;
+function timingEqualizer(): Promise<string> {
+  equalizerHash ??= hashPassword(crypto.randomUUID());
+  return equalizerHash;
+}
 
 interface UserRow {
   id: number;
   username: string;
   password_hash: string;
   display_name: string;
+  must_change_password: number;
+  temp_password_expired: number | null; // 1 once a temporary password has run out
 }
 
 interface MembershipRow {
@@ -140,9 +148,9 @@ router.post('/register', registerLimitByAddress, async (req: Request, res: Respo
       return;
     }
 
-    // bcrypt rounds=12 takes ~250ms to hash — slow enough to deter brute-force attacks
-    // but fast enough that users don't notice the delay at login
-    const passwordHash = await bcrypt.hash(password, 12);
+    // Deliberately slow (see utils/passwords.ts): every guess against a stolen
+    // database costs an attacker the same work it costs us once here.
+    const passwordHash = await hashPassword(password);
 
     const account = await insert(
       'INSERT INTO users (email, username, password_hash, display_name, phone, neighborhood) VALUES (?, ?, ?, ?, ?, ?)',
@@ -169,6 +177,14 @@ router.post('/register', registerLimitByAddress, async (req: Request, res: Respo
   }
 });
 
+async function upgradeStoredHash(userId: number, password: string): Promise<void> {
+  try {
+    await change('UPDATE users SET password_hash = ? WHERE id = ?', [await hashPassword(password), userId]);
+  } catch (err: unknown) {
+    console.error('Upgrading a stored password hash failed:', err);
+  }
+}
+
 // POST /api/auth/login
 // Verifies email + password, starts a server-side session, and issues the cookie.
 router.post('/login', loginLimitByAddress, loginLimitByAccount, async (req: Request, res: Response): Promise<void> => {
@@ -187,17 +203,26 @@ router.post('/login', loginLimitByAddress, loginLimitByAccount, async (req: Requ
 
   try {
     const user = await firstRow<UserRow>(
-      'SELECT id, username, password_hash, display_name FROM users WHERE email = ?',
+      `SELECT id, username, password_hash, display_name, must_change_password,
+              temp_password_expires_at < NOW() AS temp_password_expired
+       FROM users WHERE email = ?`,
       [email.trim().toLowerCase()]
     );
 
-    // Always run exactly one full bcrypt comparison — against the dummy hash
-    // when the email has no account — so both cases take the same time.
-    const passwordMatches = await bcrypt.compare(password, user?.password_hash ?? TIMING_EQUALIZER_HASH);
+    // Always run exactly one full comparison — against the stand-in hash when
+    // the email has no account — so both cases take the same time.
+    const passwordMatches = await verifyPassword(password, user?.password_hash ?? await timingEqualizer());
     if (!user || !passwordMatches) {
       // Same error for "no such user" and "wrong password", so the message
       // can't be used to find out which emails have accounts.
       res.status(401).json({ error: 'Invalid email or password' });
+      return;
+    }
+
+    // The password is right, but if it's a temporary one an admin set, it may
+    // have run out — they need a fresh one rather than a way in.
+    if (Number(user.temp_password_expired) === 1) {
+      res.status(401).json({ error: 'That temporary password has expired — ask an admin to set a new one.' });
       return;
     }
 
@@ -219,7 +244,15 @@ router.post('/login', loginLimitByAddress, loginLimitByAccount, async (req: Requ
       role: roleName(only?.role),
       displayName: display_name,
       collectionId: only?.collection_id,
+      // The app asks for a new password before letting them do anything else.
+      mustChangePassword: Boolean(user.must_change_password),
     });
+
+    // Their password is right, so we hold it for the only moment we ever will:
+    // if it was stored at a weaker cost than we use now, upgrade it. After the
+    // reply, so nobody waits through a second hash, and best-effort — a failed
+    // upgrade is logged and simply retried at their next sign-in.
+    if (needsRehash(user.password_hash)) void upgradeStoredHash(id, password);
   } catch (err: unknown) {
     console.error(err);
     res.status(500).json({ error: 'Server error' });
@@ -265,8 +298,8 @@ router.post('/logout-all', requireAuth, async (req: AuthRequest, res: Response):
 router.get('/me', requireAuth, async (req: AuthRequest, res: Response): Promise<void> => {
   const { userId, collectionId } = req.user!;
   try {
-    const me = await firstRow<{ username: string; collection_role: string | null }>(
-      `SELECT u.username, cm.role AS collection_role
+    const me = await firstRow<{ username: string; collection_role: string | null; must_change_password: number }>(
+      `SELECT u.username, u.must_change_password, cm.role AS collection_role
        FROM users u
        LEFT JOIN collection_memberships cm ON cm.user_id = u.id AND cm.collection_id = ?
        WHERE u.id = ?`,
@@ -282,6 +315,7 @@ router.get('/me', requireAuth, async (req: AuthRequest, res: Response): Promise<
       userId,
       username: me.username,
       role: stillMember ? roleName(me.collection_role) : 'user',
+      mustChangePassword: Boolean(me.must_change_password),
       ...(stillMember ? { collectionId } : {}),
     });
   } catch (err: unknown) {

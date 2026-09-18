@@ -97,6 +97,11 @@ SQL step for the person deploying this.
   add a new place that stores upload paths, add it to the sweep's in-use query.
 - **Secrets:** `JWT_SECRET` comes from `config.ts` (no fallback). Nothing secret
   goes in git; `backend/.env` is ignored.
+- **Passwords:** only `utils/passwords.ts` hashes or checks them (bcrypt, cost
+  from `PASSWORD_COST`, salted per password). Weaker old hashes are upgraded
+  after a successful sign-in. A locked-out member gets a temporary password from
+  an admin (`POST /api/admin/users/:id/reset-password`), which forces a change at
+  next sign-in; see BACKLOG.md for the planned move to scrypt.
 - `backend/src/accessControl.test.ts` reads every route from the live app and
   checks it rejects anonymous, forged, non-member, and non-admin callers. A new
   public route must be added to its `PUBLIC` list deliberately.

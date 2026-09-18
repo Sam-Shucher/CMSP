@@ -78,6 +78,9 @@ export type User = {
   username: string;
   role: string;      // 'user' | 'admin' — the role in the ACTIVE collection; 'user' until one is chosen
   collectionId?: number; // absent until a collection is selected — see /api/auth/select-collection
+  // True when an admin has set a temporary password: the app asks for a new
+  // one before anything else.
+  mustChangePassword?: boolean;
 };
 
 export type CollectionRole = 'user' | 'admin';

@@ -52,6 +52,11 @@ export function jwtSecret(env: Env = process.env): string {
 export const SESSION_IDLE_DAYS = 2;
 export const SESSION_LIFETIME_DAYS = 7;
 
+// How long a temporary password from an admin stays usable. Long enough for a
+// text message to go unread over a weekend, short enough that an old message
+// isn't a permanent key to someone's account.
+export const TEMP_PASSWORD_DAYS = 7;
+
 // How long a notification sticks around after it's been read. The bell shows a
 // countdown, and the hourly sweep deletes them once it runs out. Marking one
 // unread again stops the clock; unread notifications are never removed.

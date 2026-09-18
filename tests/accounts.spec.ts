@@ -127,6 +127,60 @@ test.describe('invites and registration', () => {
     await expect(visitor.getByText('Chicago', { exact: true })).toBeVisible();
   });
 
+  // There's no email in this app: someone locked out asks an admin, who sets a
+  // temporary password and passes it on — then the app insists on a new one.
+  test('an admin resets a forgotten password, and the person chooses their own', async ({ as, guest }) => {
+    const ada = await as('ada');
+    await ada.goto('/');
+    await ada.getByRole('button', { name: /^Chicago/ }).click();
+
+    // Someone new, so this test doesn't disturb the other seeded people.
+    await ada.goto('/admin');
+    await ada.getByPlaceholder('friend@example.com').fill('forgetful@e2e.test');
+    await ada.getByRole('button', { name: /Add Email/i }).click();
+    await expect(ada.getByText(/forgetful@e2e.test added/i)).toBeVisible();
+
+    const newcomer = await guest();
+    await newcomer.goto('/register');
+    await newcomer.getByLabel(/Email/).fill('forgetful@e2e.test');
+    await newcomer.getByLabel('Username').fill('forgetful');
+    await newcomer.getByLabel(/^Password$/).fill('the first password 1');
+    await newcomer.getByLabel(/Confirm Password/).fill('the first password 1');
+    await newcomer.getByRole('button', { name: 'Create Account' }).click();
+    await expect(newcomer.getByRole('heading', { name: 'The Collection' })).toBeVisible();
+
+    // They forget it. Ada resets, and reads the temporary one off her screen.
+    await ada.reload();
+    const row = ada.getByRole('row').filter({ hasText: 'forgetful' });
+    await row.getByRole('button', { name: 'Reset password' }).click();
+    await ada.getByLabel(/Type/).fill('forgetful');
+    await ada.getByTestId('confirm-delete-modal').getByRole('button', { name: 'Reset password' }).click();
+    const temporary = (await ada.getByTestId('temporary-password').innerText()).trim();
+    expect(temporary).toMatch(/^[a-zA-Z0-9-]{16,}$/);
+    await expect(ada.getByText(/only time it's shown/i)).toBeVisible();
+
+    // Their old session is gone, and the old password no longer works.
+    await newcomer.reload();
+    await expect(newcomer.getByRole('button', { name: 'Sign In' })).toBeVisible();
+    await newcomer.getByLabel('Email').fill('forgetful@e2e.test');
+    await newcomer.getByLabel('Password').fill('the first password 1');
+    await newcomer.getByRole('button', { name: 'Sign In' }).click();
+    await expect(newcomer.getByText('Invalid email or password')).toBeVisible();
+
+    // The temporary one gets them in, but no further until they choose a new one.
+    await newcomer.getByLabel('Password').fill(temporary);
+    await newcomer.getByRole('button', { name: 'Sign In' }).click();
+    await expect(newcomer.getByRole('heading', { name: 'Choose a new password' })).toBeVisible();
+    await expect(newcomer.getByRole('link', { name: 'Browse' })).toHaveCount(0);
+
+    await newcomer.getByLabel('Current password').fill(temporary);
+    await newcomer.getByLabel('New password', { exact: true }).fill('a second password 2');
+    await newcomer.getByLabel('Confirm new password').fill('a second password 2');
+    await newcomer.getByRole('button', { name: 'Change password' }).click();
+
+    await expect(newcomer.getByRole('heading', { name: 'The Collection' })).toBeVisible();
+  });
+
   test('an email that isn\'t invited can\'t register', async ({ guest }) => {
     const visitor = await guest();
     await visitor.goto('/register');
