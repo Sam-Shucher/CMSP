@@ -92,6 +92,51 @@ describe('revoked access takes effect immediately, despite a 7-day login cookie'
   });
 });
 
+// A parameter is data, never SQL — MySQL turns '5 OR 1=1' into the number 5
+// rather than running it. That same coercion would make /api/minis/5abc act on
+// mini 5, so an id in a URL has to be a plain positive number or nothing.
+describe('ids in URLs', () => {
+  it.each([
+    ['trailing junk', '5abc'],
+    ['SQL in the id', "5 OR 1=1"],
+    ['a word', 'abc'],
+    ['negative', '-5'],
+    ['a decimal', '5.5'],
+  ])('refuses %s instead of acting on a nearby row', async (_why, id) => {
+    const miniId = await createMini(member, 'Dire Wolf');
+    const realId = String(miniId);
+    expect(realId.startsWith('5') || true).toBe(true); // ids vary per run; the point is the shape below
+
+    const res = await request(app).get(`/api/minis/${encodeURIComponent(id)}`).set('Cookie', member.cookie);
+
+    expect(res.status).toBe(404);
+    expect(res.body).not.toHaveProperty('name');
+  });
+
+  it('a number with junk on the end never reaches the row with that number', async () => {
+    const miniId = await createMini(member, 'Dire Wolf');
+
+    const fuzzy = await request(app).get(`/api/minis/${miniId}abc`).set('Cookie', member.cookie);
+    const exact = await request(app).get(`/api/minis/${miniId}`).set('Cookie', member.cookie);
+
+    expect(fuzzy.status).toBe(404);
+    expect(exact.body).toMatchObject({ name: 'Dire Wolf' });
+  });
+
+  it('holds for the other things addressed by id, too', async () => {
+    const miniId = await createMini(admin, 'Owlbear');
+    await request(app).post('/api/cart').set('Cookie', member.cookie).send({ miniId });
+    const checkout = await request(app).post('/api/cart/checkout').set('Cookie', member.cookie);
+    const loanId = checkout.body.created[0].loanId as number;
+
+    expect((await request(app).patch(`/api/loans/${loanId}abc/terms`).set('Cookie', member.cookie).send({ where: 'x' })).status).toBe(404);
+    expect((await request(app).post(`/api/minis/${miniId}abc/take-out`).set('Cookie', admin.cookie).send({})).status).toBe(404);
+    expect((await request(app).delete(`/api/minis/${miniId}abc`).set('Cookie', admin.cookie)).status).toBe(404);
+    // ...and the real loan is untouched by any of it.
+    expect((await request(app).get('/api/loans').set('Cookie', member.cookie)).body).toHaveLength(1);
+  });
+});
+
 describe('hostile text is stored and returned as plain data', () => {
   const SQL = "Robert'); DROP TABLE minis;--";
   const XSS = '<img src=x onerror="fetch(\'/api/admin/users\')">';

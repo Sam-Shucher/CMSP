@@ -4,7 +4,7 @@ import path from 'path';
 import fs from 'fs';
 import { rows, firstRow, change, insert } from '../db/query';
 import { requireAuth } from '../middleware/requireAuth';
-import { route } from '../utils/route';
+import { route, idFrom } from '../utils/route';
 import { requireCollectionMembership, CollectionRequest } from '../middleware/requireCollectionMembership';
 import { matchesSearch } from '../utils/search';
 import { activeLoanStatusSql, miniStatusFrom } from '../utils/miniStatus';
@@ -372,9 +372,10 @@ router.get('/tags', route(async (req, res) => {
 // a different collection returns 404, identical to a nonexistent id, so an
 // id guess can't be used to even confirm another collection's mini exists.
 router.get('/:id', route(async (req, res) => {
-  const mini = await firstRow<MiniRow>(
+  const miniId = idFrom(req.params.id);
+  const mini = miniId === null ? null : await firstRow<MiniRow>(
     `${MINI_SELECT} WHERE m.id = ? AND m.collection_id = ? GROUP BY m.id`,
-    [req.params.id, req.collectionId!]
+    [miniId, req.collectionId!]
   );
 
   if (!mini) {
@@ -418,16 +419,16 @@ router.post('/', discardUploadsIfRejected, upload.array('images', MAX_IMAGES), h
 // paths (from the mini's current photos) to keep; any new files in the
 // `images` field are appended after them, capped at MAX_IMAGES total.
 router.patch('/:id', discardUploadsIfRejected, upload.array('images', MAX_IMAGES), handleUploadError, verifyImageContents, route(async (req, res) => {
-  const miniId = req.params.id;
+  const miniId = idFrom(req.params.id);
   const existingImages = (req.body as Record<string, unknown> | undefined)?.existingImages;
   const newFiles = (req.files as Express.Multer.File[] | undefined) ?? [];
 
-  const owned = await firstRow<OwnerRow>(
+  const owned = miniId === null ? null : await firstRow<OwnerRow>(
     'SELECT owner_id FROM minis WHERE id = ? AND collection_id = ?',
     [miniId, req.collectionId!]
   );
 
-  if (!owned) {
+  if (!owned || miniId === null) {
     res.status(404).json({ error: 'Mini not found' });
     return;
   }
@@ -482,8 +483,8 @@ router.patch('/:id', discardUploadsIfRejected, upload.array('images', MAX_IMAGES
     [name, description, price, miniId]
   );
 
-  await setTags(Number(miniId), tags);
-  await setImages(Number(miniId), keptPaths, newFiles);
+  await setTags(miniId, tags);
+  await setImages(miniId, keptPaths, newFiles);
 
   for (const droppedPath of droppedPaths) {
     const oldFile = path.join(uploadsDir, path.basename(droppedPath));
@@ -500,10 +501,11 @@ router.patch('/:id', discardUploadsIfRejected, upload.array('images', MAX_IMAGES
 // ---------------------------------------------------------------------------
 
 async function findOwnMini(req: CollectionRequest, res: Response): Promise<OwnerRow | null> {
-  const mini = await firstRow<OwnerRow>(
+  const miniId = idFrom(req.params.id);
+  const mini = miniId === null ? null : await firstRow<OwnerRow>(
     `SELECT m.owner_id, ${activeLoanStatusSql('m')} AS active_loan_status, m.on_quest_since
      FROM minis m WHERE m.id = ? AND m.collection_id = ?`,
-    [req.params.id, req.collectionId!]
+    [miniId, req.collectionId!]
   );
   if (!mini) {
     res.status(404).json({ error: 'Mini not found' });
@@ -517,7 +519,7 @@ async function findOwnMini(req: CollectionRequest, res: Response): Promise<Owner
 }
 
 // The mini as the browser expects it, freshly read back after a change.
-async function sendMini(res: Response, miniId: string): Promise<void> {
+async function sendMini(res: Response, miniId: number): Promise<void> {
   const mini = await firstRow<MiniRow>(`${MINI_SELECT} WHERE m.id = ? GROUP BY m.id`, [miniId]);
   res.json(mini === null ? null : serializeMini(mini));
 }
@@ -532,6 +534,7 @@ router.post('/:id/take-out', route(async (req, res) => {
 
   const mini = await findOwnMini(req, res);
   if (!mini) return;
+  const miniId = idFrom(req.params.id)!; // findOwnMini already refused anything else
 
   if (mini.active_loan_status === 'negotiating') {
     res.status(409).json({ error: 'Someone has requested this mini — cancel or finish that request first' });
@@ -555,19 +558,20 @@ router.post('/:id/take-out', route(async (req, res) => {
        AND NOT EXISTS (
          SELECT 1 FROM loans l WHERE l.mini_id = m.id AND l.status IN ('negotiating', 'adventuring')
        )`,
-    [backBy.value, req.params.id, req.collectionId!, req.user!.userId]
+    [backBy.value, miniId, req.collectionId!, req.user!.userId]
   );
   if (takenOut === 0) {
     res.status(409).json({ error: 'This mini just became unavailable — try again' });
     return;
   }
-  await sendMini(res, req.params.id);
+  await sendMini(res, miniId);
 }));
 
 // POST /api/minis/:id/bring-back
 router.post('/:id/bring-back', route(async (req, res) => {
   const mini = await findOwnMini(req, res);
   if (!mini) return;
+  const miniId = idFrom(req.params.id)!; // findOwnMini already refused anything else
 
   if (!mini.on_quest_since) {
     res.status(409).json({ error: 'This mini isn\'t on a quest' });
@@ -577,15 +581,15 @@ router.post('/:id/bring-back', route(async (req, res) => {
   const broughtBack = await change(
     `UPDATE minis SET on_quest_since = NULL, on_quest_until = NULL
      WHERE id = ? AND collection_id = ? AND owner_id = ? AND on_quest_since IS NOT NULL`,
-    [req.params.id, req.collectionId!, req.user!.userId]
+    [miniId, req.collectionId!, req.user!.userId]
   );
   if (broughtBack === 0) {
     res.status(409).json({ error: 'This mini isn\'t on a quest' });
     return;
   }
   // Back and free — the first person in line (if any) is checked out now.
-  await promoteNextHold(Number(req.params.id));
-  await sendMini(res, req.params.id);
+  await promoteNextHold(miniId);
+  await sendMini(res, miniId);
 }));
 
 // DELETE /api/minis/:id
@@ -594,15 +598,15 @@ router.post('/:id/bring-back', route(async (req, res) => {
 // automatically via ON DELETE CASCADE; the photo files themselves still
 // need cleaning up from disk here.
 router.delete('/:id', route(async (req, res) => {
-  const miniId = req.params.id;
+  const miniId = idFrom(req.params.id);
 
-  const mini = await firstRow<OwnerRow>(
+  const mini = miniId === null ? null : await firstRow<OwnerRow>(
     `SELECT m.owner_id, ${activeLoanStatusSql('m')} AS active_loan_status
      FROM minis m WHERE m.id = ? AND m.collection_id = ?`,
     [miniId, req.collectionId!]
   );
 
-  if (!mini) {
+  if (!mini || miniId === null) {
     res.status(404).json({ error: 'Mini not found' });
     return;
   }

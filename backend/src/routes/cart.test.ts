@@ -64,7 +64,7 @@ describe('cart routes — input', () => {
 
     await request(app).delete('/api/cart/7').set('Cookie', authCookie(BORROWER));
 
-    expect(execute).toHaveBeenCalledWith(expect.stringContaining('DELETE FROM cart_items'), [BORROWER.userId, '7']);
+    expect(execute).toHaveBeenCalledWith(expect.stringContaining('DELETE FROM cart_items'), [BORROWER.userId, 7]);
   });
 });
 

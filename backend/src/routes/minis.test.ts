@@ -179,7 +179,7 @@ describe('GET /api/minis/:id', () => {
     expect(res.status).toBe(404);
     expect(execute).toHaveBeenCalledWith(
       expect.stringContaining('m.collection_id = ?'),
-      ['42', COLLECTION_B]
+      [42, COLLECTION_B]
     );
   });
 });
@@ -233,7 +233,7 @@ describe('taking your own mini on a quest', () => {
     expect(res.status).toBe(200);
     expect(res.body.status).toBe('on_quest');
     const update = execute.mock.calls.find(([sql]) => String(sql).includes('SET on_quest_since = NOW()'))!;
-    expect(update[1]).toEqual([null, '42', COLLECTION_A, OWNER.userId]);
+    expect(update[1]).toEqual([null, 42, COLLECTION_A, OWNER.userId]);
   });
 
   it('saves an optional back-by date', async () => {
@@ -284,7 +284,7 @@ describe('taking your own mini on a quest', () => {
     const res = await request(app).post('/api/minis/42/take-out').set('Cookie', authCookie(OWNER)).send({});
 
     expect(res.status).toBe(404);
-    expect(execute).toHaveBeenCalledWith(expect.stringContaining('collection_id = ?'), ['42', COLLECTION_A]);
+    expect(execute).toHaveBeenCalledWith(expect.stringContaining('collection_id = ?'), [42, COLLECTION_A]);
   });
 
   it.each([
@@ -337,7 +337,7 @@ describe('taking your own mini on a quest', () => {
     expect(res.body.status).toBe('available');
     expect(execute).toHaveBeenCalledWith(
       expect.stringContaining('SET on_quest_since = NULL, on_quest_until = NULL'),
-      ['42', COLLECTION_A, OWNER.userId]
+      [42, COLLECTION_A, OWNER.userId]
     );
   });
 
@@ -936,7 +936,7 @@ describe('PATCH /api/minis/:id — photos', () => {
     expect(res.status).toBe(404);
     expect(execute).toHaveBeenCalledWith(
       expect.stringContaining('collection_id'),
-      ['42', COLLECTION_B]
+      [42, COLLECTION_B]
     );
   });
 
@@ -1047,7 +1047,7 @@ describe('DELETE /api/minis/:id', () => {
       .set('Cookie', authCookie(OWNER));
 
     expect(res.status).toBe(200);
-    expect(execute).toHaveBeenCalledWith(expect.stringContaining('DELETE FROM minis'), ['42']);
+    expect(execute).toHaveBeenCalledWith(expect.stringContaining('DELETE FROM minis'), [42]);
   });
 
   it('does not let a demoted admin (old "admin" cookie) delete someone else\'s mini', async () => {

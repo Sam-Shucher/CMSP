@@ -1,7 +1,7 @@
 import { Router, Response } from 'express';
 import { rows, firstRow, change } from '../db/query';
 import { requireAuth } from '../middleware/requireAuth';
-import { route } from '../utils/route';
+import { route, idFrom } from '../utils/route';
 import { requireCollectionMembership, CollectionRequest } from '../middleware/requireCollectionMembership';
 import {
   LoanSnapshot, LoanTerms, LoanApprovals, LoanStatus, RuleFailure,
@@ -102,7 +102,8 @@ function serializeLoan(row: LoanRow, userId: number) {
   };
 }
 
-async function findLoan(req: CollectionRequest, loanId: string | number): Promise<LoanRow | null> {
+async function findLoan(req: CollectionRequest, loanId: number | null): Promise<LoanRow | null> {
+  if (loanId === null) return null;
   const userId = req.user!.userId;
   return firstRow<LoanRow>(`${LOAN_SELECT} AND l.id = ?`, [req.collectionId!, userId, userId, loanId]);
 }
@@ -143,7 +144,7 @@ const NOT_NEGOTIATING: RuleFailure = { ok: false, status: 409, error: 'This loan
 // collection); route() turns anything unexpected into a logged 500.
 function withLoan(handler: (req: CollectionRequest, res: Response, row: LoanRow) => Promise<void>) {
   return route(async (req, res) => {
-    const row = await findLoan(req, req.params.id);
+    const row = await findLoan(req, idFrom(req.params.id));
     if (!row) {
       res.status(404).json({ error: 'Loan not found' });
       return;

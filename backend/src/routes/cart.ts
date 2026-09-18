@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { rows, firstRow, change, insert } from '../db/query';
 import { requireAuth } from '../middleware/requireAuth';
 import { requireCollectionMembership } from '../middleware/requireCollectionMembership';
-import { route } from '../utils/route';
+import { route, idFrom } from '../utils/route';
 import { activeLoanStatusSql, miniStatusFrom } from '../utils/miniStatus';
 import * as events from '../services/loanEvents';
 
@@ -88,7 +88,10 @@ router.post('/', route(async (req, res) => {
 
 // DELETE /api/cart/:miniId
 router.delete('/:miniId', route(async (req, res) => {
-  await change('DELETE FROM cart_items WHERE user_id = ? AND mini_id = ?', [req.user!.userId, req.params.miniId]);
+  const miniId = idFrom(req.params.miniId);
+  if (miniId !== null) {
+    await change('DELETE FROM cart_items WHERE user_id = ? AND mini_id = ?', [req.user!.userId, miniId]);
+  }
   res.json({ message: 'Removed from cart' });
 }));
 

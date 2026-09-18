@@ -124,7 +124,7 @@ describe('loans — scoping', () => {
     expect(res.status).toBe(404);
     expect(execute).toHaveBeenCalledWith(
       expect.stringContaining('l.collection_id = ? AND (l.borrower_id = ? OR l.owner_id = ?)'),
-      [10, BORROWER.userId, BORROWER.userId, '5']
+      [10, BORROWER.userId, BORROWER.userId, 5]
     );
   });
 

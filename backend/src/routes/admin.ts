@@ -105,9 +105,10 @@ router.post('/approved-emails', route(async (req, res) => {
 // collection's invite list by guessing an id). Does NOT delete the user if
 // they've already registered — it just prevents new registrations with it.
 router.delete('/approved-emails/:id', route(async (req, res) => {
-  const removed = await change(
+  const inviteId = idFrom(req.params.id);
+  const removed = inviteId === null ? 0 : await change(
     'DELETE FROM approved_emails WHERE id = ? AND collection_id = ?',
-    [req.params.id, req.collectionId!]
+    [inviteId, req.collectionId!]
   );
 
   if (removed === 0) {
@@ -139,19 +140,20 @@ router.get('/users', route(async (req, res) => {
 // out, and guarantees the collection always keeps at least one admin (you).
 router.patch('/users/:id/role', route(async (req, res) => {
   const role = (req.body as { role?: unknown } | undefined)?.role;
+  const userId = idFrom(req.params.id);
 
   if (role !== 'user' && role !== 'admin') {
     res.status(400).json({ error: 'Role must be "user" or "admin"' });
     return;
   }
-  if (Number(req.params.id) === req.user!.userId) {
+  if (userId === req.user!.userId) {
     res.status(400).json({ error: 'You cannot change your own role' });
     return;
   }
 
-  const updated = await change(
+  const updated = userId === null ? 0 : await change(
     'UPDATE collection_memberships SET role = ? WHERE user_id = ? AND collection_id = ?',
-    [role, req.params.id, req.collectionId!]
+    [role, userId, req.collectionId!]
   );
   if (updated === 0) {
     res.status(404).json({ error: 'User not found' });

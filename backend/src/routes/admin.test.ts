@@ -176,7 +176,7 @@ describe('DELETE /api/admin/approved-emails/:id', () => {
       .set('Cookie', authCookie(ADMIN));
 
     expect(res.status).toBe(200);
-    expect(execute).toHaveBeenCalledWith(expect.stringContaining('collection_id'), ['7', COLLECTION_A]);
+    expect(execute).toHaveBeenCalledWith(expect.stringContaining('collection_id'), [7, COLLECTION_A]);
   });
 
   it('returns 404 for an invite row belonging to a different collection', async () => {
@@ -228,7 +228,7 @@ describe('PATCH /api/admin/users/:id/role', () => {
     expect(res.status).toBe(200);
     expect(execute).toHaveBeenCalledWith(
       expect.stringContaining('UPDATE collection_memberships SET role = ?'),
-      ['admin', '2', COLLECTION_A]
+      ['admin', 2, COLLECTION_A]
     );
     expect(execute).not.toHaveBeenCalledWith(expect.stringContaining('UPDATE users'), expect.anything());
   });
