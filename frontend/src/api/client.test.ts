@@ -139,9 +139,17 @@ describe('api()', () => {
     window.removeEventListener(GROUP_CHANGED_EVENT, listener);
   });
 
-  it('lets a network failure propagate to the caller', async () => {
+  // "Failed to fetch" is what the browser says; it isn't what a person in a
+  // basement with one bar needs to read.
+  it('turns a network failure into something a person can act on', async () => {
     vi.mocked(fetch).mockRejectedValueOnce(new TypeError('Failed to fetch'));
 
-    await expect(api('/api/minis')).rejects.toThrow('Failed to fetch');
+    await expect(api('/api/minis')).rejects.toThrow(/couldn't reach the library/i);
+  });
+
+  it('still passes along a real error as itself', async () => {
+    vi.mocked(fetch).mockRejectedValueOnce(new Error('boom'));
+
+    await expect(api('/api/minis')).rejects.toThrow('boom');
   });
 });

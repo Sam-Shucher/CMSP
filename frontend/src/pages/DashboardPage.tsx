@@ -6,13 +6,17 @@ import MiniDetailModal from '../components/MiniDetailModal';
 import MiniStatusBadge from '../components/MiniStatusBadge';
 import { LIMITS } from '../limits';
 
+// Long enough to swallow a burst of typing, short enough not to feel laggy.
+export const SEARCH_DEBOUNCE_MS = 250;
+
 // The main browse page — shows a searchable, filterable grid of all minis.
 export default function DashboardPage(): React.ReactElement {
   const { user } = useAuth();
   const [cartMiniIds, setCartMiniIds] = useState<Set<number>>(new Set());
   const [minis, setMinis]         = useState<Mini[]>([]);
   const [tags, setTags]           = useState<string[]>([]);  // all tags for the filter bar
-  const [search, setSearch]       = useState<string>('');
+  const [search, setSearch]       = useState<string>('');    // what's in the box
+  const [query, setQuery]         = useState<string>('');    // what's been asked of the server
   const [activeTag, setActiveTag] = useState<string>('');    // currently selected tag filter
   const [loading, setLoading]     = useState<boolean>(true);
   const [error, setError]         = useState<string>('');
@@ -20,12 +24,20 @@ export default function DashboardPage(): React.ReactElement {
 
   // Fetches minis from the API, passing any active search or tag filter as query params.
   // Wrapped in useCallback so that useEffect only re-runs when search or activeTag actually change.
+  // Searching reads the whole collection and fuzzy-matches it on the Pi's one
+  // core, so it waits for a break in the typing rather than going once per
+  // keystroke ("owlbear beholder" was 17 requests, and 17 full scans).
+  useEffect(() => {
+    const timer = setTimeout(() => setQuery(search), SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [search]);
+
   const fetchMinis = useCallback(async (): Promise<void> => {
     setLoading(true);
     setError('');
     try {
       const params = new URLSearchParams();
-      if (search)    params.set('q', search);
+      if (query)     params.set('q', query);
       if (activeTag) params.set('tag', activeTag);
       const data = await api<Mini[]>(`/api/minis?${params.toString()}`);
       setMinis(data);
@@ -34,7 +46,7 @@ export default function DashboardPage(): React.ReactElement {
     } finally {
       setLoading(false);
     }
-  }, [search, activeTag]);
+  }, [query, activeTag]);
 
   // Re-fetch whenever the search text or active tag changes
   useEffect(() => {
@@ -141,7 +153,9 @@ export default function DashboardPage(): React.ReactElement {
       {/* Content area — loading spinner, empty state, or the mini grid */}
       {loading ? (
         <p style={{ color: '#8a7d6a' }}>Loading…</p>
-      ) : minis.length === 0 ? (
+      ) : minis.length === 0 && !error ? (
+        // Only when the collection really is empty — saying "no minis found"
+        // because the request failed reads as "your collection is gone".
         <div style={{ textAlign: 'center', padding: '60px 0', color: '#8a7d6a' }}>
           <p style={{ fontSize: '18px', marginBottom: '8px' }}>No minis found</p>
           <p style={{ fontSize: '14px' }}>

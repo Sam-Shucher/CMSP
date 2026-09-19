@@ -1,4 +1,12 @@
-import { vi } from 'vitest';
+import { vi, beforeEach } from 'vitest';
+import { resetRateLimits } from '../middleware/rateLimit';
+
+// Rate limits count in memory for the life of the process, so without this a
+// test file with many requests could trip a limit set up by an earlier one and
+// fail for reasons that have nothing to do with what it is testing.
+beforeEach(() => {
+  resetRateLimits();
+});
 
 // Photo uploads in unit tests land in a scratch folder (UPLOADS_DIR in
 // vitest.config.ts); make sure it exists.

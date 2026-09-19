@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import request from 'supertest';
+import request, { Response as SuperTestResponse } from 'supertest';
 import fs from 'fs';
 import path from 'path';
 import { authCookie } from '../test/helpers';
@@ -12,6 +12,7 @@ vi.mock('../db/connection', () => ({
 
 import { pool } from '../db/connection';
 import { createApp } from '../app';
+import { BROWSE_MAX_PER_MINUTE } from './minis';
 
 const app = createApp();
 const execute = pool.execute as unknown as ReturnType<typeof vi.fn>;
@@ -355,6 +356,49 @@ describe('taking your own mini on a quest', () => {
     const res = await request(app).post('/api/minis/42/bring-back').set('Cookie', authCookie(OWNER));
 
     expect(res.status).toBe(409);
+  });
+});
+
+// Browsing is the most expensive thing a signed-in member can ask for: it
+// reads the whole collection and fuzzy-matches it in this process, on the one
+// core the Pi has. A runaway client (a retry loop, a stuck search box) would
+// otherwise be able to keep everyone else waiting.
+describe('GET /api/minis — rate limit', () => {
+  it('lets a person browse and search freely', async () => {
+    execute.mockResolvedValue(MEMBERSHIP_CONFIRMED);
+
+    for (let i = 0; i < 30; i++) {
+      const res = await request(app).get(`/api/minis?q=owlbear${i}`).set('Cookie', authCookie(OWNER));
+      expect(res.status).toBe(200);
+    }
+  });
+
+  it('stops a caller hammering it, and says to try again', async () => {
+    execute.mockResolvedValue(MEMBERSHIP_CONFIRMED);
+
+    let blocked: SuperTestResponse | undefined;
+    for (let i = 0; i <= BROWSE_MAX_PER_MINUTE; i++) {
+      const res = await request(app).get('/api/minis').set('Cookie', authCookie(OWNER));
+      if (res.status === 429) { blocked = res; break; }
+    }
+
+    expect(blocked, `no 429 within ${BROWSE_MAX_PER_MINUTE + 1} requests`).toBeDefined();
+    // Worded for browsing, not for a failed sign-in.
+    expect(blocked!.body.error).toMatch(/too quickly|give it a moment/i);
+    expect(blocked!.body.error).not.toMatch(/attempts/i);
+    expect(blocked!.headers['retry-after']).toBeDefined();
+  });
+
+  // One member being throttled must not throttle the group.
+  it('counts each member separately', async () => {
+    execute.mockResolvedValue(MEMBERSHIP_CONFIRMED);
+    for (let i = 0; i <= BROWSE_MAX_PER_MINUTE; i++) {
+      await request(app).get('/api/minis').set('Cookie', authCookie(OWNER));
+    }
+
+    const other = await request(app).get('/api/minis').set('Cookie', authCookie(OTHER));
+
+    expect(other.status).toBe(200);
   });
 });
 

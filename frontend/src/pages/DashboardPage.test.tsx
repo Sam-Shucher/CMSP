@@ -1,8 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
-import DashboardPage from './DashboardPage';
+import DashboardPage, { SEARCH_DEBOUNCE_MS } from './DashboardPage';
 import { AuthContext } from '../App';
 import { CartItem, Mini, CART_CHANGED_EVENT } from '../api/client';
 import { jsonResponse, urlOf, jsonBodyOf} from '../test/apiMock';
@@ -210,6 +210,58 @@ describe('DashboardPage — browsing, search, and tags', () => {
     renderDashboard({ userId: 2, username: 'other', role: 'user' });
 
     expect(await screen.findByText('Server error')).toBeInTheDocument();
+  });
+
+  // A first load that fails used to show the error AND "No minis found · Add
+  // the first one!" — telling someone with no signal that their collection is
+  // empty, and inviting them to refill it.
+  it('does not claim the collection is empty when loading it failed', async () => {
+    mockBrowse({ minisOk: false });
+    renderDashboard({ userId: 2, username: 'other', role: 'user' });
+    await screen.findByText('Server error');
+
+    expect(screen.queryByText(/no minis found/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /add the first one/i })).not.toBeInTheDocument();
+  });
+
+  // One request per keystroke meant 24 for a typed search phrase, each one
+  // reading the whole collection and fuzzy-matching it on the Pi's one core.
+  it('waits for a pause in typing before searching', async () => {
+    vi.useFakeTimers();
+    try {
+      mockBrowse();
+      renderDashboard({ userId: 2, username: 'other', role: 'user' });
+      await vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS + 50);
+      const before = minisUrls().length;
+
+      const box = screen.getByPlaceholderText(/search/i);
+      let typed = '';
+      for (const char of 'owlbear') {
+        typed += char;
+        fireEvent.change(box, { target: { value: typed } });
+        await vi.advanceTimersByTimeAsync(60); // a fast typist, ~16 chars/sec
+      }
+
+      // Still nothing sent while the keys are still coming.
+      expect(minisUrls().length).toBe(before);
+
+      await vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS);
+
+      expect(minisUrls().length).toBe(before + 1);
+      expect(minisUrls().at(-1)).toBe('/api/minis?q=owlbear');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not make you wait for the pause when picking a tag', async () => {
+    mockBrowse();
+    renderDashboard({ userId: 2, username: 'other', role: 'user' });
+    await screen.findByText('Dire Wolf');
+
+    await userEvent.click(screen.getByRole('button', { name: 'boss' }));
+
+    await waitFor(() => expect(minisUrls().at(-1)).toBe('/api/minis?tag=boss'));
   });
 
   it('shows the cover photo, a count of extra photos, the price, and tags on the card', async () => {

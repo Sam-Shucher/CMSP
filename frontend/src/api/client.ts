@@ -17,15 +17,26 @@ export async function api<T = unknown>(
   // has since switched the session to a different group.
   const groupHeader: Record<string, string> = activeGroup === undefined ? {} : { 'X-Collection-Id': String(activeGroup) };
 
-  const res = await fetch(path, {
-    ...options,
-    credentials: 'include', // sends the httpOnly auth cookie on every request
-    headers: isFormData
-      ? { ...groupHeader, ...options.headers }
-      : { 'Content-Type': 'application/json', ...groupHeader, ...options?.headers },
-    // If `json` was provided, serialize it; otherwise use `body` as-is (FormData or undefined)
-    body: options?.json !== undefined ? JSON.stringify(options.json) : options?.body,
-  });
+  let res: Response;
+  try {
+    res = await fetch(path, {
+      ...options,
+      credentials: 'include', // sends the httpOnly auth cookie on every request
+      headers: isFormData
+        ? { ...groupHeader, ...options.headers }
+        : { 'Content-Type': 'application/json', ...groupHeader, ...options?.headers },
+      // If `json` was provided, serialize it; otherwise use `body` as-is (FormData or undefined)
+      body: options?.json !== undefined ? JSON.stringify(options.json) : options?.body,
+    });
+  } catch (err: unknown) {
+    // fetch rejects with a TypeError when the request never reached the server
+    // — no signal, Wi-Fi dropped, the Pi rebooting. "Failed to fetch" is the
+    // browser's words for that, and they end up in front of a person.
+    if (err instanceof TypeError) {
+      throw new Error("Couldn't reach the library — check your connection and try again.");
+    }
+    throw err;
+  }
 
   // Always try to parse the response as JSON — our API always returns JSON
   const data: unknown = await res.json().catch(() => ({ error: res.statusText }));

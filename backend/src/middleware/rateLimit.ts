@@ -10,15 +10,21 @@ interface Options {
   // What to count by (IP address, email being logged into). Returning
   // undefined skips limiting for that request.
   key: (req: Request) => string | undefined;
+  // What the caller is told when they hit it. The default is worded for a
+  // sign-in form; anything else should say what it means there.
+  message?: (retryAfterSeconds: number) => string;
   now?: () => number; // injectable clock for tests
 }
+
+const defaultMessage = (retryAfterSeconds: number): string =>
+  `Too many attempts. Try again in ${Math.ceil(retryAfterSeconds / 60)} minute(s).`;
 
 type Limiter = ((req: Request, res: Response, next: NextFunction) => void) & { reset: () => void };
 
 const limiters = new Set<Limiter>();
 const MAX_TRACKED_KEYS = 10_000;
 
-export function rateLimit({ windowMs, max, key, now = Date.now }: Options): Limiter {
+export function rateLimit({ windowMs, max, key, message = defaultMessage, now = Date.now }: Options): Limiter {
   const hits = new Map<string, { count: number; resetAt: number }>();
 
   const limiter = ((req: Request, res: Response, next: NextFunction): void => {
@@ -46,9 +52,7 @@ export function rateLimit({ windowMs, max, key, now = Date.now }: Options): Limi
     if (entry.count > max) {
       const retryAfterSeconds = Math.ceil((entry.resetAt - time) / 1000);
       res.setHeader('Retry-After', String(retryAfterSeconds));
-      res.status(429).json({
-        error: `Too many attempts. Try again in ${Math.ceil(retryAfterSeconds / 60)} minute(s).`,
-      });
+      res.status(429).json({ error: message(retryAfterSeconds) });
       return;
     }
     next();

@@ -4,6 +4,7 @@ import path from 'path';
 import fs from 'fs';
 import { rows, firstRow, change, insert } from '../db/query';
 import { requireAuth } from '../middleware/requireAuth';
+import { rateLimit } from '../middleware/rateLimit';
 import { route, idFrom } from '../utils/route';
 import { requireCollectionMembership, CollectionRequest } from '../middleware/requireCollectionMembership';
 import { matchesSearch } from '../utils/search';
@@ -15,7 +16,10 @@ import { detectImageType, IMAGE_HEADER_BYTES } from '../utils/imageType';
 import { promoteNextHold, announceMiniRemoved } from '../services/holds';
 
 const router = Router();
-const MAX_IMAGES = 3;
+// Mirrored by frontend/src/limits.ts (photosPerMini, photoBytes) and pinned to
+// it by limitsMirror.test.ts.
+export const MAX_IMAGES = 3;
+export const MAX_PHOTO_BYTES = 10 * 1024 * 1024; // large enough for a camera photo
 
 // Every route in this file is scoped to the caller's active collection.
 // requireCollectionMembership re-verifies that membership against the
@@ -72,7 +76,7 @@ const storage = multer.diskStorage({
 const upload = multer({
   storage,
   limits: {
-    fileSize: 10 * 1024 * 1024, // 10 MB cap — large enough for camera photos
+    fileSize: MAX_PHOTO_BYTES,
     files: MAX_IMAGES,
     fields: 20,
     fieldSize: 100 * 1024,
@@ -221,7 +225,7 @@ function serializeMini(row: MiniRow) {
 }
 
 // The most a mini's price column (DECIMAL(6,2)) can hold.
-const MAX_PRICE = 9999.99;
+export const MAX_PRICE = 9999.99;
 const PRICE_PATTERN = /^(\d+(\.\d{1,2})?|\.\d{1,2})$/;
 
 interface MiniFields {
@@ -306,7 +310,23 @@ async function setImages(miniId: number, keptPaths: string[], newFiles: Express.
 // name/description search or a tag. Minis in every other collection are
 // invisible here, full stop — the collection_id filter below is mandatory,
 // not optional like q/tag.
-router.get('/', route(async (req, res) => {
+// Browsing reads the whole collection and fuzzy-matches it in this process, on
+// the Pi's one core — the most expensive thing a member can ask for. The search
+// box waits for a pause in the typing (SEARCH_DEBOUNCE_MS in the frontend), so
+// real use is a handful of requests a minute; this is far above that and well
+// below what a stuck client can do to everyone else.
+export const BROWSE_MAX_PER_MINUTE = 240;
+
+const browseLimit = rateLimit({
+  windowMs: 60 * 1000,
+  max: BROWSE_MAX_PER_MINUTE,
+  // Per member, so one bad tab can't throttle the rest of the group.
+  key: req => `browse:${(req as CollectionRequest).user?.userId ?? req.ip}`,
+  // Nobody is "attempting" anything here — they're just browsing.
+  message: () => 'Loading the collection too quickly — give it a moment and try again.',
+});
+
+router.get('/', browseLimit, route(async (req, res) => {
   // Query strings can arrive as arrays (?q=a&q=b) or objects (?tag[x]=y), and
   // typo-tolerant search costs CPU in proportion to its length — so only
   // short, plain text is accepted.
