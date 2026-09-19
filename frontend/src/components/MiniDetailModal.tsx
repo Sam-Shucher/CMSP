@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Mini } from '../api/client';
 import MiniStatusBadge from './MiniStatusBadge';
-import { formatBackBy, todayInputValue } from '../utils/questDates';
+import { formatBackBy, todayInputValue, latestBackByInputValue, clampBackBy } from '../utils/questDates';
 import HoldPanel from './HoldPanel';
 
 type MiniDetailModalProps = {
@@ -225,6 +225,18 @@ function QuestControls({ mini, onTakeOut, onBringBack }: {
   const [backBy, setBackBy] = useState<string>('');
   const [busy, setBusy] = useState<boolean>(false);
   const [error, setError] = useState<string>('');
+  // Set when a typed date was pulled back to the limit, so we can say so.
+  const [movedToLimit, setMovedToLimit] = useState<boolean>(false);
+
+  const latest = latestBackByInputValue();
+
+  // The date box can still be typed into past its max, so anything beyond the
+  // three months is pulled back rather than left to fail at the server.
+  function chooseBackBy(picked: string): void {
+    const { day, clamped } = clampBackBy(picked);
+    setBackBy(day);
+    setMovedToLimit(clamped);
+  }
 
   async function run(action: () => Promise<void>): Promise<void> {
     setError('');
@@ -250,14 +262,23 @@ function QuestControls({ mini, onTakeOut, onBringBack }: {
               id={`back-by-${mini.id}`}
               type="date"
               min={todayInputValue()}
+              max={latest}
               value={backBy}
-              onChange={(e: React.ChangeEvent<HTMLInputElement>) => setBackBy(e.target.value)}
+              onChange={(e: React.ChangeEvent<HTMLInputElement>) => chooseBackBy(e.target.value)}
             />
           </div>
           <button type="button" className="btn-primary" disabled={busy} onClick={() => void run(() => onTakeOut(backBy || null))}>
             {busy ? 'Setting out…' : 'Take on a quest'}
           </button>
         </div>
+      )}
+
+      {mini.status === 'available' && (
+        <p style={{ fontSize: '12px', color: movedToLimit ? '#c9a84c' : '#8a7d6a', marginTop: '6px' }}>
+          {movedToLimit
+            ? `A quest can last up to 3 months, so that's been set to ${formatBackBy(latest)} — the latest it can be.`
+            : `A quest can last up to 3 months — until ${formatBackBy(latest)}.`}
+        </p>
       )}
 
       {mini.status === 'on_quest' && (

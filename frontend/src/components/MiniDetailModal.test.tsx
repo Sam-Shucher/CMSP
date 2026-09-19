@@ -21,6 +21,15 @@ function makeMini(overrides: Partial<Mini> = {}): Mini {
   };
 }
 
+const pad = (n: number) => String(n).padStart(2, '0');
+
+// Three months from today, in the format <input type="date"> uses.
+function threeMonthsOut(): string {
+  const day = new Date();
+  day.setDate(day.getDate() + 90);
+  return `${day.getFullYear()}-${pad(day.getMonth() + 1)}-${pad(day.getDate())}`;
+}
+
 describe('MiniDetailModal', () => {
   it('shows the full name, description, tags, owner, and price', () => {
     render(<MiniDetailModal mini={makeMini()} onClose={vi.fn()} />);
@@ -174,6 +183,46 @@ describe('MiniDetailModal — taking your own mini on a quest', () => {
     expect(screen.getByLabelText(/back by/i)).toHaveAttribute(
       'min', `${today.getFullYear()}-${pad(today.getMonth() + 1)}-${pad(today.getDate())}`
     );
+  });
+
+  // A quest is capped at three months, the same as a loan. The date box has to
+  // say so, refuse to offer later days, and pull a typed-in later day back.
+  it('does not offer back-by dates more than three months out', () => {
+    renderOwn(makeMini());
+
+    expect(screen.getByLabelText(/back by/i)).toHaveAttribute('max', threeMonthsOut());
+  });
+
+  it('tells the owner up front that a quest can only last 3 months', () => {
+    renderOwn(makeMini());
+
+    expect(screen.getByText(/a quest can last up to 3 months/i)).toBeInTheDocument();
+  });
+
+  it('pulls a typed date past three months back to the limit and says so', async () => {
+    const { onTakeOut } = renderOwn(makeMini());
+    const input = screen.getByLabelText(/back by/i);
+
+    fireEvent.change(input, { target: { value: '2099-01-01' } });
+
+    expect(input).toHaveValue(threeMonthsOut());
+    expect(screen.getByText(/that's been set to .* the latest it can be/i)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /take on a quest/i }));
+    await waitFor(() => expect(onTakeOut).toHaveBeenCalledWith(threeMonthsOut()));
+  });
+
+  it('leaves a date inside the limit alone', () => {
+    renderOwn(makeMini());
+    const input = screen.getByLabelText(/back by/i);
+    const soon = new Date();
+    soon.setDate(soon.getDate() + 7);
+    const value = `${soon.getFullYear()}-${pad(soon.getMonth() + 1)}-${pad(soon.getDate())}`;
+
+    fireEvent.change(input, { target: { value } });
+
+    expect(input).toHaveValue(value);
+    expect(screen.queryByText(/latest it can be/i)).not.toBeInTheDocument();
   });
 
   it('shows when a questing mini is due back, and lets the owner bring it back', async () => {

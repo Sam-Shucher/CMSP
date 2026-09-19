@@ -126,17 +126,47 @@ test('a mini that is requested can\'t be deleted, and the owner is told why', as
   await expect(olivia.getByText(/active request or loan/)).toBeVisible();
 });
 
-test('a back-by date more than a year away is refused with a clear message', async ({ as }) => {
+// A quest is capped at three months. The date box says so and won't offer a
+// later day; a typed-in later day is pulled back to the limit rather than sent.
+test('a back-by date more than three months away is pulled back to the limit', async ({ as }) => {
   const olivia = await as('olivia');
   await createMini(olivia, 'Owlbear');
 
+  const limit = new Date(Date.now() + 90 * 86_400_000);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const latest = `${limit.getFullYear()}-${pad(limit.getMonth() + 1)}-${pad(limit.getDate())}`;
+  const shown = limit.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+
   await olivia.goto('/');
   await olivia.getByText('Owlbear').click();
-  await olivia.getByLabel('Back by (optional)').fill(`${new Date().getFullYear() + 3}-01-15`);
-  await olivia.getByRole('button', { name: 'Take on a quest' }).click();
 
-  await expect(olivia.getByText('Back-by date must be within a year')).toBeVisible();
-  await expect(olivia.getByRole('button', { name: 'Take on a quest' })).toBeVisible();
+  const backBy = olivia.getByLabel('Back by (optional)');
+  await expect(backBy).toHaveAttribute('max', latest);
+  await expect(olivia.getByText(/A quest can last up to 3 months/)).toBeVisible();
+
+  await backBy.fill(`${new Date().getFullYear() + 3}-01-15`);
+  await expect(backBy).toHaveValue(latest);
+  await expect(olivia.getByText(/the latest it can be/)).toBeVisible();
+
+  await olivia.getByRole('button', { name: 'Take on a quest' }).click();
+  await expect(olivia.getByText(`On a quest with you · back by ${shown}`)).toBeVisible();
+});
+
+// …and the server doesn't take its word for it either.
+test('the server refuses a back-by date past three months', async ({ as }) => {
+  const olivia = await as('olivia');
+  const miniId = await createMini(olivia, 'Owlbear Two');
+
+  // Comfortably past the limit: the server counts its three months in UTC, so
+  // a date only a day over can still be inside them from a timezone behind it.
+  const tooFar = new Date(Date.now() + 120 * 86_400_000);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const day = `${tooFar.getFullYear()}-${pad(tooFar.getMonth() + 1)}-${pad(tooFar.getDate())}`;
+
+  const res = await apiCall<{ error: string }>(olivia, 'POST', `/api/minis/${miniId}/take-out`, { backBy: day });
+
+  expect(res.status).toBe(400);
+  expect(res.body.error).toMatch(/3 months/);
 });
 
 test('taking your own mini on a quest and bringing it back', async ({ as }) => {

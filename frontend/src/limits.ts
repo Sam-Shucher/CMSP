@@ -13,6 +13,7 @@ export const LIMITS = {
   search: 100,
   price: 9999.99,
   loanDays: 90,          // about three months
+  questDays: 90,         // and the same for taking your own mini out
   photosPerMini: 3,
   photoBytes: 10 * 1024 * 1024,
 } as const;

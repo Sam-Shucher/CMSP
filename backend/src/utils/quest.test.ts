@@ -11,10 +11,20 @@ describe('parseBackBy — the optional "back by" date when taking a mini on a qu
     expect(parseBackBy('', NOW)).toEqual({ ok: true, value: null });
   });
 
-  it('accepts a calendar date from today up to a year out', () => {
+  // A quest is "I'm borrowing my own mini for a bit", not indefinite storage —
+  // three months, the same ceiling a loan gets.
+  it('accepts a calendar date from today up to three months out', () => {
     expect(parseBackBy('2026-10-01', NOW)).toEqual({ ok: true, value: '2026-10-01' });
     expect(parseBackBy('2026-10-15', NOW)).toEqual({ ok: true, value: '2026-10-15' });
-    expect(parseBackBy('2027-10-01', NOW)).toEqual({ ok: true, value: '2027-10-01' });
+    expect(parseBackBy('2026-12-30', NOW)).toEqual({ ok: true, value: '2026-12-30' }); // 90 days out, the last day allowed
+  });
+
+  it('refuses a date past three months, and says what the limit is', () => {
+    expect(parseBackBy('2026-12-31', NOW)).toEqual({
+      ok: false,
+      error: 'A quest can last up to 3 months — pick a date on or before Dec 30, 2026',
+    });
+    expect(parseBackBy('2027-10-01', NOW)).toMatchObject({ ok: false, error: expect.stringMatching(/3 months/) });
   });
 
   // Someone west of UTC can still be on "yesterday" by the server's clock.
@@ -22,9 +32,8 @@ describe('parseBackBy — the optional "back by" date when taking a mini on a qu
     expect(parseBackBy('2026-09-30', NOW)).toMatchObject({ ok: true });
   });
 
-  it('rejects dates clearly in the past or more than a year away', () => {
+  it('rejects dates clearly in the past', () => {
     expect(parseBackBy('2026-09-29', NOW)).toMatchObject({ ok: false, error: expect.stringMatching(/past/i) });
-    expect(parseBackBy('2027-10-03', NOW)).toMatchObject({ ok: false, error: expect.stringMatching(/year/i) });
   });
 
   it.each([
