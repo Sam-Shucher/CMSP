@@ -22,7 +22,9 @@ test('dismissing a notification, marking one unread, and the two-day countdown',
 
   await olivia.getByRole('button', { name: 'Mark all read' }).click();
   await expect(bell).toHaveAccessibleName('Notifications');
-  await expect(row).toContainText('Disappears in 2d');
+  // Two days, less however many seconds the read took to land — a countdown
+  // that starts a second late reads "1d 23h", which is right, not broken.
+  await expect(row).toContainText(/Disappears in (2d|1d 23h)/);
 
   // Back to unread — it counts again and stops counting down.
   await row.getByRole('button', { name: 'Mark as unread' }).click();
