@@ -65,6 +65,10 @@ export function setActiveGroup(collectionId: number | undefined): void {
 // opened) — the Loans page reloads, even if you're already looking at it.
 export const LOANS_CHANGED_EVENT = 'mini-library:loans-changed';
 
+// A mini went into or out of the cart — the count in the nav re-checks, so it
+// doesn't sit stale until its next minute-by-minute look.
+export const CART_CHANGED_EVENT = 'mini-library:cart-changed';
+
 // Where a 401 just means "wrong email or password", not an ended session.
 const SIGN_IN_FORMS = ['/api/auth/login', '/api/auth/register'];
 

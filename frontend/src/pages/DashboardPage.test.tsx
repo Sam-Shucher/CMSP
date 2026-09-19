@@ -4,7 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import DashboardPage from './DashboardPage';
 import { AuthContext } from '../App';
-import { CartItem, Mini } from '../api/client';
+import { CartItem, Mini, CART_CHANGED_EVENT } from '../api/client';
 import { jsonResponse, urlOf, jsonBodyOf} from '../test/apiMock';
 
 const MINI_OWNED_BY_1: Mini = {
@@ -343,6 +343,37 @@ describe('DashboardPage — status badges and the cart', () => {
     await userEvent.click(screen.getByText('Dire Wolf'));
     expect(screen.getByText(/this is your mini/i)).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /add to cart/i })).not.toBeInTheDocument();
+  });
+
+  // The nav's Cart count listens for this, so it updates on the click rather
+  // than up to a minute later.
+  it('announces that the cart changed so the nav count keeps up', async () => {
+    mockApi({ onAddToCart: () => ({ ok: true, body: { ok: true } }) });
+    const heard = vi.fn();
+    window.addEventListener(CART_CHANGED_EVENT, heard);
+    renderDashboard({ userId: 2, username: 'other', role: 'user' });
+    await waitFor(() => expect(screen.getByText('Dire Wolf')).toBeInTheDocument());
+
+    await userEvent.click(screen.getByText('Dire Wolf'));
+    await userEvent.click(screen.getByRole('button', { name: /add to cart/i }));
+
+    await waitFor(() => expect(heard).toHaveBeenCalled());
+    window.removeEventListener(CART_CHANGED_EVENT, heard);
+  });
+
+  it('doesn\'t announce a cart change when adding failed', async () => {
+    mockApi({ onAddToCart: () => ({ ok: false, body: { error: 'Nope' } }) });
+    const heard = vi.fn();
+    window.addEventListener(CART_CHANGED_EVENT, heard);
+    renderDashboard({ userId: 2, username: 'other', role: 'user' });
+    await waitFor(() => expect(screen.getByText('Dire Wolf')).toBeInTheDocument());
+
+    await userEvent.click(screen.getByText('Dire Wolf'));
+    await userEvent.click(screen.getByRole('button', { name: /add to cart/i }));
+
+    await screen.findByText(/nope/i);
+    expect(heard).not.toHaveBeenCalled();
+    window.removeEventListener(CART_CHANGED_EVENT, heard);
   });
 
   it('shows the server\'s refusal if the mini was taken in the meantime', async () => {

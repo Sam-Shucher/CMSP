@@ -3,7 +3,7 @@ import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import CartPage from './CartPage';
-import { CartItem } from '../api/client';
+import { CartItem, CART_CHANGED_EVENT } from '../api/client';
 import { jsonResponse, urlOf} from '../test/apiMock';
 
 function item(overrides: Partial<CartItem> = {}): CartItem {
@@ -93,6 +93,42 @@ describe('CartPage', () => {
     await waitFor(() => expect(screen.queryByText('Dire Wolf')).not.toBeInTheDocument());
     expect(screen.getByText('Owlbear')).toBeInTheDocument();
     expect(calls).toContainEqual(['DELETE', '/api/cart/1']);
+  });
+
+  // Both of these change how many minis are in the cart, so the count in the
+  // nav has to hear about it.
+  it('announces a cart change when an item is removed', async () => {
+    mockCartApi([item({ miniId: 1, name: 'Dire Wolf' })]);
+    const heard = vi.fn();
+    window.addEventListener(CART_CHANGED_EVENT, heard);
+    renderCart();
+    await screen.findByText('Dire Wolf');
+
+    await userEvent.click(screen.getByRole('button', { name: /remove dire wolf/i }));
+
+    await waitFor(() => expect(heard).toHaveBeenCalled());
+    window.removeEventListener(CART_CHANGED_EVENT, heard);
+  });
+
+  it('announces a cart change after checking out', async () => {
+    let checkedOut = false;
+    mockCartApi([item({ miniId: 1 })], (url: string, method: string) => {
+      if (url === '/api/cart/checkout' && method === 'POST') {
+        checkedOut = true;
+        return jsonResponse({ created: [{ loanId: 5, miniId: 1 }], unavailable: [] });
+      }
+      if (url === '/api/cart' && method === 'GET' && checkedOut) return jsonResponse([]);
+      return undefined;
+    });
+    const heard = vi.fn();
+    window.addEventListener(CART_CHANGED_EVENT, heard);
+    renderCart();
+    await screen.findByText('Dire Wolf');
+
+    await userEvent.click(screen.getByRole('button', { name: /check ?out/i }));
+
+    await waitFor(() => expect(heard).toHaveBeenCalled());
+    window.removeEventListener(CART_CHANGED_EVENT, heard);
   });
 
   it('flags items that were taken by someone else since you added them', async () => {

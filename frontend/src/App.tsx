@@ -12,6 +12,7 @@ import CollectionPicker from './pages/CollectionPicker';
 import CartPage from './pages/CartPage';
 import LoansPage from './pages/LoansPage';
 import NotificationBell from './components/NotificationBell';
+import CartLink from './components/CartLink';
 import ChangePasswordForm from './components/ChangePasswordForm';
 
 // ---------------------------------------------------------------------------
@@ -95,7 +96,7 @@ function NavBar(): React.ReactElement | null {
       )}
       <a href="/" style={{ color: '#e8e0d0', fontSize: '14px' }}>Browse</a>
       <a href="/upload" style={{ color: '#e8e0d0', fontSize: '14px' }}>Add Mini</a>
-      <Link to="/cart" style={{ color: '#e8e0d0', fontSize: '14px' }}>Cart</Link>
+      <CartLink collectionId={user.collectionId} />
       <Link to="/loans" style={{ color: '#e8e0d0', fontSize: '14px' }}>Loans</Link>
       {/* Admin link only appears for users with the admin role */}
       {user.role === 'admin' && (

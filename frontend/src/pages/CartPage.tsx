@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { api, CartItem } from '../api/client';
+import { api, CartItem, CART_CHANGED_EVENT } from '../api/client';
 import MiniStatusBadge from '../components/MiniStatusBadge';
 
 type CheckoutResult = {
@@ -36,6 +36,7 @@ export default function CartPage(): React.ReactElement {
     try {
       await api(`/api/cart/${miniId}`, { method: 'DELETE' });
       await loadCart();
+      window.dispatchEvent(new Event(CART_CHANGED_EVENT)); // the count in the nav
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Could not remove that mini');
     }
@@ -52,6 +53,8 @@ export default function CartPage(): React.ReactElement {
     } finally {
       setCheckingOut(false);
       await loadCart();
+      // Checkout empties the cart (or all but what wasn't available).
+      window.dispatchEvent(new Event(CART_CHANGED_EVENT));
     }
   }
 

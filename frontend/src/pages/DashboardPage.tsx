@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from 'react';
 import { Link } from 'react-router-dom';
-import { api, Mini, CartItem } from '../api/client';
+import { api, Mini, CartItem, CART_CHANGED_EVENT } from '../api/client';
 import { useAuth } from '../App';
 import MiniDetailModal from '../components/MiniDetailModal';
 import MiniStatusBadge from '../components/MiniStatusBadge';
@@ -62,6 +62,7 @@ export default function DashboardPage(): React.ReactElement {
   async function addToCart(miniId: number): Promise<void> {
     await api('/api/cart', { method: 'POST', json: { miniId } });
     await fetchCart();
+    window.dispatchEvent(new Event(CART_CHANGED_EVENT)); // the count in the nav
   }
 
   // Swap in the server's updated copy of a mini, both on its card and in the

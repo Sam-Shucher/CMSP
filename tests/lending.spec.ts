@@ -18,6 +18,47 @@ function loanWith(page: Page, displayName: string) {
   return page.getByRole('region', { name: `With ${displayName}` });
 }
 
+// The count beside the Cart link in the nav.
+function cartCount(page: Page) {
+  return page.locator('nav').getByTestId('cart-count');
+}
+
+test('the nav shows how many minis are in your cart, and stops once you check out', async ({ as }) => {
+  const olivia = await as('olivia');
+  const bruno = await as('bruno');
+  await createMini(olivia, 'Dire Wolf');
+  await createMini(olivia, 'Owlbear');
+
+  // Nothing in the cart, nothing on the link.
+  await bruno.goto('/');
+  await expect(bruno.getByRole('link', { name: 'Cart', exact: true })).toBeVisible();
+  await expect(cartCount(bruno)).toHaveCount(0);
+
+  await bruno.getByText('Dire Wolf').click();
+  await bruno.getByRole('button', { name: 'Add to cart' }).click();
+  await expect(cartCount(bruno)).toHaveText('1');
+  await bruno.getByRole('button', { name: 'Close' }).click();
+
+  await bruno.getByText('Owlbear').click();
+  await bruno.getByRole('button', { name: 'Add to cart' }).click();
+  await expect(cartCount(bruno)).toHaveText('2');
+  await bruno.getByRole('button', { name: 'Close' }).click();
+
+  // It survives a reload — the count is the cart, not something held in the tab.
+  await bruno.reload();
+  await expect(cartCount(bruno)).toHaveText('2');
+
+  // Taking one back out counts down…
+  await bruno.getByRole('link', { name: 'Cart', exact: true }).click();
+  await bruno.getByRole('button', { name: /Remove Owlbear/ }).click();
+  await expect(cartCount(bruno)).toHaveText('1');
+
+  // …and checking out empties it.
+  await bruno.getByRole('button', { name: 'Checkout' }).click();
+  await expect(bruno.getByText(/Sent 1 request/)).toBeVisible();
+  await expect(cartCount(bruno)).toHaveCount(0);
+});
+
 test('borrowing a mini from request to return, with the handoff confirmed by the owner', async ({ as }) => {
   const olivia = await as('olivia');
   const bruno = await as('bruno');

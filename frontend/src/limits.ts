@@ -21,6 +21,7 @@ export const LIMITS = {
 // How often the pages that show other people's activity check for changes.
 export const POLL_MS = {
   notifications: 60 * 1000, // the bell
+  cart: 60 * 1000,          // the count on the Cart link
   loans: 30 * 1000,         // the Loans page
   clockTick: 60 * 1000,     // re-render "5m ago" and "2d left" labels
 } as const;
