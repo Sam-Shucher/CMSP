@@ -16,6 +16,8 @@ export const LIMITS = {
   questDays: 90,         // and the same for taking your own mini out
   photosPerMini: 3,
   photoBytes: 10 * 1024 * 1024,
+  setName: 100,
+  setMembers: 50, // most a single set-membership change can touch at once
 } as const;
 
 // How often the pages that show other people's activity check for changes.

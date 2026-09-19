@@ -116,6 +116,25 @@ describe('EditMiniPage', () => {
 
     expect(await screen.findByText(/you can only edit your own minis/i)).toBeInTheDocument();
   });
+
+  // The history section fetches nothing until asked (see MiniHistory.test.tsx
+  // for its own behavior) — this just confirms the edit page wires it up with
+  // the right mini id.
+  it('offers the lending history, fetched only once opened', async () => {
+    vi.mocked(fetch)
+      .mockResolvedValueOnce({ ok: true, json: async () => MINI } as Response)
+      .mockResolvedValueOnce({ ok: true, json: async () => [] } as Response);
+
+    renderEditPage();
+    await screen.findByLabelText(/name/i);
+    expect(fetch).toHaveBeenCalledTimes(1);
+
+    await userEvent.click(screen.getByRole('button', { name: /view lending history/i }));
+
+    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
+    expect(vi.mocked(fetch).mock.calls[1][0]).toBe('/api/minis/42/history');
+    expect(await screen.findByText(/nobody's borrowed this one yet/i)).toBeInTheDocument();
+  });
 });
 
 describe('EditMiniPage — deleting the mini', () => {

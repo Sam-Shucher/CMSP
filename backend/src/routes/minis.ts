@@ -12,6 +12,7 @@ import { activeLoanStatusSql, miniStatusFrom } from '../utils/miniStatus';
 import { requiredText, optionalText, tagList, LIMITS, Check } from '../utils/inputs';
 import { uploadsDir as configuredUploadsDir } from '../config';
 import { parseBackBy } from '../utils/quest';
+import { daysOut } from '../utils/loanRules';
 import { detectImageType, IMAGE_HEADER_BYTES } from '../utils/imageType';
 import { promoteNextHold, announceMiniRemoved } from '../services/holds';
 
@@ -150,7 +151,7 @@ function verifyImageContents(req: Request, res: Response, next: NextFunction): v
 // ---------------------------------------------------------------------------
 
 // The full shape of a row from the minis + users + tags + images join query
-interface MiniRow {
+export interface MiniRow {
   id: number;
   name: string;
   description: string | null;
@@ -162,6 +163,8 @@ interface MiniRow {
   owner_username: string;
   owner_id: number;
   created_at: string;
+  set_id: number | null;   // this mini's set (a boxed army), if it's in one
+  set_name: string | null;
   // GROUP_CONCAT returns a comma-separated string, or null if there are none
   tags: string | null;
   images: string | null;
@@ -191,17 +194,21 @@ interface ImagePathRow {
 // fetched via a correlated subquery (not a LEFT JOIN) so they don't multiply
 // rows against the tags LEFT JOIN — two one-to-many joins in the same query
 // would otherwise duplicate tag names once per image.
-const MINI_SELECT = `
+// Exported so routes/sets.ts can list a set's member minis with exactly the
+// same shape (status, images, tags, and all) instead of a second, drifting
+// copy of this query.
+export const MINI_SELECT = `
   SELECT m.id, m.name, m.description, m.price,
          ${activeLoanStatusSql('m')} AS active_loan_status,
          m.on_quest_since, DATE_FORMAT(m.on_quest_until, '%Y-%m-%d') AS on_quest_until,
          u.display_name AS owner_name, u.username AS owner_username, u.id AS owner_id,
-         m.created_at,
+         m.created_at, m.set_id, st.name AS set_name,
          GROUP_CONCAT(t.name ORDER BY t.name SEPARATOR ',') AS tags,
          (SELECT GROUP_CONCAT(mi.image_path ORDER BY mi.position SEPARATOR ',')
           FROM mini_images mi WHERE mi.mini_id = m.id) AS images
   FROM minis m
   JOIN users u ON m.owner_id = u.id
+  LEFT JOIN sets st ON st.id = m.set_id
   LEFT JOIN mini_tags mt ON m.id = mt.mini_id
   LEFT JOIN tags t ON mt.tag_id = t.id
 `;
@@ -209,7 +216,7 @@ const MINI_SELECT = `
 // Converts a raw joined row into the shape the frontend expects
 // (price as a number, tags/images as string arrays instead of CSV blobs,
 // availability derived from the mini's loans).
-function serializeMini(row: MiniRow) {
+export function serializeMini(row: MiniRow) {
   const { active_loan_status, on_quest_since, on_quest_until, ...rest } = row;
   const status = miniStatusFrom(active_loan_status, on_quest_since ?? null);
   return {
@@ -404,6 +411,65 @@ router.get('/:id', route(async (req, res) => {
   }
 
   res.json(serializeMini(mini));
+}));
+
+interface HistoryRow {
+  id: number;
+  borrower_id: number;
+  borrower_username: string;
+  borrower_name: string;
+  handed_off_at: Date;
+  returned_at: Date | null;
+  status: string;
+}
+
+// GET /api/minis/:id/history
+// "Who's had this, how often" — every loan that actually happened (reached a
+// handoff), newest first. Owner or admin only: this app otherwise keeps a
+// mini's current borrower anonymous to everyone but the two people in the
+// loan, so a full name-and-date history is scoped the same way editing is.
+router.get('/:id/history', route(async (req, res) => {
+  const miniId = idFrom(req.params.id);
+  const owned = miniId === null ? null : await firstRow<OwnerRow>(
+    'SELECT owner_id FROM minis WHERE id = ? AND collection_id = ?',
+    [miniId, req.collectionId!]
+  );
+
+  if (!owned) {
+    res.status(404).json({ error: 'Mini not found' });
+    return;
+  }
+
+  const isOwner = owned.owner_id === req.user!.userId;
+  const isAdmin = req.user!.role === 'admin';
+  if (!isOwner && !isAdmin) {
+    res.status(403).json({ error: 'Only the owner can see this mini\'s lending history' });
+    return;
+  }
+
+  // handed_off_at IS NOT NULL rules out a request that was cancelled or never
+  // got past negotiating — nothing happened yet, so it isn't history.
+  const history = await rows<HistoryRow>(
+    `SELECT l.id, l.borrower_id, u.username AS borrower_username, u.display_name AS borrower_name,
+            l.handed_off_at, l.returned_at, l.status
+     FROM loans l
+     JOIN users u ON u.id = l.borrower_id
+     WHERE l.mini_id = ? AND l.collection_id = ? AND l.handed_off_at IS NOT NULL
+     ORDER BY l.handed_off_at DESC`,
+    [miniId, req.collectionId!]
+  );
+
+  const now = new Date();
+  res.json(history.map(entry => ({
+    loanId: entry.id,
+    borrowerId: entry.borrower_id,
+    borrowerUsername: entry.borrower_username,
+    borrowerName: entry.borrower_name,
+    handedOffAt: entry.handed_off_at.toISOString(),
+    returnedAt: entry.returned_at ? entry.returned_at.toISOString() : null,
+    ongoing: entry.status === 'adventuring',
+    daysOut: daysOut(entry.handed_off_at, entry.returned_at, now),
+  })));
 }));
 
 // POST /api/minis

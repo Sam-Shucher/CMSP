@@ -310,6 +310,114 @@ describe('handoff and return', () => {
   });
 });
 
+// Keeping a mini longer, against the real hold line.
+describe('extending a loan', () => {
+  function extend(who: TestUser, loanId: number, extraDays: number) {
+    return request(app).post(`/api/loans/${loanId}/extend`).set('Cookie', who.cookie).send({ extraDays });
+  }
+
+  async function lendOut(durationDays = 14): Promise<{ miniId: number; loanId: number }> {
+    const miniId = await createMini(owner, 'Dire Wolf');
+    const loanId = await requestMini(borrower, miniId);
+    await agreeOnTerms(loanId, durationDays);
+    await act(owner, loanId, 'handoff');
+    return { miniId, loanId };
+  }
+
+  it('moves the due date, measured from the handoff', async () => {
+    const { loanId } = await lendOut(14);
+
+    const res = await extend(borrower, loanId, 7);
+
+    expect(res.status).toBe(200);
+    expect(res.body.durationDays).toBe(21);
+    expect(new Date(res.body.dueAt).getTime() - new Date(res.body.handedOffAt).getTime()).toBe(21 * DAY_MS);
+    expect(res.body.stage).toBe('adventuring');
+  });
+
+  // The rule the whole feature hangs on: a library won't renew a reserved book.
+  it('refuses once somebody is in the hold line, and leaves the due date alone', async () => {
+    const { miniId, loanId } = await lendOut(14);
+    const before = (await request(app).get('/api/loans').set('Cookie', borrower.cookie)).body[0].dueAt;
+
+    // bystander joins the line for a mini that's out — the real endpoint.
+    expect((await request(app).post(`/api/holds/minis/${miniId}`).set('Cookie', bystander.cookie)).status).toBe(201);
+
+    const res = await extend(borrower, loanId, 7);
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toMatch(/waiting in line/i);
+    const after = (await request(app).get('/api/loans').set('Cookie', borrower.cookie)).body[0];
+    expect(after.dueAt).toBe(before);
+    expect(after.durationDays).toBe(14);
+  });
+
+  it('can be extended again once that person leaves the line', async () => {
+    const { miniId, loanId } = await lendOut(14);
+    await request(app).post(`/api/holds/minis/${miniId}`).set('Cookie', bystander.cookie);
+    expect((await extend(borrower, loanId, 7)).status).toBe(409);
+
+    await request(app).delete(`/api/holds/minis/${miniId}`).set('Cookie', bystander.cookie);
+
+    expect((await extend(borrower, loanId, 7)).status).toBe(200);
+  });
+
+  it('tells both sides how many days are left to give', async () => {
+    const { loanId } = await lendOut(80);
+
+    const list = await request(app).get('/api/loans').set('Cookie', borrower.cookie);
+    expect(list.body[0]).toMatchObject({ holdsWaiting: 0, extendableDays: 10 });
+
+    expect((await extend(borrower, loanId, 11)).status).toBe(400);
+    expect((await extend(borrower, loanId, 10)).status).toBe(200);
+    const after = await request(app).get('/api/loans').set('Cookie', owner.cookie);
+    expect(after.body[0]).toMatchObject({ durationDays: 90, extendableDays: 0 });
+  });
+
+  it('lets the owner extend it as well, and tells the other person', async () => {
+    const { loanId } = await lendOut(14);
+
+    expect((await extend(owner, loanId, 3)).status).toBe(200);
+
+    const inbox = await request(app).get('/api/notifications').set('Cookie', borrower.cookie);
+    expect(inbox.body.items[0].message).toMatch(/kept Dire Wolf for 3 more days/);
+  });
+
+  it('is nobody else\'s business', async () => {
+    const { loanId } = await lendOut(14);
+
+    expect((await extend(bystander, loanId, 7)).status).toBe(404);
+  });
+
+  it('can\'t be done before the handoff, or after it comes back', async () => {
+    const miniId = await createMini(owner, 'Owlbear');
+    const loanId = await requestMini(borrower, miniId);
+    expect((await extend(borrower, loanId, 7)).status).toBe(409); // still negotiating
+
+    await agreeOnTerms(loanId, 14);
+    await act(owner, loanId, 'handoff');
+    await act(owner, loanId, 'return');
+
+    expect((await extend(borrower, loanId, 7)).status).toBe(409);
+  });
+
+  // An overdue loan that gets more time is no longer overdue, and the hourly
+  // sweep should be able to say so again if it runs out a second time.
+  it('clears the overdue announcement so a fresh one can be made later', async () => {
+    const { loanId } = await lendOut(14);
+    await pool.execute(
+      'UPDATE loans SET due_at = NOW() - INTERVAL 1 DAY, overdue_notified_at = NOW() WHERE id = ?', [loanId]
+    );
+
+    expect((await extend(borrower, loanId, 7)).status).toBe(200);
+
+    const [rows] = await pool.execute<import('mysql2').RowDataPacket[]>(
+      'SELECT overdue_notified_at FROM loans WHERE id = ?', [loanId]
+    );
+    expect(rows[0].overdue_notified_at).toBeNull();
+  });
+});
+
 describe('the borrower confirming they got it', () => {
   it('the owner\'s handoff starts the loan on its own; the borrower\'s "got it" is recorded for both to see', async () => {
     const loanId = await requestMini(borrower, await createMini(owner, 'Dire Wolf'));

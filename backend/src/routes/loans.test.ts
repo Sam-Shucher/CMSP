@@ -47,6 +47,7 @@ function loanRow(overrides: Record<string, unknown> = {}) {
     borrower_name: 'Borrower',
     owner_username: 'owner',
     owner_name: 'Owner',
+    holds_waiting: 0, // the query counts the hold line; nobody waiting by default
     ...overrides,
   };
 }
@@ -112,6 +113,95 @@ describe('loans — someone else changed the loan at the same moment', () => {
     const update = execute.mock.calls.find(([sql]) => String(sql).includes('UPDATE loans'))!;
     expect(update[0]).toMatch(/status = 'negotiating'/);
     expect(update[0]).toMatch(/borrower_approved = 1 AND owner_approved = 1/);
+  });
+});
+
+// Keeping a mini longer. A library won't renew a reserved book, and the hold
+// line is this app's version of a reservation — so the check that nobody is
+// waiting has to happen on the server, not only in the button that's hidden.
+describe('POST /api/loans/:id/extend', () => {
+  const OUT = { status: 'adventuring', handed_off_at: new Date('2026-10-01T18:00:00.000Z'), due_at: new Date('2026-10-15T18:00:00.000Z') };
+  const NOBODY_WAITING = [[{ waiting: 0 }]];
+  const ONE_WAITING = [[{ waiting: 1 }]];
+  const ONE_ROW_CHANGED = [{ affectedRows: 1 }];
+
+  it('moves the due date on, counted from the handoff and not from today', async () => {
+    execute
+      .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
+      .mockResolvedValueOnce([[loanRow(OUT)]])
+      .mockResolvedValueOnce(NOBODY_WAITING)
+      .mockResolvedValueOnce(ONE_ROW_CHANGED)
+      .mockResolvedValueOnce([[loanRow({ ...OUT, duration_days: 21, due_at: new Date('2026-10-22T18:00:00.000Z') })]]);
+
+    const res = await request(app).post('/api/loans/5/extend').set('Cookie', authCookie(BORROWER)).send({ extraDays: 7 });
+
+    expect(res.status).toBe(200);
+    const update = execute.mock.calls.find(([sql]) => String(sql).includes('UPDATE loans SET duration_days'))!;
+    expect(update[0]).toMatch(/status = 'adventuring'/); // can't extend one that just came back
+    // 14 agreed + 7 = 21 days from the handoff, not 7 from now.
+    expect(update[1]).toEqual(expect.arrayContaining([21, new Date('2026-10-22T18:00:00.000Z')]));
+  });
+
+  it('refuses while anyone is in the hold line, and changes nothing', async () => {
+    execute
+      .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
+      .mockResolvedValueOnce([[loanRow(OUT)]])
+      .mockResolvedValueOnce(ONE_WAITING);
+
+    const res = await request(app).post('/api/loans/5/extend').set('Cookie', authCookie(BORROWER)).send({ extraDays: 7 });
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toMatch(/waiting in line/i);
+    expect(execute.mock.calls.some(([sql]) => String(sql).includes('UPDATE loans'))).toBe(false);
+  });
+
+  it('lets the owner give more time too', async () => {
+    execute
+      .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
+      .mockResolvedValueOnce([[loanRow(OUT)]])
+      .mockResolvedValueOnce(NOBODY_WAITING)
+      .mockResolvedValueOnce(ONE_ROW_CHANGED)
+      .mockResolvedValueOnce([[loanRow({ ...OUT, duration_days: 21 })]]);
+
+    const res = await request(app).post('/api/loans/5/extend').set('Cookie', authCookie(OWNER)).send({ extraDays: 7 });
+
+    expect(res.status).toBe(200);
+  });
+
+  it('refuses a loan that isn\'t out adventuring', async () => {
+    execute
+      .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
+      .mockResolvedValueOnce([[loanRow()]]); // still negotiating
+
+    const res = await request(app).post('/api/loans/5/extend').set('Cookie', authCookie(BORROWER)).send({ extraDays: 7 });
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toMatch(/isn't out/i);
+  });
+
+  it('refuses going past the three months, before asking about holds', async () => {
+    execute
+      .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
+      .mockResolvedValueOnce([[loanRow({ ...OUT, duration_days: 85 })]])
+      .mockResolvedValueOnce(NOBODY_WAITING);
+
+    const res = await request(app).post('/api/loans/5/extend').set('Cookie', authCookie(BORROWER)).send({ extraDays: 10 });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/5 more days/);
+    expect(execute.mock.calls.some(([sql]) => String(sql).includes('UPDATE loans'))).toBe(false);
+  });
+
+  it('returns 409 when the loan came back between the read and the update', async () => {
+    execute
+      .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
+      .mockResolvedValueOnce([[loanRow(OUT)]])
+      .mockResolvedValueOnce(NOBODY_WAITING)
+      .mockResolvedValueOnce(NO_ROWS_CHANGED);
+
+    const res = await request(app).post('/api/loans/5/extend').set('Cookie', authCookie(BORROWER)).send({ extraDays: 7 });
+
+    expect(res.status).toBe(409);
   });
 });
 

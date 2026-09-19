@@ -11,6 +11,7 @@ import ProfilePage from './pages/ProfilePage';
 import CollectionPicker from './pages/CollectionPicker';
 import CartPage from './pages/CartPage';
 import LoansPage from './pages/LoansPage';
+import SetsPage from './pages/SetsPage';
 import NotificationBell from './components/NotificationBell';
 import CartLink from './components/CartLink';
 import ErrorBoundary from './components/ErrorBoundary';
@@ -99,6 +100,7 @@ function NavBar(): React.ReactElement | null {
       <a href="/upload" style={{ color: '#e8e0d0', fontSize: '14px' }}>Add Mini</a>
       <CartLink collectionId={user.collectionId} />
       <Link to="/loans" style={{ color: '#e8e0d0', fontSize: '14px' }}>Loans</Link>
+      <Link to="/sets" style={{ color: '#e8e0d0', fontSize: '14px' }}>Sets</Link>
       {/* Admin link only appears for users with the admin role */}
       {user.role === 'admin' && (
         <a href="/admin" style={{ color: '#c9a84c', fontSize: '14px' }}>Admin</a>
@@ -199,6 +201,7 @@ function AppBody({ groupNotice, onDismissGroupNotice }: { groupNotice?: string; 
         <Route path="/profile"       element={<PrivateRoute><ProfilePage /></PrivateRoute>} />
         <Route path="/cart"          element={<PrivateRoute><CartPage /></PrivateRoute>} />
         <Route path="/loans"         element={<PrivateRoute><LoansPage /></PrivateRoute>} />
+        <Route path="/sets"          element={<PrivateRoute><SetsPage /></PrivateRoute>} />
 
         {/* Admin route — requires both login and admin role */}
         <Route path="/admin"  element={<PrivateRoute><AdminRoute><AdminPage /></AdminRoute></PrivateRoute>} />

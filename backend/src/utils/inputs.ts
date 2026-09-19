@@ -17,6 +17,8 @@ export const LIMITS = {
   tagsPerMini: 20,
   search: 100,
   password: 1024,
+  setName: 100,
+  setMembers: 50, // most a single set-membership change can touch at once
 } as const;
 
 // Whitespace plus invisible formatting characters (zero-width spaces, joiners,
@@ -80,4 +82,22 @@ export function positiveId(value: unknown): Check<number> {
     return { ok: false, error: 'A valid id is required' };
   }
   return { ok: true, value };
+}
+
+// A JSON body's list of ids (e.g. { miniIds: [1, 2, 3] }) — optional (missing
+// or null means none), capped so a request can't ask the server to touch an
+// unbounded number of rows, and deduplicated since a client sending the same
+// id twice never means anything different from sending it once.
+export function idList(value: unknown, label: string, max: number): Check<number[]> {
+  if (value === undefined || value === null) return { ok: true, value: [] };
+  if (!Array.isArray(value)) return { ok: false, error: `${label} must be a list of ids` };
+  if (value.length > max) return { ok: false, error: `${label} can have at most ${max} at a time` };
+
+  const ids: number[] = [];
+  for (const entry of value) {
+    const checked = positiveId(entry);
+    if (!checked.ok) return { ok: false, error: `${label} must all be valid ids` };
+    ids.push(checked.value);
+  }
+  return { ok: true, value: [...new Set(ids)] };
 }

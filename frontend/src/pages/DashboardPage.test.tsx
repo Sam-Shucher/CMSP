@@ -20,6 +20,8 @@ const MINI_OWNED_BY_1: Mini = {
   owner_id: 1,
   tags: [],
   created_at: '2026-01-01T00:00:00.000Z',
+  set_id: null,
+  set_name: null,
 };
 
 // Routes fetches by URL + method, so the order the page fires its requests in doesn't matter.
@@ -283,6 +285,21 @@ describe('DashboardPage — browsing, search, and tags', () => {
     await screen.findByText('Dire Wolf');
 
     expect(screen.queryByText(/\$/)).not.toBeInTheDocument();
+  });
+
+  it('shows which set a mini is part of, and nothing when it isn\'t in one', async () => {
+    mockBrowse({ minis: [{ ...MINI_OWNED_BY_1, set_id: 501, set_name: 'Blades of Khaine' }] });
+    renderDashboard({ userId: 2, username: 'other', role: 'user' });
+
+    expect(await screen.findByText(/part of: blades of khaine/i)).toBeInTheDocument();
+  });
+
+  it('shows no set line for a mini that is not in one', async () => {
+    mockBrowse();
+    renderDashboard({ userId: 2, username: 'other', role: 'user' });
+    await screen.findByText('Dire Wolf');
+
+    expect(screen.queryByText(/part of:/i)).not.toBeInTheDocument();
   });
 
   it('closes the overlay', async () => {

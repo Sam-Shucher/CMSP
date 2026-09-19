@@ -144,7 +144,13 @@ export default function MiniDetailModal({ mini, onClose, isOwn = false, inCart =
             <MiniStatusBadge status={mini.status} />
           </div>
 
-          <p style={{ fontSize: '13px', color: '#8a7d6a', marginBottom: '14px' }}>owned by {mini.owner_name}</p>
+          <p style={{ fontSize: '13px', color: '#8a7d6a', marginBottom: mini.set_name ? '4px' : '14px' }}>owned by {mini.owner_name}</p>
+
+          {mini.set_name && (
+            <p style={{ fontSize: '13px', color: '#8a7d6a', marginBottom: '14px' }}>
+              Part of the <strong>{mini.set_name}</strong> set — see the Sets page to borrow it all at once.
+            </p>
+          )}
 
           {mini.price > 0 && (
             <p style={{ fontSize: '15px', color: '#c9a84c', fontWeight: 600, marginBottom: '14px' }}>

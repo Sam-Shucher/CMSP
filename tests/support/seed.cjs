@@ -96,7 +96,7 @@ async function resetData() {
   try {
     for (const table of [
       'notifications', 'holds', 'hold_watchers', 'cart_items', 'loans',
-      'mini_tags', 'mini_images', 'minis', 'tags', 'approved_emails',
+      'mini_tags', 'mini_images', 'minis', 'sets', 'tags', 'approved_emails',
     ]) {
       await conn.query(`DELETE FROM ${table}`);
     }

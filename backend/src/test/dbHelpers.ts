@@ -21,7 +21,7 @@ export async function assertDatabaseReachable(): Promise<void> {
 export async function resetDatabase(): Promise<void> {
   for (const table of [
     'notifications', 'holds', 'hold_watchers',
-    'cart_items', 'loans', 'mini_tags', 'mini_images', 'minis', 'tags',
+    'cart_items', 'loans', 'mini_tags', 'mini_images', 'minis', 'sets', 'tags',
     'approved_emails', 'collection_memberships', 'sessions', 'users', 'collections',
   ]) {
     await pool.query(`DELETE FROM ${table}`);

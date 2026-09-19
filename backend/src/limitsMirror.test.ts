@@ -53,6 +53,8 @@ describe('frontend/src/limits.ts mirrors what the server actually enforces', () 
     ['tag', () => LIMITS.tag],
     ['tagsPerMini', () => LIMITS.tagsPerMini],
     ['search', () => LIMITS.search],
+    ['setName', () => LIMITS.setName],
+    ['setMembers', () => LIMITS.setMembers],
   ])('mirrors the %s length limit', (name: string, server: () => number) => {
     expect(mirrored(name)).toBe(server());
   });

@@ -141,6 +141,9 @@ describe('indexes the hot queries need', () => {
     ['loans', 'idx_loans_collection_owner', ['collection_id', 'owner_id']],
     // The photo subquery, which orders by position.
     ['mini_images', 'idx_mini_images_mini_position', ['mini_id', 'position']],
+    // GET /api/sets (list) and every member lookup: WHERE set_id = ? / collection_id = ?
+    ['sets', 'idx_sets_collection', ['collection_id']],
+    ['minis', 'idx_minis_set', ['set_id']],
   ];
 
   it.each(EXPECTED)('%s has %s', async (table: string, index: string, columns: string[]) => {

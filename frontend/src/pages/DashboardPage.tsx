@@ -268,6 +268,10 @@ function MiniCard({ mini, onOpenDetail }: { mini: Mini; onOpenDetail: () => void
           )}
         </p>
 
+        {mini.set_name && (
+          <p style={{ fontSize: '12px', color: '#8a7d6a', marginBottom: '4px' }}>Part of: {mini.set_name}</p>
+        )}
+
         {mini.price > 0 && (
           <p style={{ fontSize: '13px', color: '#c9a84c', fontWeight: 600, marginBottom: '10px' }}>
             ${mini.price.toFixed(2)}

@@ -30,7 +30,7 @@ describe('App nav — username link', () => {
       if (url === '/api/users/me') return Promise.resolve(jsonResponse(PROFILE));
       if (url.startsWith('/api/minis/tags')) return Promise.resolve(jsonResponse([]));
       if (url.startsWith('/api/minis'))       return Promise.resolve(jsonResponse([]));
-      if (url === '/api/cart' || url === '/api/loans') return Promise.resolve(jsonResponse([]));
+      if (url === '/api/cart' || url === '/api/loans' || url === '/api/sets') return Promise.resolve(jsonResponse([]));
       return Promise.resolve(jsonResponse({}));
     }));
   });
@@ -60,6 +60,14 @@ describe('App nav — username link', () => {
     await userEvent.click(await screen.findByRole('link', { name: 'Loans' }));
 
     await waitFor(() => expect(screen.getByRole('heading', { name: /^loans$/i })).toBeInTheDocument());
+  });
+
+  it('links to the sets page from the nav', async () => {
+    render(<App />);
+
+    await userEvent.click(await screen.findByRole('link', { name: 'Sets' }));
+
+    await waitFor(() => expect(screen.getByRole('heading', { name: /^sets$/i })).toBeInTheDocument());
   });
 });
 

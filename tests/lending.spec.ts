@@ -1,4 +1,4 @@
-import { test, expect, createMini } from './support/fixtures';
+import { test, expect, createMini, requestMini, apiCall } from './support/fixtures';
 import { Page } from '@playwright/test';
 
 // The whole borrowing journey, two people in two browser windows:
@@ -57,6 +57,50 @@ test('the nav shows how many minis are in your cart, and stops once you check ou
   await bruno.getByRole('button', { name: 'Checkout' }).click();
   await expect(bruno.getByText(/Sent 1 request/)).toBeVisible();
   await expect(cartCount(bruno)).toHaveCount(0);
+});
+
+// Keeping a mini longer, and the library rule that a reserved one can't be.
+test('a borrower keeps a mini longer, until somebody gets in line for it', async ({ as }) => {
+  const olivia = await as('olivia');
+  const bruno = await as('bruno');
+  const wendy = await as('wendy');
+  const miniId = await createMini(olivia, 'Dire Wolf');
+
+  // Straight to adventuring: the journey itself is covered by the test below.
+  const loanId = await requestMini(bruno, miniId);
+  await apiCall(bruno, 'PATCH', `/api/loans/${loanId}/terms`, { when: '2026-10-01T18:00:00.000Z', where: 'Shop', how: 'In person' });
+  await apiCall(olivia, 'PATCH', `/api/loans/${loanId}/terms`, { durationDays: 7 });
+  await apiCall(bruno, 'POST', `/api/loans/${loanId}/approve`);
+  await apiCall(olivia, 'POST', `/api/loans/${loanId}/handoff`);
+
+  await bruno.goto('/loans');
+  const brunoCard = loanWith(bruno, 'Olivia Owner');
+  await expect(brunoCard).toContainText(/6d 23h left|7d 0h left/);
+
+  // A week more, asked for and granted on the spot.
+  await brunoCard.getByLabel('More days').fill('7');
+  await brunoCard.getByRole('button', { name: 'Keep it longer' }).click();
+  await expect(brunoCard).toContainText(/13d 23h left|14d 0h left/);
+
+  // Olivia hears about it, since the date she agreed to has moved. (She has
+  // other unread notices from agreeing the loan, so this opens the one.)
+  await olivia.goto('/loans');
+  await openNotification(olivia, /Bruno Borrower kept Dire Wolf for 7 more days/);
+
+  // Wendy joins the line — now nobody can keep it longer.
+  await wendy.goto('/');
+  await wendy.getByText('Dire Wolf').click();
+  await wendy.getByRole('button', { name: /Place a hold/ }).click();
+  await expect(wendy.getByText(/You're #1 in line/)).toBeVisible();
+
+  await bruno.reload();
+  await expect(brunoCard).toContainText('Someone is waiting in line for Dire Wolf, so it can\'t be kept longer.');
+  await expect(brunoCard.getByRole('button', { name: 'Keep it longer' })).toHaveCount(0);
+
+  // And the server says no even if the button is gone from the page only.
+  const refused = await apiCall<{ error: string }>(bruno, 'POST', `/api/loans/${loanId}/extend`, { extraDays: 7 });
+  expect(refused.status).toBe(409);
+  expect(refused.body.error).toMatch(/waiting in line/);
 });
 
 test('borrowing a mini from request to return, with the handoff confirmed by the owner', async ({ as }) => {

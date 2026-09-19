@@ -118,6 +118,20 @@ export function handedOff(loanId: number): Promise<void> {
   });
 }
 
+// Kept longer. Whoever asked for it knows already; the other person is told,
+// because the date they agreed to has moved.
+export function extended(loanId: number, actorId: number, days: number): Promise<void> {
+  return safely('extended', async () => {
+    const loan = await loadLoan(loanId);
+    if (!loan?.due_at) return;
+    const { otherId, actorName } = sides(loan, actorId);
+    await notify([otherId], {
+      ...base(loan), type: 'extended',
+      message: messages.extended(actorName, loan.mini_name, days, new Date(loan.due_at)),
+    });
+  });
+}
+
 export function received(loanId: number): Promise<void> {
   return safely('received', async () => {
     const loan = await loadLoan(loanId);

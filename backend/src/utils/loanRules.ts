@@ -191,3 +191,52 @@ export function termsToCopy(source: LoanTerms, role: LoanRole): Partial<LoanTerm
 export function dueAtFrom(handedOffAt: Date, durationDays: number): Date {
   return new Date(handedOffAt.getTime() + durationDays * DAY_MS);
 }
+
+// How long a loan has actually run: handoff to return, or handoff to now for
+// one that's still out. Used by a mini's lending history ("how often, for how
+// long"), not by the three-month cap — that's durationDays, what was agreed,
+// not what happened.
+export function daysOut(handedOffAt: Date, returnedAt: Date | null, now: Date = new Date()): number {
+  const end = returnedAt ?? now;
+  return Math.max(0, Math.round((end.getTime() - handedOffAt.getTime()) / DAY_MS));
+}
+
+// Someone is in line for it, so it can't be kept longer — a library won't renew
+// a book that's reserved either. Bringing it back hands it straight to them.
+export const HOLD_BLOCKS_EXTENSION =
+  'Someone is waiting in line for this mini, so it can\'t be kept longer — bring it back and they\'re next';
+
+// Keeping a mini longer without cancelling and asking again. The three months a
+// loan gets is a ceiling on the whole loan, counted from the handoff, so an
+// extension can only spend what's left of it.
+export function parseExtension(
+  input: { extraDays?: unknown },
+  currentDurationDays: number | null
+): { ok: true; totalDays: number } | RuleFailure {
+  if (currentDurationDays === null) {
+    return { ok: false, status: 409, error: 'This loan has no agreed duration to extend' };
+  }
+
+  const extra = input.extraDays;
+  if (typeof extra !== 'number' || !Number.isInteger(extra) || extra < 1 || extra > MAX_DURATION_DAYS) {
+    return { ok: false, status: 400, error: `Say how many more days, from 1 to ${MAX_DURATION_DAYS}` };
+  }
+
+  const left = MAX_DURATION_DAYS - currentDurationDays;
+  if (left <= 0) {
+    return {
+      ok: false,
+      status: 400,
+      error: `It's already been out for the three months a loan can run — bring it back, and agree a fresh loan if you both want`,
+    };
+  }
+  if (extra > left) {
+    return {
+      ok: false,
+      status: 400,
+      error: `A loan can run three months in total, so you can keep it ${left} more day${left === 1 ? '' : 's'}`,
+    };
+  }
+
+  return { ok: true, totalDays: currentDurationDays + extra };
+}

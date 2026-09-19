@@ -59,6 +59,8 @@ function miniRow(overrides: Partial<Record<string, unknown>> = {}) {
     created_at: '2026-01-01T00:00:00.000Z',
     tags: null,
     images: null,
+    set_id: null,
+    set_name: null,
     ...overrides,
   };
 }
@@ -185,6 +187,119 @@ describe('GET /api/minis/:id', () => {
   });
 });
 
+// "Who's had this, how often" — the owner's (or an admin's) view of every
+// completed or ongoing loan for one mini. Not a public feature: this app
+// otherwise keeps a mini's CURRENT borrower anonymous to everyone but the
+// two people in the loan (MiniDetailModal says "with a borrower", not a
+// name), so a full name-and-date history is scoped the same way editing is.
+describe('GET /api/minis/:id/history', () => {
+  function historyRow(overrides: Partial<Record<string, unknown>> = {}) {
+    return {
+      id: 501,
+      borrower_id: 2,
+      borrower_username: 'bruno',
+      borrower_name: 'Bruno Borrower',
+      handed_off_at: new Date('2026-09-01T18:00:00.000Z'),
+      returned_at: new Date('2026-09-15T18:00:00.000Z'),
+      status: 'returned',
+      ...overrides,
+    };
+  }
+
+  it('lets the owner see it, newest first, with days out computed', async () => {
+    execute
+      .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
+      .mockResolvedValueOnce([[{ owner_id: OWNER.userId }]])
+      .mockResolvedValueOnce([[historyRow()]]);
+
+    const res = await request(app).get('/api/minis/42/history').set('Cookie', authCookie(OWNER));
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual([{
+      loanId: 501,
+      borrowerId: 2,
+      borrowerUsername: 'bruno',
+      borrowerName: 'Bruno Borrower',
+      handedOffAt: '2026-09-01T18:00:00.000Z',
+      returnedAt: '2026-09-15T18:00:00.000Z',
+      ongoing: false,
+      daysOut: 14,
+    }]);
+    const historyQuery = execute.mock.calls[2];
+    expect(historyQuery[0]).toMatch(/ORDER BY .*handed_off_at.* DESC/is);
+  });
+
+  it('marks a loan that is still out as ongoing, with no return date', async () => {
+    execute
+      .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
+      .mockResolvedValueOnce([[{ owner_id: OWNER.userId }]])
+      .mockResolvedValueOnce([[historyRow({ returned_at: null, status: 'adventuring' })]]);
+
+    const res = await request(app).get('/api/minis/42/history').set('Cookie', authCookie(OWNER));
+
+    expect(res.status).toBe(200);
+    expect(res.body[0]).toMatchObject({ ongoing: true, returnedAt: null });
+    expect(res.body[0].daysOut).toBeGreaterThanOrEqual(0);
+  });
+
+  it('lets an admin see someone else\'s mini history', async () => {
+    execute
+      .mockResolvedValueOnce(ADMIN_MEMBERSHIP)
+      .mockResolvedValueOnce([[{ owner_id: OWNER.userId }]]) // owned by OWNER, not the admin
+      .mockResolvedValueOnce([[]]);
+
+    const res = await request(app).get('/api/minis/42/history').set('Cookie', authCookie(ADMIN));
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual([]);
+  });
+
+  it('refuses anyone else — even a fellow member browsing the same collection', async () => {
+    execute
+      .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
+      .mockResolvedValueOnce([[{ owner_id: OWNER.userId }]]);
+
+    const res = await request(app).get('/api/minis/42/history').set('Cookie', authCookie(OTHER));
+
+    expect(res.status).toBe(403);
+    // Refused before ever running the history query.
+    expect(execute).toHaveBeenCalledTimes(2);
+  });
+
+  it('returns 404 when the mini does not exist', async () => {
+    execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED).mockResolvedValueOnce([[]]);
+
+    const res = await request(app).get('/api/minis/999/history').set('Cookie', authCookie(OWNER));
+
+    expect(res.status).toBe(404);
+  });
+
+  it('returns 404 (not 403) for a mini in a different collection', async () => {
+    execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED).mockResolvedValueOnce([[]]);
+
+    const res = await request(app).get('/api/minis/42/history').set('Cookie', authCookie(OWNER));
+
+    expect(res.status).toBe(404);
+    expect(execute).toHaveBeenCalledWith(
+      expect.stringContaining('collection_id = ?'),
+      [42, COLLECTION_A]
+    );
+  });
+
+  it('never asks for a loan that was cancelled or is still being negotiated', async () => {
+    execute
+      .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
+      .mockResolvedValueOnce([[{ owner_id: OWNER.userId }]])
+      .mockResolvedValueOnce([[]]);
+
+    await request(app).get('/api/minis/42/history').set('Cookie', authCookie(OWNER));
+
+    // Every row here has a handoff — a request that was cancelled, or never
+    // got past negotiating, never happened, so it isn't lending history.
+    expect(execute.mock.calls[2][0]).toMatch(/handed_off_at IS NOT NULL/);
+  });
+});
+
 describe('mini status in responses', () => {
   it.each([
     [null, 'available', true],
@@ -199,6 +314,30 @@ describe('mini status in responses', () => {
 
     expect(res.body).toMatchObject({ status, available, price: 12.5, tags: ['boss', 'painted'] });
     expect(res.body).not.toHaveProperty('active_loan_status');
+  });
+});
+
+// A mini optionally belongs to one owner's named set (a boxed army) — carried
+// on every mini response so a card or the detail view can say "part of X".
+describe('a mini\'s set membership in responses', () => {
+  it('shows which set a mini belongs to', async () => {
+    execute
+      .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
+      .mockResolvedValueOnce([[miniRow({ set_id: 7, set_name: 'Blades of Khaine' })]]);
+
+    const res = await request(app).get('/api/minis/42').set('Cookie', authCookie(OWNER));
+
+    expect(res.body).toMatchObject({ set_id: 7, set_name: 'Blades of Khaine' });
+  });
+
+  it('is null for a mini that isn\'t part of any set', async () => {
+    execute
+      .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
+      .mockResolvedValueOnce([[miniRow({ set_id: null, set_name: null })]]);
+
+    const res = await request(app).get('/api/minis/42').set('Cookie', authCookie(OWNER));
+
+    expect(res.body).toMatchObject({ set_id: null, set_name: null });
   });
 });
 

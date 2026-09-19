@@ -44,6 +44,8 @@ export default function LoanCard({ loan, now, otherOpenRequests, onUpdated }: Lo
   const [error, setError] = useState<string>('');
   const [busy, setBusy] = useState<boolean>(false);
   const [confirmingCancel, setConfirmingCancel] = useState<boolean>(false);
+  // How many more days to ask for. A week is the usual answer.
+  const [extraDays, setExtraDays] = useState<string>('7');
 
   // Re-fill the form when this loan's saved terms change (after either side
   // proposes), without wiping unsaved edits whenever some other card reloads.
@@ -67,6 +69,12 @@ export default function LoanCard({ loan, now, otherOpenRequests, onUpdated }: Lo
   const theirKey = isOwner ? loan.borrowerApproved : loan.ownerApproved;
   const termsComplete = Boolean(loan.handoffWhen && loan.handoffWhere && loan.handoffHow && loan.durationDays);
   const overdue = adventuring && loan.dueAt !== null && new Date(loan.dueAt).getTime() < now.getTime();
+  // Whole days only, and never more than the three months has left — the server
+  // checks both again, this just keeps the button from asking for the refusal.
+  const askedDays = Number.parseInt(extraDays, 10);
+  const extendsBy = Number.isInteger(askedDays) && askedDays >= 1
+    ? Math.min(askedDays, loan.extendableDays)
+    : 0;
   const stage: LoanStage = adventuring ? (overdue ? 'overdue' : 'adventuring') : loan.stage;
 
   // Only send what actually changed — an unchanged field would be a no-op
@@ -254,6 +262,44 @@ export default function LoanCard({ loan, now, otherOpenRequests, onUpdated }: Lo
               </button>
             </div>
           )}
+          {/* Keeping it longer. Either side can — the borrower because they
+              need it, the owner because they're happy for them to have it. Not
+              while anyone is in line: a library won't renew a reserved book,
+              and here the next person gets it the moment it's marked back. */}
+          {loan.holdsWaiting > 0 ? (
+            <p style={{ color: '#8a7d6a', marginTop: '8px' }}>
+              {loan.holdsWaiting === 1 ? 'Someone is waiting in line' : `${loan.holdsWaiting} people are waiting in line`} for
+              {' '}{loan.miniName}, so it can't be kept longer.
+            </p>
+          ) : loan.extendableDays <= 0 ? (
+            <p style={{ color: '#8a7d6a', marginTop: '8px' }}>
+              It's been out for the three months a loan can run — time to bring it back.
+            </p>
+          ) : (
+            <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap', marginTop: '8px' }}>
+              <label htmlFor={`extend-${loan.id}`} style={{ color: '#8a7d6a' }}>Need longer?</label>
+              <input
+                id={`extend-${loan.id}`}
+                type="number"
+                aria-label="More days"
+                min={1}
+                max={loan.extendableDays}
+                value={extraDays}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) => setExtraDays(e.target.value)}
+                style={{ width: '70px' }}
+              />
+              <button
+                type="button"
+                className="btn-secondary"
+                disabled={busy || !extendsBy}
+                onClick={() => void run(`/api/loans/${loan.id}/extend`, { method: 'POST', json: { extraDays: extendsBy } })}
+                style={{ padding: '6px 14px', fontSize: '13px' }}
+              >
+                Keep it longer
+              </button>
+            </div>
+          )}
+
           {isOwner && (
             <button type="button" className="btn-primary" disabled={busy} onClick={() => void run(`/api/loans/${loan.id}/return`)} style={{ marginTop: '8px', padding: '6px 14px', fontSize: '13px' }}>
               Mark returned

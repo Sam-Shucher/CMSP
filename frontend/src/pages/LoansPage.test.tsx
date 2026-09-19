@@ -32,6 +32,8 @@ function makeLoan(overrides: Partial<Loan> = {}): Loan {
     dueAt: null,
     returnedAt: null,
     createdAt: '2026-09-01T00:00:00.000Z',
+    holdsWaiting: 0,
+    extendableDays: 0,
     ...overrides,
   };
 }

@@ -22,7 +22,7 @@ test('every main page fits a phone screen, nav included', async ({ browser, as }
 
   // Every nav link is on screen and tappable, not pushed off the edge.
   await phone.goto('/');
-  for (const name of ['Browse', 'Add Mini', 'Cart', 'Loans', 'olivia']) {
+  for (const name of ['Browse', 'Add Mini', 'Cart', 'Loans', 'Sets', 'olivia']) {
     const box = await phone.locator('nav').getByRole('link', { name, exact: true }).boundingBox();
     expect(box, name).not.toBeNull();
     expect(box!.x + box!.width, `${name} runs off the screen`).toBeLessThanOrEqual(390);

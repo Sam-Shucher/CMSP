@@ -17,6 +17,8 @@ function makeMini(overrides: Partial<Mini> = {}): Mini {
     owner_id: 1,
     tags: ['painted', 'boss'],
     created_at: '2026-01-01T00:00:00.000Z',
+    set_id: null,
+    set_name: null,
     ...overrides,
   };
 }
@@ -40,6 +42,19 @@ describe('MiniDetailModal', () => {
     expect(screen.getByText('boss')).toBeInTheDocument();
     expect(screen.getByText(/owner name/i)).toBeInTheDocument();
     expect(screen.getByText('$12.50')).toBeInTheDocument();
+  });
+
+  it('says which set a mini is part of', () => {
+    render(<MiniDetailModal mini={makeMini({ set_id: 501, set_name: 'Blades of Khaine' })} onClose={vi.fn()} />);
+
+    expect(screen.getByText(/part of the/i)).toBeInTheDocument();
+    expect(screen.getByText('Blades of Khaine')).toBeInTheDocument();
+  });
+
+  it('shows nothing about a set for a mini that is not in one', () => {
+    render(<MiniDetailModal mini={makeMini()} onClose={vi.fn()} />);
+
+    expect(screen.queryByText(/part of the/i)).not.toBeInTheDocument();
   });
 
   it('does not show next/prev arrows when there are 0 or 1 images', () => {

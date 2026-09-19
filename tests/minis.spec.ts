@@ -84,6 +84,32 @@ test('searching tolerates typos and tags filter the list', async ({ as }) => {
   await expect(olivia.getByText('Tabaxi Bard')).toHaveCount(0);
 });
 
+// "Who's had this, how often" — the owner's view of a mini's lending history.
+test('a mini\'s lending history is visible to its owner, not to a bystander', async ({ as }) => {
+  const olivia = await as('olivia');
+  const bruno = await as('bruno');
+  const miniId = await createMini(olivia, 'Dire Wolf');
+
+  // Bruno borrows it and brings it back, all through the real API.
+  await apiCall(bruno, 'POST', '/api/cart', { miniId });
+  const checkout = await apiCall<{ created: { loanId: number }[] }>(bruno, 'POST', '/api/cart/checkout');
+  const loanId = checkout.body.created[0].loanId;
+  await apiCall(bruno, 'PATCH', `/api/loans/${loanId}/terms`, { when: '2026-10-01T18:00:00.000Z', where: 'Shop', how: 'In person' });
+  await apiCall(olivia, 'PATCH', `/api/loans/${loanId}/terms`, { durationDays: 7 });
+  await apiCall(bruno, 'POST', `/api/loans/${loanId}/approve`);
+  await apiCall(olivia, 'POST', `/api/loans/${loanId}/handoff`);
+  await apiCall(olivia, 'POST', `/api/loans/${loanId}/return`);
+
+  await olivia.goto(`/minis/${miniId}/edit`);
+  await olivia.getByRole('button', { name: 'View lending history' }).click();
+  await expect(olivia.getByText('Bruno Borrower')).toBeVisible();
+  await expect(olivia.getByText(/lent out 1 time/i)).toBeVisible();
+
+  // Bruno was IN this loan, but he's not the owner — the server still says no.
+  const res = await apiCall<{ error: string }>(bruno, 'GET', `/api/minis/${miniId}/history`);
+  expect(res.status).toBe(403);
+});
+
 test('only the owner can edit, and deleting needs the name typed exactly', async ({ as }) => {
   const olivia = await as('olivia');
   const bruno = await as('bruno');

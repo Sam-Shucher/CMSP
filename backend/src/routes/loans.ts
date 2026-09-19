@@ -1,11 +1,12 @@
 import { Router, Response } from 'express';
-import { rows, firstRow, change } from '../db/query';
+import { rows, firstRow, firstValue, change } from '../db/query';
 import { requireAuth } from '../middleware/requireAuth';
 import { route, idFrom } from '../utils/route';
 import { requireCollectionMembership, CollectionRequest } from '../middleware/requireCollectionMembership';
 import {
   LoanSnapshot, LoanTerms, LoanApprovals, LoanStatus, RuleFailure,
   roleOf, parseTermsPatch, applyTermsEdit, termsChanged, approveTerms, stageOf, termsToCopy, dueAtFrom,
+  parseExtension, HOLD_BLOCKS_EXTENSION, MAX_DURATION_DAYS,
 } from '../utils/loanRules';
 import * as events from '../services/loanEvents';
 import { promoteNextHold } from '../services/holds';
@@ -40,6 +41,7 @@ interface LoanRow {
   borrower_name: string;
   owner_username: string;
   owner_name: string;
+  holds_waiting: number; // people in line for this mini — they block an extension
 }
 
 // Params: collectionId, userId, userId — callers append further conditions.
@@ -47,7 +49,8 @@ const LOAN_SELECT = `
   SELECT l.*, m.name AS mini_name,
          (SELECT mi.image_path FROM mini_images mi WHERE mi.mini_id = m.id ORDER BY mi.position LIMIT 1) AS mini_image,
          b.username AS borrower_username, b.display_name AS borrower_name,
-         o.username AS owner_username, o.display_name AS owner_name
+         o.username AS owner_username, o.display_name AS owner_name,
+         (SELECT COUNT(*) FROM holds h WHERE h.mini_id = m.id) AS holds_waiting
   FROM loans l
   JOIN minis m ON m.id = l.mini_id
   JOIN users b ON b.id = l.borrower_id
@@ -99,6 +102,12 @@ function serializeLoan(row: LoanRow, userId: number) {
     dueAt: iso(row.due_at),
     returnedAt: iso(row.returned_at),
     createdAt: iso(row.created_at),
+    holdsWaiting: Number(row.holds_waiting),
+    // How much of the three months is left to spend on keeping it longer. The
+    // server checks this again; this is so the page can say it before you try.
+    extendableDays: row.status === 'adventuring' && row.duration_days !== null
+      ? Math.max(0, MAX_DURATION_DAYS - row.duration_days)
+      : 0,
   };
 }
 
@@ -263,6 +272,43 @@ router.post('/:id/received', withLoan(async (req, res, row) => {
   );
   if (confirmed === 0) return fail(res, { ok: false, status: 409, error: 'This loan changed — refresh and try again' });
   await events.received(row.id);
+  await sendLoan(req, res, row.id);
+}));
+
+// POST /api/loans/:id/extend  { extraDays }
+// Keep it longer without cancelling and asking again. Either side can — the
+// borrower because they need it, the owner because they're happy for them to
+// have it — and the other person is told.
+//
+// Refused while anyone is in the hold line: a library won't renew a book
+// someone has reserved, and here the next person in line gets the mini the
+// moment it's marked back.
+router.post('/:id/extend', withLoan(async (req, res, row) => {
+  if (row.status !== 'adventuring') {
+    return fail(res, { ok: false, status: 409, error: "This mini isn't out adventuring" });
+  }
+
+  const waiting = Number(await firstValue<number>(
+    'SELECT COUNT(*) AS waiting FROM holds WHERE mini_id = ?',
+    [row.mini_id]
+  ));
+
+  const parsed = parseExtension((req.body ?? {}) as { extraDays?: unknown }, row.duration_days);
+  if (!parsed.ok) return fail(res, parsed);
+
+  // Checked after the number itself, so "that's more days than you have left"
+  // is what you hear when both are true — it's the answer you can act on.
+  if (waiting > 0) return fail(res, { ok: false, status: 409, error: HOLD_BLOCKS_EXTENSION });
+
+  const dueAt = dueAtFrom(row.handed_off_at!, parsed.totalDays);
+  const extended = await change(
+    `UPDATE loans SET duration_days = ?, due_at = ?, overdue_notified_at = NULL
+     WHERE id = ? AND status = 'adventuring'`,
+    [parsed.totalDays, dueAt, row.id]
+  );
+  if (extended === 0) return fail(res, { ok: false, status: 409, error: 'This loan changed — refresh and try again' });
+
+  await events.extended(row.id, req.user!.userId, parsed.totalDays - row.duration_days!);
   await sendLoan(req, res, row.id);
 }));
 

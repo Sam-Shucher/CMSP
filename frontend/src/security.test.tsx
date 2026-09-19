@@ -30,6 +30,7 @@ describe('hostile text from other members renders as plain text', () => {
     const mini: Mini = {
       id: 1, name: XSS, description: SCRIPT, images: [], price: 0, status: 'available', available: true,
       owner_name: XSS, owner_username: 'x', owner_id: 2, tags: [SCRIPT], created_at: '2026-01-01T00:00:00.000Z',
+      set_id: null, set_name: null,
     };
     const { container } = render(<MiniDetailModal mini={mini} onClose={vi.fn()} />);
 
@@ -45,6 +46,7 @@ describe('hostile text from other members renders as plain text', () => {
       status: 'adventuring', stage: 'adventuring', handoffWhen: null, handoffWhere: XSS, handoffHow: SCRIPT,
       durationDays: 7, borrowerApproved: true, ownerApproved: true, handedOffAt: null, receivedAt: null,
       dueAt: new Date(Date.now() + 86_400_000).toISOString(), returnedAt: null, createdAt: '2026-01-01T00:00:00.000Z',
+      holdsWaiting: 0, extendableDays: 76,
     };
     const { container } = render(<LoanCard loan={loan} now={new Date()} otherOpenRequests={0} onUpdated={vi.fn()} />);
 

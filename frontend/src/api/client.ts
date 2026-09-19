@@ -128,6 +128,39 @@ export type Mini = {
   owner_id: number;
   tags: string[];             // already split by the backend from GROUP_CONCAT
   created_at: string;
+  set_id: number | null;      // this mini's set (a boxed army), if it's in one
+  set_name: string | null;
+};
+
+// A named group of one owner's own minis (a boxed army, a Kill Team),
+// borrowed together with one action instead of one at a time. See /api/sets.
+export type MiniSet = {
+  id: number;
+  name: string;
+  ownerId: number;
+  ownerName: string;
+  ownerUsername: string;
+  members: Mini[];
+};
+
+// The response from POST /api/sets/:id/cart — "borrow this set".
+export type SetCartResult = {
+  added: { miniId: number; name: string }[];
+  skipped: { miniId: number; name: string; reason: 'own' | 'unavailable' | 'already_in_cart' }[];
+  error?: string; // present when nothing at all could be added (a 409)
+};
+
+// One row from GET /api/minis/:id/history — "who's had this, how often".
+// Owner (or admin) only.
+export type MiniHistoryEntry = {
+  loanId: number;
+  borrowerId: number;
+  borrowerUsername: string;
+  borrowerName: string;
+  handedOffAt: string;       // ISO
+  returnedAt: string | null; // null while still out
+  ongoing: boolean;
+  daysOut: number;
 };
 
 // One row from GET /api/cart
@@ -191,4 +224,6 @@ export type Loan = {
   dueAt: string | null;
   returnedAt: string | null;
   createdAt: string;
+  holdsWaiting: number;   // people in line for this mini — nobody can keep it longer while they wait
+  extendableDays: number; // days of the three months still available to extend into, 0 if none
 };

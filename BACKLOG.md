@@ -2,6 +2,85 @@
 
 Things deliberately deferred, with enough context to pick them up cold.
 
+## Feature ideas
+
+Numbered so they can be referred to by number in conversation. The numbers are
+stable names, not an order of priority — 1 and 2 are simply the two picked up
+first. Status is marked where work has started.
+
+**Smaller, self-contained:**
+
+1. **Renew / extend a loan** — *done*. A borrower (or the owner) keeps a mini
+   longer without cancelling and re-requesting. Blocked while anyone is in the
+   hold line, the way a library refuses a renewal on a reserved book. Bounded by
+   the same three months as any loan, counted from the handoff.
+2. **Sort and filter the browse page** — not started. Only one tag plus a
+   search today. Available-only, by owner, newest, name, price.
+3. **A mini's history** — *done*. Who has had it and how often. Owner (or
+   admin) only, on the edit page, collapsed until asked — this app otherwise
+   keeps a mini's CURRENT borrower anonymous to bystanders, so a full
+   name-and-date history of PAST borrowers is scoped the same way editing is,
+   not shown to everyone.
+4. **Sets / armies** — *done*. Group your own minis into a named set (a boxed
+   army, a Kill Team) on the new Sets page; anyone else can borrow the whole
+   thing in one action (`POST /api/sets/:id/cart`), which just adds every
+   available member to their cart — checkout then does exactly what it
+   already does, one request per mini, no new loan concept needed. Deleting a
+   set ungroups its minis rather than deleting them (`ON DELETE SET NULL`).
+   An admin can rename, delete, or remove members from anyone's set, but
+   "add a mini" is owner-only in the UI — the admin's own ungrouped minis
+   aren't the right list to offer there, and the backend already refuses an
+   admin sneaking their own mini into someone else's set if that were tried
+   directly.
+5. **Transfer ownership** — someone sells or gives a mini to another member.
+   Today the only path is delete and re-add, which throws away its history.
+6. **Lost / damaged as a loan outcome** — statuses are negotiating, adventuring,
+   returned, cancelled. Real life also includes "it broke" and "it never came
+   back", and there's nowhere to record either.
+7. **Admin audit log** — removing a member deletes their minis. That much power
+   should leave a trace of who did it and when.
+8. **Grace period on member removal** — archive, then purge later, instead of an
+   immediate cascade. Same reasoning as the audit log.
+9. **Export my collection** — a member takes their own data out; doubles as a
+   second backup path.
+10. **QR labels** — print a sheet, one per case, scan to open that mini. Very
+    library, and genuinely good at a handoff.
+11. **Wishlist** — "looking for a Beholder", and owners see the matches.
+
+**Larger, would change how the app is used:**
+
+12. **Condition record at handoff and return** — a note and a photo at each end
+    of a loan, so "the spear was already bent" is a fact instead of an argument.
+    The most valuable of these for lending fragile painted things, and it fits
+    the loan lifecycle that already exists (`handed_off_at`, `received_at`,
+    `returned_at`).
+13. **Booking for a date** — holds answer "tell me when it's free"; they don't
+    answer "I need these four for game night on the 14th", which is how tabletop
+    actually works. Needs real design: overlapping bookings, no-shows, and how
+    it interacts with the hold line.
+14. **Web Push and a PWA install** — notifications only exist if someone opens
+    the site, and there is no email by design. Web Push works on Android Chrome
+    and on iOS 16.4+ for installed PWAs, and the tunnel already gives HTTPS. A
+    manifest and icons also make "Add to Home Screen" produce a real app.
+15. **Bulk add** — adding a real shelf one mini at a time, three photos each, is
+    what will stop someone finishing. CSV import, or dropping twenty photos and
+    naming them as you go. Unglamorous; the biggest adoption win here.
+16. **A message thread per loan** — negotiation is structured fields, with no
+    room for "running 20 minutes late". So people drop to texting and the app
+    loses the record of what was agreed.
+
+**Decided against, with reasons:**
+
+- **Public reliability scores.** "Bruno returns things late 3 times in 10" is
+  useful and socially poisonous in a friend group. If ever wanted: show counts
+  privately to the owner, never a ranking.
+- **Payments or deposits.** `price` as "what it's worth" is fine. Money moving
+  between friends brings disputes and refunds, and makes this a different app.
+- **Minis visible in more than one collection.** Isolation is the invariant the
+  whole app is built on — every query, test and clean-up path assumes one mini
+  in one collection. A small convenience isn't worth undoing the guarantee.
+- **Anything public or SEO-facing.** Invite-only is a feature.
+
 ## Move password hashing to scrypt (or argon2id)
 
 **Why.** We hash with `bcryptjs` — a pure-JavaScript bcrypt, used because the
@@ -85,13 +164,14 @@ Then `loading="lazy"`, `decoding="async"`, and explicit width/height on the card
 - `GET /api/loans` returns *every* loan ever for that user in that collection
   (`routes/loans.ts:46-56`, no status filter or limit) and the Loans page polls
   it every 30 s. Split active from history and paginate the history.
-- No `compression` middleware (`app.ts`). Cloudflare gzips for internet
-  visitors, so this only shows on the LAN — but it's one line.
-- `express.static(frontendDist)` passes no `maxAge` (`app.ts:71`), so Vite's
-  content-hashed assets revalidate on every load. Worse, a phone holding a
-  cached `index.html` after a deploy can request a chunk that no longer exists
-  and get a **white screen until a hard refresh**. Set `immutable, max-age=1y`
-  for `/assets/*` and `no-cache` for `index.html`.
+
+Two related items — response compression, and cache headers on the built
+frontend — are *done*: `compression({ level: 4 })` in `app.ts`, mounted after
+`/uploads` so it never touches already-compressed photos; `/assets/*` gets
+`immutable, max-age=1y` and `index.html` gets `no-cache` (on both the path
+`express.static` serves it from and the SPA-fallback route), closing the
+white-screen-after-deploy bug. Neither one shrinks the *number* of bytes a
+response has to have in the first place — that's still pagination, above.
 
 ## Make search cheap
 
@@ -147,6 +227,25 @@ transaction that locks one mini row — batching would widen the lock. They run
 hourly (or on an admin action) over a handful of rows. Revisit only if a
 collection reaches hundreds of active loans. `notify()` already batches its
 inserts across recipients.
+
+## Three hand-maintained "every table" lists keep drifting
+
+Adding the `sets` table (feature 4) exposed the same mistake three separate
+times: `backend/src/test/dbHelpers.ts`'s `resetDatabase()`,
+`minis.integration.test.ts`'s local `beforeEach`, and `tests/support/seed.cjs`'s
+`resetData()` each hand-list every table to wipe between tests, and none of
+them got the new table added automatically. The `dbHelpers` and `seed.cjs`
+misses were real and silent — e2e sets accumulated across an entire test run
+until a name collision (two tests both using "Squad") caused a strict-mode
+double-match, which is how it was caught. That's luck, not a guarantee.
+
+The other two mirror-drift bugs this project already hit (`schema.sql` vs
+migrations; `frontend/src/limits.ts` vs the server) both got a test that
+fails loudly the moment they disagree. This is the same shape of problem and
+doesn't have one yet. Worth building: one exported `ALL_TABLES` list (derived
+from `information_schema.TABLES` at test time, or hand-maintained in exactly
+one place) that every cleanup helper imports, so a new table can only ever be
+forgotten once.
 
 ## Grouping the unit tests
 

@@ -63,6 +63,7 @@ vi.mock('../services/loanEvents', () => ({
   requestCancelledByRemoval: vi.fn(async () => {}),
   handedOff: vi.fn(async () => {}),
   received: vi.fn(async () => {}),
+  extended: vi.fn(async () => {}),
   returned: vi.fn(async () => {}),
   notifyOverdueLoans: vi.fn(async () => 0),
 }));

@@ -10,6 +10,8 @@ import {
   stageOf,
   termsToCopy,
   dueAtFrom,
+  parseExtension,
+  daysOut,
 } from './loanRules';
 
 const WHEN = new Date('2026-10-01T18:00:00.000Z');
@@ -236,5 +238,76 @@ describe('termsToCopy — "apply terms to all requests with this person"', () =>
 describe('dueAtFrom', () => {
   it('adds the duration in days to the handoff time', () => {
     expect(dueAtFrom(new Date('2026-10-01T18:00:00.000Z'), 14)).toEqual(new Date('2026-10-15T18:00:00.000Z'));
+  });
+});
+
+// Used by a mini's lending history: how long a loan actually ran, whether
+// it's finished or still going.
+describe('daysOut', () => {
+  it('counts the days between handoff and return', () => {
+    expect(daysOut(new Date('2026-10-01T18:00:00.000Z'), new Date('2026-10-15T18:00:00.000Z'))).toBe(14);
+  });
+
+  it('rounds to the nearest whole day rather than always down', () => {
+    // 14.6 days — closer to 15 than to 14.
+    expect(daysOut(new Date('2026-10-01T00:00:00.000Z'), new Date('2026-10-15T14:24:00.000Z'))).toBe(15);
+    // 14.4 days — closer to 14.
+    expect(daysOut(new Date('2026-10-01T00:00:00.000Z'), new Date('2026-10-15T09:36:00.000Z'))).toBe(14);
+  });
+
+  it('counts up to now for one that is still out, given a clock', () => {
+    const now = new Date('2026-10-08T18:00:00.000Z');
+    expect(daysOut(new Date('2026-10-01T18:00:00.000Z'), null, now)).toBe(7);
+  });
+
+  it('is never negative, even for a clock skewed a moment before the handoff', () => {
+    const handedOffAt = new Date('2026-10-01T18:00:00.000Z');
+    expect(daysOut(handedOffAt, null, new Date(handedOffAt.getTime() - 5000))).toBe(0);
+  });
+});
+
+// Keeping a mini longer without cancelling and asking again. The three months a
+// loan gets is a ceiling on the whole loan, counted from the handoff — so an
+// extension can only use up what's left of it.
+describe('parseExtension', () => {
+  it('adds the days to what was already agreed', () => {
+    expect(parseExtension({ extraDays: 7 }, 14)).toEqual({ ok: true, totalDays: 21 });
+    expect(parseExtension({ extraDays: 1 }, 1)).toEqual({ ok: true, totalDays: 2 });
+  });
+
+  it('allows an extension that lands exactly on the three-month limit', () => {
+    expect(parseExtension({ extraDays: 30 }, 60)).toEqual({ ok: true, totalDays: 90 });
+  });
+
+  it('refuses one that would take the loan past three months, and says what is left', () => {
+    const result = parseExtension({ extraDays: 31 }, 60);
+
+    expect(result).toMatchObject({ ok: false, status: 400 });
+    expect((result as { error: string }).error).toMatch(/30 more days/);
+  });
+
+  it('says so plainly when there is nothing left to give', () => {
+    const result = parseExtension({ extraDays: 1 }, 90);
+
+    expect(result).toMatchObject({ ok: false, status: 400 });
+    expect((result as { error: string }).error).toMatch(/already been out for the three months/i);
+  });
+
+  it.each([
+    ['nothing', undefined],
+    ['zero days', 0],
+    ['a negative number', -5],
+    ['part of a day', 1.5],
+    ['text', '7'],
+    ['an object pretending to be a number', { valueOf: (): number => 7 }],
+    ['more days than a loan can ever run', 91],
+  ])('refuses %s', (_why, extraDays) => {
+    expect(parseExtension({ extraDays }, 14)).toMatchObject({ ok: false, status: 400 });
+  });
+
+  // An adventuring loan always has one, but a tampered or half-migrated row
+  // shouldn't silently become a loan with no end.
+  it('refuses when no duration was ever agreed', () => {
+    expect(parseExtension({ extraDays: 7 }, null)).toMatchObject({ ok: false, status: 409 });
   });
 });

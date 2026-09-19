@@ -3,6 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { api, Mini } from '../api/client';
 import MiniForm, { MiniFormValues } from '../components/MiniForm';
 import ConfirmDeleteModal from '../components/ConfirmDeleteModal';
+import MiniHistory from '../components/MiniHistory';
 
 // Page for editing a mini you already own (or, if you're an admin, anyone's).
 // The server re-checks ownership on submit regardless of what's shown here.
@@ -74,9 +75,13 @@ export default function EditMiniPage(): React.ReactElement {
         onCancel={() => navigate('/')}
       />
 
+      {/* "Who's had this, how often" — collapsed by default, so a routine
+          edit doesn't pay for a fetch nobody asked for. */}
+      <MiniHistory miniId={mini.id} />
+
       {/* Kept separate from the form's own buttons so a mistaken click while
           editing doesn't land anywhere near "delete this permanently". */}
-      <div style={{ marginTop: '32px', paddingTop: '20px', borderTop: '1px solid #3d3629' }}>
+      <div style={{ marginTop: '24px', paddingTop: '20px', borderTop: '1px solid #3d3629' }}>
         {deleteError && <div className="error-msg" style={{ marginBottom: '12px' }}>{deleteError}</div>}
         <button type="button" className="btn-danger" onClick={() => setConfirmingDelete(true)}>
           Delete Mini

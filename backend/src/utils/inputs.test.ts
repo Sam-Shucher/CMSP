@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { requiredText, optionalText, emailAddress, tagList, positiveId } from './inputs';
+import { requiredText, optionalText, emailAddress, tagList, positiveId, idList } from './inputs';
 
 describe('requiredText', () => {
   it('trims and accepts text within the limit', () => {
@@ -101,5 +101,43 @@ describe('positiveId', () => {
 
   it.each([0, -1, 1.5, '6', '6; DROP TABLE collections', null, undefined, [6]])('rejects %s', (value) => {
     expect(positiveId(value)).toMatchObject({ ok: false });
+  });
+});
+
+describe('idList', () => {
+  it('is optional — missing or absent means none', () => {
+    expect(idList(undefined, 'miniIds', 50)).toEqual({ ok: true, value: [] });
+    expect(idList(null, 'miniIds', 50)).toEqual({ ok: true, value: [] });
+  });
+
+  it('accepts a list of positive whole numbers', () => {
+    expect(idList([1, 2, 3], 'miniIds', 50)).toEqual({ ok: true, value: [1, 2, 3] });
+  });
+
+  it('drops duplicates', () => {
+    expect(idList([1, 2, 1, 2, 3], 'miniIds', 50)).toEqual({ ok: true, value: [1, 2, 3] });
+  });
+
+  it('rejects anything that is not an array', () => {
+    expect(idList(1, 'miniIds', 50)).toMatchObject({ ok: false, error: expect.stringMatching(/miniIds/) });
+    expect(idList('1,2,3', 'miniIds', 50)).toMatchObject({ ok: false });
+    expect(idList({ 0: 1 }, 'miniIds', 50)).toMatchObject({ ok: false });
+  });
+
+  it.each([
+    ['a string entry', ['1']],
+    ['zero', [0]],
+    ['a negative number', [-1]],
+    ['a fraction', [1.5]],
+    ['null mixed in', [1, null]],
+    ['an object', [{ id: 1 }]],
+  ])('rejects a list containing %s', (_why, value) => {
+    expect(idList(value, 'miniIds', 50)).toMatchObject({ ok: false });
+  });
+
+  it('caps how many can be given at once', () => {
+    const many = Array.from({ length: 51 }, (_unused, i) => i + 1);
+    expect(idList(many, 'miniIds', 50)).toMatchObject({ ok: false, error: expect.stringMatching(/50/) });
+    expect(idList(many.slice(0, 50), 'miniIds', 50)).toMatchObject({ ok: true });
   });
 });

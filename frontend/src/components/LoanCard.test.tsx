@@ -29,6 +29,8 @@ function makeLoan(overrides: Partial<Loan> = {}): Loan {
     dueAt: null,
     returnedAt: null,
     createdAt: '2026-09-01T00:00:00.000Z',
+    holdsWaiting: 0,
+    extendableDays: 0,
     ...overrides,
   };
 }
@@ -248,6 +250,99 @@ describe('LoanCard — how long a loan can run', () => {
   it('says the limit on the field itself', () => {
     renderCard(makeLoan({ ...asOwner }));
     expect(screen.getByLabelText(/duration/i)).toHaveAttribute('max', '90');
+  });
+});
+
+// Keeping a mini longer. A library won't renew a book somebody has reserved,
+// and the hold line is this app's reservation — so when anyone is waiting, the
+// offer isn't there at all, and it says why.
+describe('LoanCard — keeping it longer', () => {
+  beforeEach(() => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({})));
+  });
+
+  const out: Partial<Loan> = {
+    ...COMPLETE_TERMS,
+    status: 'adventuring',
+    stage: 'adventuring',
+    handedOffAt: '2026-10-01T18:30:00.000Z',
+    dueAt: new Date(Date.now() + 5 * DAY).toISOString(),
+    extendableDays: 76,
+  };
+
+  it('lets the borrower ask for more days', async () => {
+    const { onUpdated } = renderCard(makeLoan(out));
+
+    await userEvent.click(screen.getByRole('button', { name: /keep it longer/i }));
+
+    await waitFor(() => expect(onUpdated).toHaveBeenCalled());
+    expect(lastRequest()).toMatchObject({ url: '/api/loans/7/extend', method: 'POST', body: { extraDays: 7 } });
+  });
+
+  it('lets the owner give more days', async () => {
+    renderCard(makeLoan({ ...out, role: 'owner' }));
+
+    await userEvent.click(screen.getByRole('button', { name: /keep it longer/i }));
+
+    await waitFor(() => expect(lastRequest().url).toBe('/api/loans/7/extend'));
+  });
+
+  it('sends the number of days asked for', async () => {
+    renderCard(makeLoan(out));
+    const days = screen.getByLabelText(/more days/i);
+
+    await userEvent.clear(days);
+    await userEvent.type(days, '14');
+    await userEvent.click(screen.getByRole('button', { name: /keep it longer/i }));
+
+    await waitFor(() => expect(lastRequest().body).toEqual({ extraDays: 14 }));
+  });
+
+  it('will not offer more days than the three months has left', () => {
+    renderCard(makeLoan({ ...out, extendableDays: 4 }));
+
+    expect(screen.getByLabelText(/more days/i)).toHaveAttribute('max', '4');
+  });
+
+  // The rule, in the interface.
+  it('offers nothing while someone is in line, and says why', () => {
+    renderCard(makeLoan({ ...out, holdsWaiting: 1 }));
+
+    expect(screen.queryByRole('button', { name: /keep it longer/i })).not.toBeInTheDocument();
+    expect(screen.getByText(/someone is waiting in line/i)).toBeInTheDocument();
+  });
+
+  it('counts more than one person waiting', () => {
+    renderCard(makeLoan({ ...out, holdsWaiting: 3 }));
+
+    expect(screen.getByText(/3 people are waiting in line/i)).toBeInTheDocument();
+  });
+
+  it('says so when the full three months has been used', () => {
+    renderCard(makeLoan({ ...out, extendableDays: 0 }));
+
+    expect(screen.queryByRole('button', { name: /keep it longer/i })).not.toBeInTheDocument();
+    expect(screen.getByText(/three months a loan can run/i)).toBeInTheDocument();
+  });
+
+  it('is not offered on a loan that hasn\'t been handed off, or is already back', () => {
+    renderCard(makeLoan({ ...COMPLETE_TERMS, stage: 'agreed', borrowerApproved: true, ownerApproved: true, extendableDays: 76 }));
+    expect(screen.queryByRole('button', { name: /keep it longer/i })).not.toBeInTheDocument();
+
+    renderCard(makeLoan({ ...out, status: 'returned', stage: 'returned', returnedAt: '2026-10-20T00:00:00.000Z' }));
+    expect(screen.queryByRole('button', { name: /keep it longer/i })).not.toBeInTheDocument();
+  });
+
+  it('shows the server\'s refusal if the line changed a moment ago', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(
+      { error: 'Someone is waiting in line for this mini, so it can\'t be kept longer — bring it back and they\'re next' },
+      { ok: false, status: 409 }
+    )));
+    renderCard(makeLoan(out));
+
+    await userEvent.click(screen.getByRole('button', { name: /keep it longer/i }));
+
+    expect(await screen.findByText(/bring it back and they're next/i)).toBeInTheDocument();
   });
 });
 

@@ -72,6 +72,21 @@ CREATE TABLE IF NOT EXISTS sessions (
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
+-- A named group of one owner's own minis, borrowed together as a unit (a
+-- boxed army, a Kill Team) instead of one at a time. Membership lives on
+-- minis.set_id below, not here — deleting a set (ON DELETE SET NULL there)
+-- just ungroups its minis, it never touches the minis themselves.
+CREATE TABLE IF NOT EXISTS sets (
+  id            INT PRIMARY KEY AUTO_INCREMENT,
+  name          VARCHAR(100) NOT NULL,
+  owner_id      INT NOT NULL,
+  collection_id INT NOT NULL,
+  created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_sets_collection (collection_id),
+  FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE,
+  FOREIGN KEY (collection_id) REFERENCES collections(id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS minis (
   id            INT PRIMARY KEY AUTO_INCREMENT,
   name          VARCHAR(255) NOT NULL,
@@ -83,12 +98,15 @@ CREATE TABLE IF NOT EXISTS minis (
   available     BOOLEAN DEFAULT TRUE, -- legacy, unused: availability is derived from loans below
   on_quest_since DATETIME NULL, -- set while the owner has taken it out themselves ("On a Quest")
   on_quest_until DATE NULL,     -- optional "back by" date while on a quest
+  set_id        INT NULL, -- optional: this mini is part of an owner's named set (see sets above)
   created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   -- Browsing a collection: WHERE collection_id = ? ORDER BY created_at DESC.
   INDEX idx_minis_collection_created (collection_id, created_at),
+  INDEX idx_minis_set (set_id),
   FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE,
-  FOREIGN KEY (collection_id) REFERENCES collections(id) ON DELETE CASCADE
+  FOREIGN KEY (collection_id) REFERENCES collections(id) ON DELETE CASCADE,
+  FOREIGN KEY (set_id) REFERENCES sets(id) ON DELETE SET NULL
 );
 
 -- Up to 3 photos per mini (position 0-2, enforced in application code).

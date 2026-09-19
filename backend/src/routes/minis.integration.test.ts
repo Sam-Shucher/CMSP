@@ -41,7 +41,9 @@ afterAll(async () => {
 beforeEach(async () => {
   await pool.query('DELETE FROM mini_tags');
   await pool.query('DELETE FROM mini_images');
+  await pool.query('DELETE FROM loans');
   await pool.query('DELETE FROM minis');
+  await pool.query('DELETE FROM sets');
   await pool.query('DELETE FROM tags');
   await pool.query('DELETE FROM approved_emails');
   await pool.query('DELETE FROM collection_memberships');
@@ -128,6 +130,32 @@ describe('GET /api/minis (real database)', () => {
     expect(res.status).toBe(200);
     expect(res.body).toHaveLength(1);
     expect(res.body[0].name).toBe('Dire Wolf');
+  });
+
+  // The LEFT JOIN sets is a many-to-one, same shape as the existing owner
+  // join — but it's new, and GROUP BY m.id with a non-aggregated column from
+  // a joined table is exactly the kind of thing sql_mode=ONLY_FULL_GROUP_BY
+  // can reject on a real server even when a mocked test can't tell the
+  // difference. This proves it against MariaDB, not a mock.
+  it('shows which set a mini is part of, and null for one that isn\'t in any', async () => {
+    const { userId, collectionId } = await createTestUser();
+    const [setResult] = await pool.execute<ResultSetHeader>(
+      'INSERT INTO sets (name, owner_id, collection_id) VALUES (?, ?, ?)', ['Blades of Khaine', userId, collectionId]
+    );
+    await pool.execute(
+      'INSERT INTO minis (name, owner_id, collection_id, set_id) VALUES (?, ?, ?, ?)',
+      ['Banshee', userId, collectionId, setResult.insertId]
+    );
+    await pool.execute('INSERT INTO minis (name, owner_id, collection_id) VALUES (?, ?, ?)', ['Loner Wolf', userId, collectionId]);
+
+    const cookie = authCookie({ userId, username: 'owner', role: 'user', collectionId });
+    const res = await request(app).get('/api/minis').set('Cookie', cookie);
+
+    expect(res.status).toBe(200);
+    const banshee = res.body.find((m: { name: string }) => m.name === 'Banshee');
+    const loner = res.body.find((m: { name: string }) => m.name === 'Loner Wolf');
+    expect(banshee).toMatchObject({ set_id: setResult.insertId, set_name: 'Blades of Khaine' });
+    expect(loner).toMatchObject({ set_id: null, set_name: null });
   });
 });
 
@@ -216,6 +244,105 @@ describe('Collection isolation (real database)', () => {
       .set('Cookie', authCookie({ userId, username: 'owner', role: 'user', collectionId: someoneElsesCollection }));
 
     expect(res.status).toBe(403);
+  });
+});
+
+describe('GET /api/minis/:id/history (real database)', () => {
+  // Inserted directly rather than played through the negotiation flow — that
+  // flow (and the columns it sets) is already exercised end to end in
+  // loans.integration.test.ts. What matters here is what the history endpoint
+  // does with rows once they exist.
+  async function insertLoan(
+    miniId: number, collectionId: number, borrowerId: number, ownerId: number,
+    overrides: Partial<{ status: string; handedOffAt: Date | null; returnedAt: Date | null; durationDays: number }> = {}
+  ): Promise<number> {
+    const [result] = await pool.execute<ResultSetHeader>(
+      `INSERT INTO loans (mini_id, collection_id, borrower_id, owner_id, status, handed_off_at, returned_at, duration_days, borrower_approved, owner_approved)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 1)`,
+      [
+        miniId, collectionId, borrowerId, ownerId,
+        overrides.status ?? 'returned',
+        overrides.handedOffAt !== undefined ? overrides.handedOffAt : new Date('2026-09-01T18:00:00.000Z'),
+        overrides.returnedAt !== undefined ? overrides.returnedAt : new Date('2026-09-15T18:00:00.000Z'),
+        overrides.durationDays ?? 14,
+      ]
+    );
+    return result.insertId;
+  }
+
+  it('lists completed and ongoing loans, newest handoff first, and leaves out anything that never happened', async () => {
+    const owner = await createTestUser({ username: 'olivia', email: 'olivia@example.com' });
+    const bruno = await createTestUser({ username: 'bruno', email: 'bruno@example.com', collectionId: owner.collectionId });
+    const wendy = await createTestUser({ username: 'wendy', email: 'wendy@example.com', collectionId: owner.collectionId });
+    const [miniResult] = await pool.execute<ResultSetHeader>(
+      'INSERT INTO minis (name, owner_id, collection_id) VALUES (?, ?, ?)', ['Dire Wolf', owner.userId, owner.collectionId]
+    );
+    const miniId = miniResult.insertId;
+
+    // A completed loan, further in the past...
+    await insertLoan(miniId, owner.collectionId, bruno.userId, owner.userId, {
+      handedOffAt: new Date('2026-08-01T18:00:00.000Z'), returnedAt: new Date('2026-08-08T18:00:00.000Z'),
+    });
+    // ...a more recent one, still out...
+    await insertLoan(miniId, owner.collectionId, wendy.userId, owner.userId, {
+      status: 'adventuring', handedOffAt: new Date('2026-09-01T18:00:00.000Z'), returnedAt: null,
+    });
+    // ...and two that never got anywhere, which shouldn't show up at all.
+    await insertLoan(miniId, owner.collectionId, bruno.userId, owner.userId, { status: 'negotiating', handedOffAt: null, returnedAt: null });
+    await insertLoan(miniId, owner.collectionId, wendy.userId, owner.userId, { status: 'cancelled', handedOffAt: null, returnedAt: null });
+
+    const ownerCookie = authCookie({ userId: owner.userId, username: 'olivia', role: 'user', collectionId: owner.collectionId });
+    const res = await request(app).get(`/api/minis/${miniId}/history`).set('Cookie', ownerCookie);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveLength(2);
+    expect(res.body[0]).toMatchObject({ borrowerUsername: 'wendy', ongoing: true, returnedAt: null });
+    expect(res.body[1]).toMatchObject({ borrowerUsername: 'bruno', ongoing: false, daysOut: 7 });
+  });
+
+  it('refuses a member who isn\'t the owner or an admin', async () => {
+    const owner = await createTestUser({ username: 'olivia', email: 'olivia@example.com' });
+    const bystander = await createTestUser({ username: 'bystander', email: 'bystander@example.com', collectionId: owner.collectionId });
+    const [miniResult] = await pool.execute<ResultSetHeader>(
+      'INSERT INTO minis (name, owner_id, collection_id) VALUES (?, ?, ?)', ['Dire Wolf', owner.userId, owner.collectionId]
+    );
+
+    const bystanderCookie = authCookie({ userId: bystander.userId, username: 'bystander', role: 'user', collectionId: owner.collectionId });
+    const res = await request(app).get(`/api/minis/${miniResult.insertId}/history`).set('Cookie', bystanderCookie);
+
+    expect(res.status).toBe(403);
+  });
+
+  it('lets a collection admin see it, even for someone else\'s mini', async () => {
+    const owner = await createTestUser({ username: 'olivia', email: 'olivia@example.com' });
+    const admin = await createTestUser({ username: 'ada', email: 'ada@example.com', role: 'admin', collectionId: owner.collectionId });
+    const [miniResult] = await pool.execute<ResultSetHeader>(
+      'INSERT INTO minis (name, owner_id, collection_id) VALUES (?, ?, ?)', ['Dire Wolf', owner.userId, owner.collectionId]
+    );
+    await insertLoan(miniResult.insertId, owner.collectionId, admin.userId, owner.userId);
+
+    const adminCookie = authCookie({ userId: admin.userId, username: 'ada', role: 'admin', collectionId: owner.collectionId });
+    const res = await request(app).get(`/api/minis/${miniResult.insertId}/history`).set('Cookie', adminCookie);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveLength(1);
+  });
+
+  it('never shows another collection\'s loans for a similarly-owned mini', async () => {
+    const chicago = await createTestUser({ username: 'chicago-owner', email: 'chicago@example.com' });
+    const dojo = await createTestUser({ username: 'dojo-owner', email: 'dojo@example.com' });
+    const chicagoBorrower = await createTestUser({ username: 'chicago-borrower', email: 'cb@example.com', collectionId: chicago.collectionId });
+
+    const [chicagoMini] = await pool.execute<ResultSetHeader>(
+      'INSERT INTO minis (name, owner_id, collection_id) VALUES (?, ?, ?)', ['Chicago Wolf', chicago.userId, chicago.collectionId]
+    );
+    await insertLoan(chicagoMini.insertId, chicago.collectionId, chicagoBorrower.userId, chicago.userId);
+
+    // Same mini id lookup, but as a member of the OTHER collection.
+    const dojoCookie = authCookie({ userId: dojo.userId, username: 'dojo-owner', role: 'user', collectionId: dojo.collectionId });
+    const res = await request(app).get(`/api/minis/${chicagoMini.insertId}/history`).set('Cookie', dojoCookie);
+
+    expect(res.status).toBe(404);
   });
 });
 
