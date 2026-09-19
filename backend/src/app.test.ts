@@ -28,6 +28,11 @@ beforeAll(() => {
   fs.mkdirSync(path.join(distDir, 'assets'));
   fs.writeFileSync(path.join(distDir, 'assets', 'app.js'), 'console.log("bundle")');
 
+  // Big enough to clear compression's default 1KB threshold — the small
+  // app.js fixture above deliberately isn't, so the two together prove the
+  // threshold is real rather than "everything gets gzipped".
+  fs.writeFileSync(path.join(distDir, 'assets', 'big.js'), '/* filler so this exceeds the compression threshold */\n' + 'x'.repeat(2000));
+
   uploadsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'uploads-'));
   fs.writeFileSync(path.join(uploadsDir, '1700000000-wolf.png'), 'PNGDATA');
 });
@@ -84,6 +89,43 @@ describe('createApp in production', () => {
     const res = await request(productionApp()).get('/api/loans');
 
     expect(res.status).toBe(401);
+  });
+});
+
+describe('caching the built frontend', () => {
+  // Vite content-hashes every filename under assets/ — the file changing and
+  // the URL changing are the same event, so a repeat visit can skip asking
+  // the server entirely.
+  it('tells the browser to cache a hashed asset forever', async () => {
+    const res = await request(productionApp()).get('/assets/app.js');
+
+    expect(res.headers['cache-control']).toBe('public, max-age=31536000, immutable');
+  });
+
+  // index.html names those hashed files, so it's the one page that must
+  // never be served from a stale cache — a phone holding yesterday's
+  // index.html after a deploy would ask for a bundle that no longer exists
+  // and show a blank page. Checked on both paths that can serve it: the
+  // static file directly, and the SPA fallback for a client-side route.
+  it.each(['/', '/loans'])('always revalidates index.html, served via %s', async (url) => {
+    const res = await request(productionApp()).get(url);
+
+    expect(res.headers['cache-control']).toBe('no-cache');
+  });
+});
+
+describe('compressing responses', () => {
+  it('gzips a response once it clears the size threshold', async () => {
+    const res = await request(productionApp()).get('/assets/big.js').set('Accept-Encoding', 'gzip');
+
+    expect(res.headers['content-encoding']).toBe('gzip');
+    expect(res.text).toContain('filler so this exceeds'); // superagent decodes it transparently
+  });
+
+  it('leaves a small response alone — not worth the CPU on a Pi', async () => {
+    const res = await request(productionApp()).get('/assets/app.js').set('Accept-Encoding', 'gzip');
+
+    expect(res.headers['content-encoding']).toBeUndefined();
   });
 });
 

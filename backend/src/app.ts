@@ -1,9 +1,11 @@
 import express from 'express';
 import cors from 'cors';
 import cookieParser from 'cookie-parser';
+import compression from 'compression';
 import path from 'path';
 import authRouter from './routes/auth';
 import minisRouter from './routes/minis';
+import setsRouter from './routes/sets';
 import adminRouter from './routes/admin';
 import usersRouter from './routes/users';
 import cartRouter from './routes/cart';
@@ -54,9 +56,18 @@ export function createApp(options: { frontendDist?: string; uploadsDir?: string 
   const uploadsDir = options.uploadsDir ?? configuredUploadsDir();
   app.use('/uploads', requireAuth, requireImageAccess, uploadHeaders, express.static(uploadsDir, { dotfiles: 'deny', index: false }));
 
+  // Everything past this point gets gzipped if it's worth it. Mounted after
+  // /uploads on purpose: photos are already-compressed JPEG/PNG/WebP, so
+  // there's no size to gain, and this way that per-byte instrumentation never
+  // runs on the app's biggest response bodies. The Pi's one core does the
+  // compressing, so level 4 (not the default 6) trades a little ratio for a
+  // lot less CPU — this is bandwidth to the tunnel, not disk, that's tight.
+  app.use(compression({ level: 4 }));
+
   // Mount routers — each handles a group of related endpoints
   app.use('/api/auth',  authRouter);   // /api/auth/login, /register, /logout, /me
   app.use('/api/minis', minisRouter);  // /api/minis (browse, upload, tags, edit)
+  app.use('/api/sets',  setsRouter);   // /api/sets (grouping minis into a set, borrowing one together)
   app.use('/api/admin', adminRouter);  // /api/admin/approved-emails, /users (admin only)
   app.use('/api/users', usersRouter);  // /api/users/me (view/edit own profile)
   app.use('/api/cart',  cartRouter);   // /api/cart (basket + checkout)
@@ -70,13 +81,35 @@ export function createApp(options: { frontendDist?: string; uploadsDir?: string 
   // the frontend instead (with its /api proxy pointing here).
   if (process.env.NODE_ENV === 'production') {
     const frontendDist = options.frontendDist ?? path.join(__dirname, '../../frontend/dist');
-    app.use(express.static(frontendDist));
+    const ONE_YEAR_SECONDS = 60 * 60 * 24 * 365;
+
+    app.use(express.static(frontendDist, {
+      setHeaders: (res, filePath) => {
+        if (filePath.includes(`${path.sep}assets${path.sep}`)) {
+          // Vite content-hashes every filename under assets/ — the file
+          // changing and its URL changing are the same event, so a repeat
+          // visit never needs to ask the server at all.
+          res.setHeader('Cache-Control', `public, max-age=${ONE_YEAR_SECONDS}, immutable`);
+        } else {
+          // index.html names those hashed files by filename, so it's the one
+          // page that must never be served stale — a phone that had this
+          // cached from before a deploy would ask for a bundle that no
+          // longer exists and show a blank page. no-cache (not no-store)
+          // still lets the browser send a conditional GET and get back a
+          // tiny 304 when nothing changed.
+          res.setHeader('Cache-Control', 'no-cache');
+        }
+      },
+    }));
     // SPA fallback: any non-API GET request gets index.html so React Router
     // can handle the route client-side (e.g. a hard refresh on /minis/42).
+    // Same no-cache reasoning as above — this is index.html too, just
+    // reached by a URL that isn't a file on disk.
     app.get('*', (req, res, next) => {
       if (req.path.startsWith('/api/') || req.path.startsWith('/uploads/')) {
         return next();
       }
+      res.set('Cache-Control', 'no-cache');
       res.sendFile(path.join(frontendDist, 'index.html'));
     });
   }
