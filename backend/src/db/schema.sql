@@ -85,6 +85,8 @@ CREATE TABLE IF NOT EXISTS minis (
   on_quest_until DATE NULL,     -- optional "back by" date while on a quest
   created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  -- Browsing a collection: WHERE collection_id = ? ORDER BY created_at DESC.
+  INDEX idx_minis_collection_created (collection_id, created_at),
   FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE,
   FOREIGN KEY (collection_id) REFERENCES collections(id) ON DELETE CASCADE
 );
@@ -95,6 +97,8 @@ CREATE TABLE IF NOT EXISTS mini_images (
   mini_id    INT NOT NULL,
   image_path VARCHAR(500) NOT NULL,
   position   TINYINT NOT NULL DEFAULT 0,
+  -- Every mini row's photo subquery: WHERE mini_id = ? ORDER BY position.
+  INDEX idx_mini_images_mini_position (mini_id, position),
   FOREIGN KEY (mini_id) REFERENCES minis(id) ON DELETE CASCADE
 );
 
@@ -147,6 +151,11 @@ CREATE TABLE IF NOT EXISTS loans (
   cancelled_by      INT NULL,
   created_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   overdue_notified_at DATETIME NULL, -- set once "overdue" has been announced
+  -- Is this mini out? Asked once per mini on every browse.
+  INDEX idx_loans_mini_status (mini_id, status),
+  -- Your loans in this group, either side of the deal — polled every 30s.
+  INDEX idx_loans_collection_borrower (collection_id, borrower_id),
+  INDEX idx_loans_collection_owner (collection_id, owner_id),
   FOREIGN KEY (mini_id) REFERENCES minis(id) ON DELETE CASCADE,
   FOREIGN KEY (collection_id) REFERENCES collections(id) ON DELETE CASCADE,
   FOREIGN KEY (borrower_id) REFERENCES users(id) ON DELETE CASCADE,

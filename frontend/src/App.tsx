@@ -13,6 +13,7 @@ import CartPage from './pages/CartPage';
 import LoansPage from './pages/LoansPage';
 import NotificationBell from './components/NotificationBell';
 import CartLink from './components/CartLink';
+import ErrorBoundary from './components/ErrorBoundary';
 import ChangePasswordForm from './components/ChangePasswordForm';
 
 // ---------------------------------------------------------------------------
@@ -312,7 +313,11 @@ export default function App(): React.ReactElement {
   return (
     <AuthContext.Provider value={{ user, loading, setUser, collections, selectCollection, refreshSession, sessionNotice }}>
       <BrowserRouter>
-        <AppBody groupNotice={groupNotice} onDismissGroupNotice={() => setGroupNotice(undefined)} />
+        {/* A page that throws mid-render shows a way out instead of a blank
+            screen — inside the router, so the address bar is still right. */}
+        <ErrorBoundary>
+          <AppBody groupNotice={groupNotice} onDismissGroupNotice={() => setGroupNotice(undefined)} />
+        </ErrorBoundary>
       </BrowserRouter>
     </AuthContext.Provider>
   );

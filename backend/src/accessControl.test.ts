@@ -59,7 +59,12 @@ const ALL = listEndpoints();
 const label = (e: Endpoint) => `${e.method.toUpperCase()} ${e.path}`;
 
 // The only endpoints anyone may call without being logged in.
-const PUBLIC = new Set(['POST /api/auth/register', 'POST /api/auth/login', 'POST /api/auth/logout']);
+// GET /api/health is deliberately public: a probe has to be able to ask whether
+// the app is up before anyone is signed in. It answers one bit and nothing else.
+const PUBLIC = new Set([
+  'POST /api/auth/register', 'POST /api/auth/login', 'POST /api/auth/logout',
+  'GET /api/health/', // the router's own '/' under the /api/health mount
+]);
 const PROTECTED = ALL.filter(e => !PUBLIC.has(label(e)));
 const ADMIN_ONLY = ALL.filter(e => e.path.startsWith('/api/admin'));
 const COLLECTION_SCOPED = ALL.filter(e => /^\/api\/(minis|cart|loans|admin|holds|notifications)/.test(e.path));

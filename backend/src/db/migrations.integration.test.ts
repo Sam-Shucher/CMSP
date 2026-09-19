@@ -100,4 +100,57 @@ describe('schema.sql vs baseline + migrations', () => {
 
     expect(upgradedFks).toEqual(freshFks);
   });
+
+  // An index added to schema.sql alone would never reach the Pi — the same
+  // trap as a column, and just as invisible, because everything still works,
+  // only slower and slower as the collection grows.
+  //
+  // Compared by what an index DOES (table, columns in order, uniqueness) and
+  // not by its name: a foreign key's index is auto-named by MariaDB under
+  // schema.sql ("collection_id") and named explicitly by the migration that
+  // created it ("fk_minis_collection"). Same index, different label, and
+  // renaming live indexes on the Pi to satisfy a test would be all risk and
+  // no gain.
+  it('produces the same indexes either way, whatever they are named', async () => {
+    const indexQuery = `
+      SELECT TABLE_NAME, NON_UNIQUE, GROUP_CONCAT(COLUMN_NAME ORDER BY SEQ_IN_INDEX) AS COLUMNS
+      FROM information_schema.STATISTICS
+      WHERE TABLE_SCHEMA = ?
+      GROUP BY TABLE_NAME, INDEX_NAME, NON_UNIQUE
+      ORDER BY TABLE_NAME, COLUMNS, NON_UNIQUE
+    `;
+
+    const [freshIndexes] = await connection.query(indexQuery, [FRESH_DB]);
+    const [upgradedIndexes] = await connection.query(indexQuery, [UPGRADED_DB]);
+
+    expect(upgradedIndexes).toEqual(freshIndexes);
+  });
+});
+
+// The queries these back run on every browse, every detail view, and every
+// 30-second poll of the Loans page. Without them MariaDB scans; with a few
+// hundred minis and a year of loans that is the difference people feel.
+describe('indexes the hot queries need', () => {
+  const EXPECTED: [string, string, string[]][] = [
+    // GET /api/minis: WHERE collection_id = ? ORDER BY created_at DESC
+    ['minis', 'idx_minis_collection_created', ['collection_id', 'created_at']],
+    // The per-mini status subquery: WHERE mini_id = ? AND status IN (...)
+    ['loans', 'idx_loans_mini_status', ['mini_id', 'status']],
+    // GET /api/loans: WHERE collection_id = ? AND (borrower_id = ? OR owner_id = ?)
+    ['loans', 'idx_loans_collection_borrower', ['collection_id', 'borrower_id']],
+    ['loans', 'idx_loans_collection_owner', ['collection_id', 'owner_id']],
+    // The photo subquery, which orders by position.
+    ['mini_images', 'idx_mini_images_mini_position', ['mini_id', 'position']],
+  ];
+
+  it.each(EXPECTED)('%s has %s', async (table: string, index: string, columns: string[]) => {
+    const [found] = await connection.query<mysql.RowDataPacket[]>(
+      `SELECT COLUMN_NAME FROM information_schema.STATISTICS
+       WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND INDEX_NAME = ?
+       ORDER BY SEQ_IN_INDEX`,
+      [FRESH_DB, table, index]
+    );
+
+    expect(found.map(row => row.COLUMN_NAME)).toEqual(columns);
+  });
 });
