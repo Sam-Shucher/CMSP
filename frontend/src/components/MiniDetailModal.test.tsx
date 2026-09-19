@@ -212,6 +212,17 @@ describe('MiniDetailModal — taking your own mini on a quest', () => {
     await waitFor(() => expect(onTakeOut).toHaveBeenCalledWith(threeMonthsOut()));
   });
 
+  it('moves a date that has already been up to today, and says so', () => {
+    renderOwn(makeMini());
+    const input = screen.getByLabelText(/back by/i);
+
+    fireEvent.change(input, { target: { value: '2020-01-01' } });
+
+    const today = new Date();
+    expect(input).toHaveValue(`${today.getFullYear()}-${pad(today.getMonth() + 1)}-${pad(today.getDate())}`);
+    expect(screen.getByText(/already been, so that's been set to today/i)).toBeInTheDocument();
+  });
+
   it('leaves a date inside the limit alone', () => {
     renderOwn(makeMini());
     const input = screen.getByLabelText(/back by/i);

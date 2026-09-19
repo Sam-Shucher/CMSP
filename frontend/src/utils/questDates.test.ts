@@ -15,15 +15,25 @@ describe('questDates', () => {
 
   it('pulls a later day back to the limit, and says it moved it', () => {
     const now = new Date(2026, 9, 1, 15, 0);
-    expect(clampBackBy('2026-12-31', now)).toEqual({ day: '2026-12-30', clamped: true });
-    expect(clampBackBy('2099-01-01', now)).toEqual({ day: '2026-12-30', clamped: true });
+    expect(clampBackBy('2026-12-31', now)).toEqual({ day: '2026-12-30', moved: 'later' });
+    expect(clampBackBy('2099-01-01', now)).toEqual({ day: '2026-12-30', moved: 'later' });
+  });
+
+  // The calendar won't offer one, but a date can be typed or pasted in — and
+  // finding out it was refused only after pressing the button is worse than
+  // being moved to the first day that works.
+  it('pulls a day already gone forward to today', () => {
+    const now = new Date(2026, 9, 1, 15, 0);
+    expect(clampBackBy('2020-01-01', now)).toEqual({ day: '2026-10-01', moved: 'earlier' });
+    expect(clampBackBy('2026-09-30', now)).toEqual({ day: '2026-10-01', moved: 'earlier' });
   });
 
   it('leaves a day inside the limit — and an empty one — alone', () => {
     const now = new Date(2026, 9, 1, 15, 0);
-    expect(clampBackBy('2026-10-15', now)).toEqual({ day: '2026-10-15', clamped: false });
-    expect(clampBackBy('2026-12-30', now)).toEqual({ day: '2026-12-30', clamped: false });
-    expect(clampBackBy('', now)).toEqual({ day: '', clamped: false });
+    expect(clampBackBy('2026-10-01', now)).toEqual({ day: '2026-10-01', moved: false });
+    expect(clampBackBy('2026-10-15', now)).toEqual({ day: '2026-10-15', moved: false });
+    expect(clampBackBy('2026-12-30', now)).toEqual({ day: '2026-12-30', moved: false });
+    expect(clampBackBy('', now)).toEqual({ day: '', moved: false });
   });
 
   it('formats a back-by day without shifting it across timezones', () => {

@@ -225,17 +225,18 @@ function QuestControls({ mini, onTakeOut, onBringBack }: {
   const [backBy, setBackBy] = useState<string>('');
   const [busy, setBusy] = useState<boolean>(false);
   const [error, setError] = useState<string>('');
-  // Set when a typed date was pulled back to the limit, so we can say so.
-  const [movedToLimit, setMovedToLimit] = useState<boolean>(false);
+  // Which way a typed date had to be moved, so we can say so.
+  const [moved, setMoved] = useState<'later' | 'earlier' | false>(false);
 
   const latest = latestBackByInputValue();
 
-  // The date box can still be typed into past its max, so anything beyond the
-  // three months is pulled back rather than left to fail at the server.
+  // The date box can still be typed or pasted into outside its min and max, so
+  // anything out of range is moved to the nearest day that works rather than
+  // left to fail at the server after the button is pressed.
   function chooseBackBy(picked: string): void {
-    const { day, clamped } = clampBackBy(picked);
-    setBackBy(day);
-    setMovedToLimit(clamped);
+    const result = clampBackBy(picked);
+    setBackBy(result.day);
+    setMoved(result.moved);
   }
 
   async function run(action: () => Promise<void>): Promise<void> {
@@ -274,10 +275,12 @@ function QuestControls({ mini, onTakeOut, onBringBack }: {
       )}
 
       {mini.status === 'available' && (
-        <p style={{ fontSize: '12px', color: movedToLimit ? '#c9a84c' : '#8a7d6a', marginTop: '6px' }}>
-          {movedToLimit
+        <p style={{ fontSize: '12px', color: moved ? '#c9a84c' : '#8a7d6a', marginTop: '6px' }}>
+          {moved === 'later'
             ? `A quest can last up to 3 months, so that's been set to ${formatBackBy(latest)} — the latest it can be.`
-            : `A quest can last up to 3 months — until ${formatBackBy(latest)}.`}
+            : moved === 'earlier'
+              ? `That day has already been, so that's been set to today.`
+              : `A quest can last up to 3 months — until ${formatBackBy(latest)}.`}
         </p>
       )}
 

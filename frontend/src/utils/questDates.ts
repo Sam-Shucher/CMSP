@@ -22,13 +22,23 @@ export function latestBackByInputValue(now: Date = new Date()): string {
   return byViewer < byServer ? byViewer : byServer;
 }
 
-// Keeps a typed or pasted date inside the allowed range: anything past the
-// three-month limit becomes the limit, so nobody is left with a date the
-// server is about to refuse. Returns the date to use and whether it moved.
-export function clampBackBy(day: string, now: Date = new Date()): { day: string; clamped: boolean } {
+// Keeps a typed or pasted date inside the range the server will accept: past
+// the three-month limit becomes the limit, already-gone becomes today. Nobody
+// is left holding a date that only fails once they press the button. Says which
+// way it moved, so the page can explain itself.
+export function clampBackBy(
+  day: string,
+  now: Date = new Date()
+): { day: string; moved: 'later' | 'earlier' | false } {
+  if (!day) return { day, moved: false };
+
   const latest = latestBackByInputValue(now);
-  if (day && day > latest) return { day: latest, clamped: true };
-  return { day, clamped: false };
+  if (day > latest) return { day: latest, moved: 'later' };
+
+  const today = todayInputValue(now);
+  if (day < today) return { day: today, moved: 'earlier' };
+
+  return { day, moved: false };
 }
 
 // "2026-10-15" → "Oct 15". Parsed as a local date so it never shifts a day.
