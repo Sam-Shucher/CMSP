@@ -2,19 +2,21 @@ import { Router, Request, Response, NextFunction } from 'express';
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
-import { rows, firstRow, change, insert } from '../db/query';
+import { rows, firstRow, firstValue, change, insert } from '../db/query';
 import { requireAuth } from '../middleware/requireAuth';
 import { rateLimit } from '../middleware/rateLimit';
 import { route, idFrom } from '../utils/route';
 import { requireCollectionMembership, CollectionRequest } from '../middleware/requireCollectionMembership';
 import { matchesSearch } from '../utils/search';
 import { activeLoanStatusSql, miniStatusFrom } from '../utils/miniStatus';
-import { requiredText, optionalText, tagList, LIMITS, Check } from '../utils/inputs';
+import { requiredText, optionalText, tagList, optionalEnum, optionalId, optionalFlag, positiveId, LIMITS, Check } from '../utils/inputs';
 import { uploadsDir as configuredUploadsDir } from '../config';
 import { parseBackBy } from '../utils/quest';
 import { daysOut } from '../utils/loanRules';
 import { detectImageType, IMAGE_HEADER_BYTES } from '../utils/imageType';
 import { promoteNextHold, announceMiniRemoved } from '../services/holds';
+import { notify } from '../db/notifications';
+import { messages } from '../utils/notificationMessages';
 
 const router = Router();
 // Mirrored by frontend/src/limits.ts (photosPerMini, photoBytes) and pinned to
@@ -179,6 +181,11 @@ interface TagNameRow {
   name: string;
 }
 
+interface OwnerNameRow {
+  id: number;
+  name: string;
+}
+
 interface OwnerRow {
   owner_id: number;
   active_loan_status?: string | null;
@@ -312,11 +319,12 @@ async function setImages(miniId: number, keptPaths: string[], newFiles: Express.
 // Routes
 // ---------------------------------------------------------------------------
 
-// GET /api/minis?q=search&tag=dragon
+// GET /api/minis?q=search&tag=dragon&owner=5&available=1&sort=name
 // Returns minis in the caller's active collection, optionally filtered by
-// name/description search or a tag. Minis in every other collection are
+// name/description search, a tag, an owner, and available-only, sorted by
+// newest (default)/name/price. Minis in every other collection are
 // invisible here, full stop — the collection_id filter below is mandatory,
-// not optional like q/tag.
+// not optional like the rest.
 // Browsing reads the whole collection and fuzzy-matches it in this process, on
 // the Pi's one core — the most expensive thing a member can ask for. The search
 // box waits for a pause in the typing (SEARCH_DEBOUNCE_MS in the frontend), so
@@ -333,13 +341,25 @@ const browseLimit = rateLimit({
   message: () => 'Loading the collection too quickly — give it a moment and try again.',
 });
 
+// Fixed SQL fragments, keyed by the validated `sort` enum — never build this
+// from the request value itself.
+const ORDER_BY = {
+  newest: 'm.created_at DESC',
+  name: 'm.name ASC',
+  price: 'm.price ASC',
+} as const;
+const SORT_VALUES = Object.keys(ORDER_BY) as (keyof typeof ORDER_BY)[];
+
 router.get('/', browseLimit, route(async (req, res) => {
   // Query strings can arrive as arrays (?q=a&q=b) or objects (?tag[x]=y), and
   // typo-tolerant search costs CPU in proportion to its length — so only
   // short, plain text is accepted.
   const q = optionalText(req.query.q, 'Search', LIMITS.search);
   const tagFilter = optionalText(req.query.tag, 'Tag', 100);
-  for (const check of [q, tagFilter]) {
+  const sortCheck = optionalEnum(req.query.sort, 'Sort', SORT_VALUES);
+  const ownerCheck = optionalId(req.query.owner, 'Owner');
+  const availableCheck = optionalFlag(req.query.available, 'Available');
+  for (const check of [q, tagFilter, sortCheck, ownerCheck, availableCheck]) {
     if (!check.ok) {
       res.status(400).json({ error: check.error });
       return;
@@ -348,6 +368,9 @@ router.get('/', browseLimit, route(async (req, res) => {
   const search = (q as { value: string | null }).value;
   // Saved tags are lowercase and compared exactly, so the filter is too.
   const tag = (tagFilter as { value: string | null }).value?.toLowerCase() ?? null;
+  const sort = (sortCheck as { value: keyof typeof ORDER_BY | null }).value ?? 'newest';
+  const owner = (ownerCheck as { value: number | null }).value;
+  const availableOnly = (availableCheck as { value: boolean }).value;
 
   // The collection filter is always present; tag (a controlled pill, not
   // free text) stays an exact match in SQL. Free-text search (q) is
@@ -361,11 +384,21 @@ router.get('/', browseLimit, route(async (req, res) => {
     where.push('m.id IN (SELECT mt2.mini_id FROM mini_tags mt2 JOIN tags t2 ON mt2.tag_id = t2.id WHERE t2.name = ?)');
     params.push(tag);
   }
+  if (owner) {
+    where.push('m.owner_id = ?');
+    params.push(owner);
+  }
+
+  // "Available" has no stored column — it's the same derivation as
+  // miniStatusFrom's available branch (utils/miniStatus.ts), applied here as
+  // a HAVING clause since active_loan_status is a per-row derived value in
+  // the SELECT list, not a real column WHERE can filter on.
+  const having = availableOnly ? 'HAVING active_loan_status IS NULL AND m.on_quest_since IS NULL' : '';
 
   // GROUP_CONCAT aggregates all of a mini's tag names into one comma-separated
   // string per row, so we don't get duplicate mini rows (one per tag)
   const found = await rows<MiniRow>(
-    `${MINI_SELECT} WHERE ${where.join(' AND ')} GROUP BY m.id ORDER BY m.created_at DESC`,
+    `${MINI_SELECT} WHERE ${where.join(' AND ')} GROUP BY m.id ${having} ORDER BY ${ORDER_BY[sort]}`,
     params
   );
 
@@ -392,6 +425,36 @@ router.get('/tags', route(async (req, res) => {
     [req.collectionId!]
   );
   res.json(used.map(tag => tag.name));
+}));
+
+// GET /api/minis/owners
+// Returns the distinct owners of minis in the caller's active collection —
+// not every user in the database — for the browse page's owner filter.
+// Registered before /:id, same reason as /tags above.
+router.get('/owners', route(async (req, res) => {
+  const owners = await rows<OwnerNameRow>(
+    `SELECT DISTINCT u.id, u.display_name AS name
+     FROM minis m JOIN users u ON m.owner_id = u.id
+     WHERE m.collection_id = ?
+     ORDER BY u.display_name`,
+    [req.collectionId!]
+  );
+  res.json(owners);
+}));
+
+// GET /api/minis/collection-members
+// Every member of the caller's active collection (not just those who own a
+// mini) — for the "transfer ownership" recipient picker. Registered before
+// /:id, same reason as /tags and /owners above.
+router.get('/collection-members', route(async (req, res) => {
+  const members = await rows<OwnerNameRow>(
+    `SELECT u.id, u.display_name AS name
+     FROM users u JOIN collection_memberships cm ON cm.user_id = u.id
+     WHERE cm.collection_id = ?
+     ORDER BY u.display_name`,
+    [req.collectionId!]
+  );
+  res.json(members);
 }));
 
 // GET /api/minis/:id
@@ -576,6 +639,104 @@ router.patch('/:id', discardUploadsIfRejected, upload.array('images', MAX_IMAGES
     const oldFile = path.join(uploadsDir, path.basename(droppedPath));
     fs.unlink(oldFile, () => {}); // best-effort cleanup; ignore errors
   }
+
+  await sendMini(res, miniId);
+}));
+
+interface TransferLookupRow {
+  owner_id: number;
+  owner_name: string;
+  name: string;
+  active_loan_status: string | null;
+  on_quest_since: Date | null;
+}
+
+// POST /api/minis/:id/transfer  { newOwnerId }
+// Gives the mini to another member of the collection — "someone sells or
+// gives it to another member" — without losing its tags, photos, price, or
+// lending history the way delete-and-recreate would. Only the owner or an
+// admin may do this, and only within the caller's active collection.
+router.post('/:id/transfer', route(async (req, res) => {
+  const miniId = idFrom(req.params.id);
+
+  const mini = miniId === null ? null : await firstRow<TransferLookupRow>(
+    `SELECT m.owner_id, u.display_name AS owner_name, m.name,
+            ${activeLoanStatusSql('m')} AS active_loan_status, m.on_quest_since
+     FROM minis m JOIN users u ON u.id = m.owner_id
+     WHERE m.id = ? AND m.collection_id = ?`,
+    [miniId, req.collectionId!]
+  );
+
+  if (!mini || miniId === null) {
+    res.status(404).json({ error: 'Mini not found' });
+    return;
+  }
+
+  const isOwner = mini.owner_id === req.user!.userId;
+  const isAdmin = req.user!.role === 'admin';
+  if (!isOwner && !isAdmin) {
+    res.status(403).json({ error: 'You can only transfer your own minis' });
+    return;
+  }
+
+  const newOwnerCheck = positiveId((req.body as { newOwnerId?: unknown } | undefined)?.newOwnerId);
+  if (!newOwnerCheck.ok) {
+    res.status(400).json({ error: newOwnerCheck.error });
+    return;
+  }
+  const newOwnerId = newOwnerCheck.value;
+
+  if (newOwnerId === mini.owner_id) {
+    res.status(400).json({ error: 'This mini is already theirs' });
+    return;
+  }
+
+  const isMember = await firstValue<number>(
+    'SELECT 1 FROM collection_memberships WHERE user_id = ? AND collection_id = ?',
+    [newOwnerId, req.collectionId!]
+  );
+  if (!isMember) {
+    res.status(404).json({ error: 'That person isn\'t a member of this collection' });
+    return;
+  }
+
+  if (mini.active_loan_status) {
+    res.status(409).json({ error: 'This mini has an active request or loan — finish or cancel it first' });
+    return;
+  }
+  if (mini.on_quest_since) {
+    res.status(409).json({ error: 'Bring this mini back from its quest before transferring it' });
+    return;
+  }
+
+  // Re-checked here, atomically: someone could request it or the owner could
+  // take it on a quest in the instant between the lookup above and this write.
+  // set_id is cleared because a set is one owner's own minis (sets.ts refuses
+  // adding a mini whose owner_id doesn't match the set's) — leaving it would
+  // point at a set that isn't the new owner's.
+  const transferred = await change(
+    `UPDATE minis m SET m.owner_id = ?, m.set_id = NULL
+     WHERE m.id = ? AND m.collection_id = ? AND m.owner_id = ? AND m.on_quest_since IS NULL
+       AND NOT EXISTS (
+         SELECT 1 FROM loans l WHERE l.mini_id = m.id AND l.status IN ('negotiating', 'adventuring')
+       )`,
+    [newOwnerId, miniId, req.collectionId!, mini.owner_id]
+  );
+  if (transferred === 0) {
+    res.status(409).json({ error: 'This mini just became unavailable — try again' });
+    return;
+  }
+
+  // The new owner can't hold or cart their own mini — clear any stale entry
+  // from before they owned it (e.g. they'd asked to be notified of a hold
+  // spot opening up, and it did, but they never acted on it).
+  await change('DELETE FROM cart_items WHERE user_id = ? AND mini_id = ?', [newOwnerId, miniId]);
+  await change('DELETE FROM hold_watchers WHERE mini_id = ? AND user_id = ?', [miniId, newOwnerId]);
+
+  await notify([newOwnerId], {
+    collectionId: req.collectionId!, type: 'ownership_transferred',
+    message: messages.ownershipTransferred(mini.owner_name, mini.name), miniId,
+  });
 
   await sendMini(res, miniId);
 }));

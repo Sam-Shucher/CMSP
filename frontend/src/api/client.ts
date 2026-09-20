@@ -132,6 +132,12 @@ export type Mini = {
   set_name: string | null;
 };
 
+// One row from GET /api/minis/owners — for the browse page's owner filter.
+export type MiniOwner = {
+  id: number;
+  name: string;
+};
+
 // A named group of one owner's own minis (a boxed army, a Kill Team),
 // borrowed together with one action instead of one at a time. See /api/sets.
 export type MiniSet = {

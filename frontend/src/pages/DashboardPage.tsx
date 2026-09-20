@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from 'react';
 import { Link } from 'react-router-dom';
-import { api, Mini, CartItem, CART_CHANGED_EVENT } from '../api/client';
+import { api, Mini, MiniOwner, CartItem, CART_CHANGED_EVENT } from '../api/client';
 import { useAuth } from '../App';
 import MiniDetailModal from '../components/MiniDetailModal';
 import MiniStatusBadge from '../components/MiniStatusBadge';
@@ -9,15 +9,21 @@ import { LIMITS } from '../limits';
 // Long enough to swallow a burst of typing, short enough not to feel laggy.
 export const SEARCH_DEBOUNCE_MS = 250;
 
+type SortOption = 'newest' | 'name' | 'price';
+
 // The main browse page — shows a searchable, filterable grid of all minis.
 export default function DashboardPage(): React.ReactElement {
   const { user } = useAuth();
   const [cartMiniIds, setCartMiniIds] = useState<Set<number>>(new Set());
   const [minis, setMinis]         = useState<Mini[]>([]);
   const [tags, setTags]           = useState<string[]>([]);  // all tags for the filter bar
+  const [owners, setOwners]       = useState<MiniOwner[]>([]); // all owners for the owner filter
   const [search, setSearch]       = useState<string>('');    // what's in the box
   const [query, setQuery]         = useState<string>('');    // what's been asked of the server
   const [activeTag, setActiveTag] = useState<string>('');    // currently selected tag filter
+  const [ownerId, setOwnerId]     = useState<string>('');    // currently selected owner filter ('' = all)
+  const [sort, setSort]           = useState<SortOption>('newest');
+  const [availableOnly, setAvailableOnly] = useState<boolean>(false);
   const [loading, setLoading]     = useState<boolean>(true);
   const [error, setError]         = useState<string>('');
   const [selectedMini, setSelectedMini] = useState<Mini | null>(null);
@@ -37,8 +43,11 @@ export default function DashboardPage(): React.ReactElement {
     setError('');
     try {
       const params = new URLSearchParams();
-      if (query)     params.set('q', query);
-      if (activeTag) params.set('tag', activeTag);
+      if (query)          params.set('q', query);
+      if (activeTag)      params.set('tag', activeTag);
+      if (ownerId)        params.set('owner', ownerId);
+      if (sort !== 'newest') params.set('sort', sort);
+      if (availableOnly) params.set('available', '1');
       const data = await api<Mini[]>(`/api/minis?${params.toString()}`);
       setMinis(data);
     } catch (err: unknown) {
@@ -46,7 +55,7 @@ export default function DashboardPage(): React.ReactElement {
     } finally {
       setLoading(false);
     }
-  }, [query, activeTag]);
+  }, [query, activeTag, ownerId, sort, availableOnly]);
 
   // Re-fetch whenever the search text or active tag changes
   useEffect(() => {
@@ -56,6 +65,11 @@ export default function DashboardPage(): React.ReactElement {
   // Load the tag list once on mount — used to render the filter buttons
   useEffect(() => {
     void api<string[]>('/api/minis/tags').then(setTags).catch(() => {});
+  }, []);
+
+  // Load the owner list once on mount — used to render the owner filter
+  useEffect(() => {
+    void api<MiniOwner[]>('/api/minis/owners').then(setOwners).catch(() => {});
   }, []);
 
   const fetchCart = useCallback(async (): Promise<void> => {
@@ -102,8 +116,8 @@ export default function DashboardPage(): React.ReactElement {
         </Link>
       </div>
 
-      {/* Search bar — filters by mini name or description */}
-      <div style={{ display: 'flex', gap: '12px', marginBottom: '16px', flexWrap: 'wrap' }}>
+      {/* Search bar, plus sort/owner/available-only filters */}
+      <div style={{ display: 'flex', gap: '12px', marginBottom: '16px', flexWrap: 'wrap', alignItems: 'center' }}>
         <input
           style={{ maxWidth: '360px' }}
           type="search"
@@ -112,6 +126,36 @@ export default function DashboardPage(): React.ReactElement {
           value={search}
           onChange={(e: React.ChangeEvent<HTMLInputElement>) => setSearch(e.target.value)}
         />
+
+        <select
+          aria-label="Sort by"
+          value={sort}
+          onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setSort(e.target.value as SortOption)}
+        >
+          <option value="newest">Newest</option>
+          <option value="name">Name</option>
+          <option value="price">Price</option>
+        </select>
+
+        <select
+          aria-label="Owner"
+          value={ownerId}
+          onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setOwnerId(e.target.value)}
+        >
+          <option value="">All owners</option>
+          {owners.map((owner: MiniOwner) => (
+            <option key={owner.id} value={owner.id}>{owner.name}</option>
+          ))}
+        </select>
+
+        <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px', color: '#c9a84c', cursor: 'pointer' }}>
+          <input
+            type="checkbox"
+            checked={availableOnly}
+            onChange={(e: React.ChangeEvent<HTMLInputElement>) => setAvailableOnly(e.target.checked)}
+          />
+          Available only
+        </label>
       </div>
 
       {/* Tag filter pills — only shown once tags have loaded */}

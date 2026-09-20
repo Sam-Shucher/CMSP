@@ -13,6 +13,7 @@ vi.mock('../db/connection', () => ({
 import { pool } from '../db/connection';
 import { createApp } from '../app';
 import { BROWSE_MAX_PER_MINUTE } from './minis';
+import { notify } from '../db/notifications'; // stubbed by unitSetup.ts — asserted directly, not via execute
 
 const app = createApp();
 const execute = pool.execute as unknown as ReturnType<typeof vi.fn>;
@@ -67,6 +68,7 @@ function miniRow(overrides: Partial<Record<string, unknown>> = {}) {
 
 beforeEach(() => {
   execute.mockReset();
+  vi.mocked(notify).mockClear();
 });
 
 describe('Collection access control', () => {
@@ -551,12 +553,97 @@ describe('GET /api/minis — tag filter', () => {
   });
 });
 
+describe('GET /api/minis — owner filter', () => {
+  it('passes the owner id to the query as a parameter alongside the collection', async () => {
+    execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED).mockResolvedValueOnce([[]]);
+
+    await request(app).get('/api/minis?owner=5').set('Cookie', authCookie(OWNER));
+
+    expect(execute).toHaveBeenCalledWith(expect.stringContaining('m.owner_id = ?'), [COLLECTION_A, 5]);
+  });
+});
+
+describe('GET /api/minis — available only filter', () => {
+  it('adds a HAVING clause on availability when requested', async () => {
+    execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED).mockResolvedValueOnce([[]]);
+
+    await request(app).get('/api/minis?available=1').set('Cookie', authCookie(OWNER));
+
+    expect(execute).toHaveBeenCalledWith(
+      expect.stringContaining('HAVING active_loan_status IS NULL AND m.on_quest_since IS NULL'),
+      [COLLECTION_A]
+    );
+  });
+
+  it('adds no HAVING clause by default', async () => {
+    execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED).mockResolvedValueOnce([[]]);
+
+    await request(app).get('/api/minis').set('Cookie', authCookie(OWNER));
+
+    expect(execute).toHaveBeenCalledWith(expect.not.stringContaining('HAVING'), [COLLECTION_A]);
+  });
+});
+
+describe('GET /api/minis — sort', () => {
+  it('defaults to newest first', async () => {
+    execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED).mockResolvedValueOnce([[]]);
+
+    await request(app).get('/api/minis').set('Cookie', authCookie(OWNER));
+
+    expect(execute).toHaveBeenCalledWith(expect.stringContaining('ORDER BY m.created_at DESC'), [COLLECTION_A]);
+  });
+
+  it.each([
+    ['name', 'ORDER BY m.name ASC'],
+    ['price', 'ORDER BY m.price ASC'],
+  ])('sorts by %s', async (sort, expectedSql) => {
+    execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED).mockResolvedValueOnce([[]]);
+
+    await request(app).get(`/api/minis?sort=${sort}`).set('Cookie', authCookie(OWNER));
+
+    expect(execute).toHaveBeenCalledWith(expect.stringContaining(expectedSql), [COLLECTION_A]);
+  });
+
+  it('rejects an unrecognized sort value with 400', async () => {
+    execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED);
+
+    const res = await request(app).get('/api/minis?sort=bogus').set('Cookie', authCookie(OWNER));
+
+    expect(res.status).toBe(400);
+    expect(execute).toHaveBeenCalledTimes(1); // membership only
+  });
+});
+
+describe('GET /api/minis — combining tag, owner, available, and sort', () => {
+  it('applies all four together, in the same query', async () => {
+    execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED).mockResolvedValueOnce([[]]);
+
+    await request(app)
+      .get('/api/minis?tag=dragon&owner=5&available=1&sort=price')
+      .set('Cookie', authCookie(OWNER));
+
+    expect(execute).toHaveBeenCalledWith(
+      expect.stringMatching(/t2\.name = \?[\s\S]*m\.owner_id = \?[\s\S]*HAVING active_loan_status IS NULL AND m\.on_quest_since IS NULL[\s\S]*ORDER BY m\.price ASC/),
+      [COLLECTION_A, 'dragon', 5]
+    );
+  });
+});
+
 describe('hostile or oversized input', () => {
   it.each([
     ['a search over 100 characters (typo-matching huge text would tie up the Pi)', '/api/minis?q=' + 'a'.repeat(101)],
     ['a search sent twice (arrives as an array)', '/api/minis?q=wolf&q=bear'],
     ['a tag filter over 100 characters', '/api/minis?tag=' + 'a'.repeat(101)],
     ['a tag filter sent as an object', '/api/minis?tag[$ne]=x'],
+    ['an owner id sent twice (arrives as an array)', '/api/minis?owner=1&owner=2'],
+    ['an owner id sent as an object', '/api/minis?owner[$ne]=1'],
+    ['an owner id that is not a positive integer', '/api/minis?owner=abc'],
+    ['an owner id of zero', '/api/minis?owner=0'],
+    ['a negative owner id', '/api/minis?owner=-1'],
+    ['an available flag sent as something other than 1', '/api/minis?available=true'],
+    ['an available flag of 0', '/api/minis?available=0'],
+    ['a sort value not in the allowed list', '/api/minis?sort=cheapest'],
+    ['a sort value sent as an object', '/api/minis?sort[$ne]=x'],
   ])('rejects %s with 400', async (_why, url) => {
     execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED);
 
@@ -627,6 +714,28 @@ describe('GET /api/minis/tags', () => {
     execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED).mockResolvedValueOnce([[]]);
 
     await request(app).get('/api/minis/tags').set('Cookie', authCookie(OWNER));
+
+    expect(execute).not.toHaveBeenCalledWith(expect.stringContaining('WHERE m.id = ?'), expect.anything());
+  });
+});
+
+describe('GET /api/minis/owners', () => {
+  it('returns owners of minis in the caller\'s active collection only', async () => {
+    execute
+      .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
+      .mockResolvedValueOnce([[{ id: 1, name: 'Owner Name' }, { id: 2, name: 'Someone Else' }]]);
+
+    const res = await request(app).get('/api/minis/owners').set('Cookie', authCookie(OWNER));
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual([{ id: 1, name: 'Owner Name' }, { id: 2, name: 'Someone Else' }]);
+    expect(execute).toHaveBeenCalledWith(expect.stringContaining('m.collection_id = ?'), [COLLECTION_A]);
+  });
+
+  it('is not swallowed by the /:id route', async () => {
+    execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED).mockResolvedValueOnce([[]]);
+
+    await request(app).get('/api/minis/owners').set('Cookie', authCookie(OWNER));
 
     expect(execute).not.toHaveBeenCalledWith(expect.stringContaining('WHERE m.id = ?'), expect.anything());
   });
@@ -1309,6 +1418,216 @@ describe('DELETE /api/minis/:id', () => {
 
   it('returns 401 with no auth cookie', async () => {
     const res = await request(app).delete('/api/minis/42');
+    expect(res.status).toBe(401);
+  });
+});
+
+describe('GET /api/minis/collection-members', () => {
+  it('returns every member of the collection, not just those who own a mini', async () => {
+    execute
+      .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
+      .mockResolvedValueOnce([[{ id: 1, name: 'Owner Name' }, { id: 2, name: 'Other Person' }]]);
+
+    const res = await request(app).get('/api/minis/collection-members').set('Cookie', authCookie(OWNER));
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual([{ id: 1, name: 'Owner Name' }, { id: 2, name: 'Other Person' }]);
+    expect(execute).toHaveBeenCalledWith(expect.stringContaining('collection_memberships'), [COLLECTION_A]);
+  });
+
+  it('is not swallowed by the /:id route', async () => {
+    execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED).mockResolvedValueOnce([[]]);
+
+    await request(app).get('/api/minis/collection-members').set('Cookie', authCookie(OWNER));
+
+    expect(execute).not.toHaveBeenCalledWith(expect.stringContaining('WHERE m.id = ?'), expect.anything());
+  });
+});
+
+describe('POST /api/minis/:id/transfer', () => {
+  // The lookup row shape: minis joined to its current owner's display name.
+  function transferLookupRow(overrides: Partial<Record<string, unknown>> = {}) {
+    return {
+      owner_id: 1,
+      owner_name: 'Owner Name',
+      name: 'Dire Wolf',
+      active_loan_status: null,
+      on_quest_since: null,
+      ...overrides,
+    };
+  }
+
+  it('lets the owner transfer their own mini to another member, and notifies them', async () => {
+    execute
+      .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
+      .mockResolvedValueOnce([[transferLookupRow()]])       // ownership + status lookup
+      .mockResolvedValueOnce([[{ exists: 1 }]])              // newOwnerId is a member
+      .mockResolvedValueOnce([{ affectedRows: 1 }])          // UPDATE minis
+      .mockResolvedValueOnce([{ affectedRows: 0 }])          // DELETE FROM cart_items
+      .mockResolvedValueOnce([{ affectedRows: 0 }])          // DELETE FROM hold_watchers
+      .mockResolvedValueOnce([[miniRow({ owner_id: 2 })]]);  // sendMini's re-fetch
+
+    const res = await request(app)
+      .post('/api/minis/42/transfer')
+      .set('Cookie', authCookie(OWNER))
+      .send({ newOwnerId: 2 });
+
+    expect(res.status).toBe(200);
+    expect(res.body.owner_id).toBe(2);
+    expect(execute).toHaveBeenCalledWith(
+      expect.stringMatching(/UPDATE minis m SET m\.owner_id = \?, m\.set_id = NULL/),
+      [2, 42, COLLECTION_A, 1]
+    );
+    expect(execute).toHaveBeenCalledWith(expect.stringContaining('DELETE FROM cart_items'), [2, 42]);
+    expect(execute).toHaveBeenCalledWith(expect.stringContaining('DELETE FROM hold_watchers'), [42, 2]);
+    // notify() itself is stubbed by unitSetup.ts (see notifications.integration.test.ts
+    // for its real DB behavior) — asserted directly rather than via execute.
+    expect(notify).toHaveBeenCalledWith(
+      [2],
+      expect.objectContaining({ type: 'ownership_transferred', message: 'Owner Name transferred Dire Wolf to you', miniId: 42 })
+    );
+  });
+
+  it('lets an admin transfer someone else\'s mini in the SAME collection', async () => {
+    execute
+      .mockResolvedValueOnce(ADMIN_MEMBERSHIP)
+      .mockResolvedValueOnce([[transferLookupRow()]])
+      .mockResolvedValueOnce([[{ exists: 1 }]])
+      .mockResolvedValueOnce([{ affectedRows: 1 }])
+      .mockResolvedValueOnce([{ affectedRows: 0 }])
+      .mockResolvedValueOnce([{ affectedRows: 0 }])
+      .mockResolvedValueOnce([[miniRow({ owner_id: 2 })]]);
+
+    const res = await request(app)
+      .post('/api/minis/42/transfer')
+      .set('Cookie', authCookie(ADMIN))
+      .send({ newOwnerId: 2 });
+
+    expect(res.status).toBe(200);
+  });
+
+  it('returns 404 for an admin acting in a DIFFERENT collection than the mini', async () => {
+    execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED).mockResolvedValueOnce([[]]);
+
+    const res = await request(app)
+      .post('/api/minis/42/transfer')
+      .set('Cookie', authCookie(ADMIN_OTHER_COLLECTION))
+      .send({ newOwnerId: 2 });
+
+    expect(res.status).toBe(404);
+  });
+
+  it('rejects a non-owner, non-admin with 403, without checking the new owner or updating anything', async () => {
+    execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED).mockResolvedValueOnce([[transferLookupRow()]]);
+
+    const res = await request(app)
+      .post('/api/minis/42/transfer')
+      .set('Cookie', authCookie(OTHER))
+      .send({ newOwnerId: 2 });
+
+    expect(res.status).toBe(403);
+    expect(execute).toHaveBeenCalledTimes(2); // membership, then the lookup — nothing more
+  });
+
+  it('returns 404 when the mini does not exist', async () => {
+    execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED).mockResolvedValueOnce([[]]);
+
+    const res = await request(app)
+      .post('/api/minis/999/transfer')
+      .set('Cookie', authCookie(OWNER))
+      .send({ newOwnerId: 2 });
+
+    expect(res.status).toBe(404);
+  });
+
+  it.each([undefined, 0, -1, 1.5, 'abc', [2]])('rejects an invalid newOwnerId (%s) with 400', async (newOwnerId) => {
+    execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED).mockResolvedValueOnce([[transferLookupRow()]]);
+
+    const res = await request(app)
+      .post('/api/minis/42/transfer')
+      .set('Cookie', authCookie(OWNER))
+      .send({ newOwnerId });
+
+    expect(res.status).toBe(400);
+    expect(execute).toHaveBeenCalledTimes(2); // membership, then the lookup — nothing more
+  });
+
+  it('rejects transferring a mini to its current owner', async () => {
+    execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED).mockResolvedValueOnce([[transferLookupRow({ owner_id: 1 })]]);
+
+    const res = await request(app)
+      .post('/api/minis/42/transfer')
+      .set('Cookie', authCookie(OWNER))
+      .send({ newOwnerId: 1 });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/already theirs/i);
+  });
+
+  it('rejects a newOwnerId who isn\'t a member of this collection', async () => {
+    execute
+      .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
+      .mockResolvedValueOnce([[transferLookupRow()]])
+      .mockResolvedValueOnce([[]]); // not a member
+
+    const res = await request(app)
+      .post('/api/minis/42/transfer')
+      .set('Cookie', authCookie(OWNER))
+      .send({ newOwnerId: 99 });
+
+    expect(res.status).toBe(404);
+    expect(res.body.error).toMatch(/isn't a member/i);
+    expect(execute).not.toHaveBeenCalledWith(expect.stringContaining('UPDATE minis'), expect.anything());
+  });
+
+  it.each(['negotiating', 'adventuring'])('refuses with 409 while the mini has a %s loan, and updates nothing', async (loanStatus) => {
+    execute
+      .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
+      .mockResolvedValueOnce([[transferLookupRow({ active_loan_status: loanStatus })]])
+      .mockResolvedValueOnce([[{ exists: 1 }]]);
+
+    const res = await request(app)
+      .post('/api/minis/42/transfer')
+      .set('Cookie', authCookie(OWNER))
+      .send({ newOwnerId: 2 });
+
+    expect(res.status).toBe(409);
+    expect(execute).not.toHaveBeenCalledWith(expect.stringContaining('UPDATE minis'), expect.anything());
+  });
+
+  it('refuses with 409 while the mini is out on a quest', async () => {
+    execute
+      .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
+      .mockResolvedValueOnce([[transferLookupRow({ on_quest_since: new Date('2026-09-01T00:00:00.000Z') })]])
+      .mockResolvedValueOnce([[{ exists: 1 }]]);
+
+    const res = await request(app)
+      .post('/api/minis/42/transfer')
+      .set('Cookie', authCookie(OWNER))
+      .send({ newOwnerId: 2 });
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toMatch(/quest/i);
+  });
+
+  it('returns 409 if the mini became unavailable between the check and the write (race)', async () => {
+    execute
+      .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
+      .mockResolvedValueOnce([[transferLookupRow()]])
+      .mockResolvedValueOnce([[{ exists: 1 }]])
+      .mockResolvedValueOnce([{ affectedRows: 0 }]); // UPDATE matched nothing
+
+    const res = await request(app)
+      .post('/api/minis/42/transfer')
+      .set('Cookie', authCookie(OWNER))
+      .send({ newOwnerId: 2 });
+
+    expect(res.status).toBe(409);
+    expect(execute).not.toHaveBeenCalledWith(expect.stringContaining('DELETE FROM cart_items'), expect.anything());
+  });
+
+  it('returns 401 with no auth cookie', async () => {
+    const res = await request(app).post('/api/minis/42/transfer').send({ newOwnerId: 2 });
     expect(res.status).toBe(401);
   });
 });

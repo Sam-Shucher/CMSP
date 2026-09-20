@@ -3,7 +3,7 @@
 export type NotificationType =
   | 'hold_placed' | 'your_turn' | 'hold_became_request' | 'moved_up' | 'spot_opened' | 'mini_removed'
   | 'request_created' | 'terms_proposed' | 'terms_approved' | 'request_cancelled'
-  | 'handed_off' | 'received' | 'returned' | 'overdue' | 'extended';
+  | 'handed_off' | 'received' | 'returned' | 'overdue' | 'extended' | 'ownership_transferred';
 
 const MAX_LENGTH = 255; // notifications.message column
 
@@ -31,6 +31,7 @@ export const messages = {
   overdue: (mini: string) => `${mini} is overdue`,
   extended: (name: string, mini: string, days: number, dueAt: Date) =>
     `${name} kept ${mini} for ${days} more day${days === 1 ? '' : 's'} — now due ${dueAt.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`,
+  ownershipTransferred: (fromName: string, mini: string) => `${fromName} transferred ${mini} to you`,
 };
 
 export function fitMessage(message: string): string {

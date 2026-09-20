@@ -135,6 +135,37 @@ describe('EditMiniPage', () => {
     expect(vi.mocked(fetch).mock.calls[1][0]).toBe('/api/minis/42/history');
     expect(await screen.findByText(/nobody's borrowed this one yet/i)).toBeInTheDocument();
   });
+
+  // TransferMini.test.tsx covers its own behavior in full — this just confirms
+  // the edit page wires it up with the mini's id/name/owner and navigates
+  // away (like delete does) once a transfer actually goes through.
+  it('offers transferring ownership, fetched only once opened, and returns to the dashboard once it succeeds', async () => {
+    vi.mocked(fetch)
+      .mockResolvedValueOnce({ ok: true, json: async () => MINI } as Response) // initial GET
+      .mockResolvedValueOnce({ ok: true, json: async () => [{ id: 1, name: 'Owner Name' }, { id: 2, name: 'Other Person' }] } as Response) // collection-members
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ ...MINI, owner_id: 2 }) } as Response); // transfer
+
+    renderEditPage();
+    await screen.findByLabelText(/name/i);
+    expect(fetch).toHaveBeenCalledTimes(1);
+
+    await userEvent.click(screen.getByRole('button', { name: /^transfer ownership$/i }));
+    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
+    expect(vi.mocked(fetch).mock.calls[1][0]).toBe('/api/minis/collection-members');
+
+    // The mini's own owner (id 1) is excluded from the recipient list.
+    const select = screen.getByLabelText(/give to/i);
+    expect(within(select).queryByRole('option', { name: 'Owner Name' })).not.toBeInTheDocument();
+
+    await userEvent.selectOptions(select, '2');
+    await userEvent.click(screen.getByRole('button', { name: /^transfer$/i }));
+    await userEvent.type(await screen.findByLabelText(/type/i), 'Other Person');
+    await userEvent.click(screen.getByRole('button', { name: /^confirm transfer$/i }));
+
+    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(3));
+    expect(vi.mocked(fetch).mock.calls[2][0]).toBe('/api/minis/42/transfer');
+    expect(await screen.findByText('Dashboard')).toBeInTheDocument();
+  });
 });
 
 describe('EditMiniPage — deleting the mini', () => {

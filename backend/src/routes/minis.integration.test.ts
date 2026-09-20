@@ -70,7 +70,7 @@ async function createTestUser(
       overrides.email ?? 'owner@example.com',
       overrides.username ?? 'owner',
       passwordHash,
-      'Owner Name',
+      `${overrides.username ?? 'owner'} display`,
     ]
   );
   const userId = result.insertId;
@@ -522,5 +522,166 @@ describe('GET /api/minis — fuzzy search (real database)', () => {
     expect(res.status).toBe(200);
     expect(res.body).toHaveLength(1);
     expect(res.body[0].name).toBe('Tabaxi Bard');
+  });
+});
+
+describe('GET /api/minis/collection-members (real database)', () => {
+  it('returns every member of the collection, not just those who own a mini, scoped to that collection', async () => {
+    const chicago = await createTestUser({ username: 'chicago-owner', email: 'chicago@example.com' });
+    // A second member of Chicago who owns nothing.
+    const bystander = await createTestUser({ username: 'bystander', email: 'bystander@example.com', collectionId: chicago.collectionId });
+    // A member of an entirely different collection, who must not leak in.
+    await createTestUser({ username: 'dojo-owner', email: 'dojo@example.com' });
+
+    const cookie = authCookie({ userId: chicago.userId, username: 'chicago-owner', role: 'user', collectionId: chicago.collectionId });
+    const res = await request(app).get('/api/minis/collection-members').set('Cookie', cookie);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual(expect.arrayContaining([
+      { id: chicago.userId, name: 'chicago-owner display' },
+      { id: bystander.userId, name: 'bystander display' },
+    ]));
+    expect(res.body).toHaveLength(2);
+  });
+});
+
+describe('POST /api/minis/:id/transfer (real database)', () => {
+  it('transfers the mini end-to-end: new owner, cleared set, notification sent, everything else preserved', async () => {
+    const owner = await createTestUser({ username: 'olivia', email: 'olivia@example.com' });
+    const newOwner = await createTestUser({ username: 'nadia', email: 'nadia@example.com', collectionId: owner.collectionId });
+    const ownerCookie = authCookie({ userId: owner.userId, username: 'olivia', role: 'user', collectionId: owner.collectionId });
+    const newOwnerCookie = authCookie({ userId: newOwner.userId, username: 'nadia', role: 'user', collectionId: owner.collectionId });
+
+    const createRes = await request(app)
+      .post('/api/minis')
+      .set('Cookie', ownerCookie)
+      .field('name', 'Beholder')
+      .field('tags', 'boss,painted')
+      .field('price', '25.00');
+    const miniId = createRes.body.miniId;
+
+    const [setResult] = await pool.execute<ResultSetHeader>(
+      'INSERT INTO sets (name, owner_id, collection_id) VALUES (?, ?, ?)', ['Owner\'s Army', owner.userId, owner.collectionId]
+    );
+    await pool.execute('UPDATE minis SET set_id = ? WHERE id = ?', [setResult.insertId, miniId]);
+
+    const transferRes = await request(app)
+      .post(`/api/minis/${miniId}/transfer`)
+      .set('Cookie', ownerCookie)
+      .send({ newOwnerId: newOwner.userId });
+
+    expect(transferRes.status).toBe(200);
+    expect(transferRes.body).toMatchObject({
+      owner_id: newOwner.userId, owner_name: 'nadia display',
+      name: 'Beholder', tags: ['boss', 'painted'], price: 25, set_id: null, set_name: null,
+    });
+
+    // The old owner can no longer edit it; the new owner now can.
+    const oldOwnerEdit = await request(app).patch(`/api/minis/${miniId}`).set('Cookie', ownerCookie).field('name', 'Stolen Beholder');
+    expect(oldOwnerEdit.status).toBe(403);
+    const newOwnerEdit = await request(app).patch(`/api/minis/${miniId}`).set('Cookie', newOwnerCookie).field('name', 'Beholder (Repainted)');
+    expect(newOwnerEdit.status).toBe(200);
+
+    // The new owner was notified.
+    const inbox = await request(app).get('/api/notifications').set('Cookie', newOwnerCookie);
+    expect(inbox.body.items).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'ownership_transferred', message: 'olivia display transferred Beholder to you', miniId }),
+    ]));
+  });
+
+  it('clears a stale cart entry and hold-watch entry the new owner had on this mini before they owned it', async () => {
+    const owner = await createTestUser({ username: 'olivia', email: 'olivia@example.com' });
+    const newOwner = await createTestUser({ username: 'nadia', email: 'nadia@example.com', collectionId: owner.collectionId });
+    const ownerCookie = authCookie({ userId: owner.userId, username: 'olivia', role: 'user', collectionId: owner.collectionId });
+    const newOwnerCookie = authCookie({ userId: newOwner.userId, username: 'nadia', role: 'user', collectionId: owner.collectionId });
+
+    const createRes = await request(app).post('/api/minis').set('Cookie', ownerCookie).field('name', 'Beholder');
+    const miniId = createRes.body.miniId;
+
+    // Set up directly rather than through the full hold/cart flows (those are
+    // exercised end to end in holds.integration.test.ts and cart.integration.test.ts) —
+    // what matters here is that transfer cleans up whatever it finds.
+    await pool.execute('INSERT INTO cart_items (user_id, mini_id) VALUES (?, ?)', [newOwner.userId, miniId]);
+    await pool.execute('INSERT INTO hold_watchers (mini_id, user_id) VALUES (?, ?)', [miniId, newOwner.userId]);
+
+    const transferRes = await request(app)
+      .post(`/api/minis/${miniId}/transfer`)
+      .set('Cookie', ownerCookie)
+      .send({ newOwnerId: newOwner.userId });
+    expect(transferRes.status).toBe(200);
+
+    const cart = await request(app).get('/api/cart').set('Cookie', newOwnerCookie);
+    expect(cart.body).toEqual([]);
+    const holds = await request(app).get('/api/holds').set('Cookie', newOwnerCookie);
+    expect(holds.body.watching).toEqual([]);
+  });
+
+  it('rejects transferring to someone who is a member of a DIFFERENT collection', async () => {
+    const chicago = await createTestUser({ username: 'chicago-owner', email: 'chicago@example.com' });
+    const dojo = await createTestUser({ username: 'dojo-owner', email: 'dojo@example.com' });
+    const cookie = authCookie({ userId: chicago.userId, username: 'chicago-owner', role: 'user', collectionId: chicago.collectionId });
+
+    const createRes = await request(app).post('/api/minis').set('Cookie', cookie).field('name', 'Beholder');
+
+    const res = await request(app)
+      .post(`/api/minis/${createRes.body.miniId}/transfer`)
+      .set('Cookie', cookie)
+      .send({ newOwnerId: dojo.userId });
+
+    expect(res.status).toBe(404);
+  });
+
+  it('blocks transfer while the mini has a real negotiating loan against it', async () => {
+    const owner = await createTestUser({ username: 'olivia', email: 'olivia@example.com' });
+    const borrower = await createTestUser({ username: 'bruno', email: 'bruno@example.com', collectionId: owner.collectionId });
+    const newOwner = await createTestUser({ username: 'nadia', email: 'nadia@example.com', collectionId: owner.collectionId });
+    const ownerCookie = authCookie({ userId: owner.userId, username: 'olivia', role: 'user', collectionId: owner.collectionId });
+    const borrowerCookie = authCookie({ userId: borrower.userId, username: 'bruno', role: 'user', collectionId: owner.collectionId });
+
+    const createRes = await request(app).post('/api/minis').set('Cookie', ownerCookie).field('name', 'Beholder');
+    const miniId = createRes.body.miniId;
+    await request(app).post('/api/cart').set('Cookie', borrowerCookie).send({ miniId });
+    await request(app).post('/api/cart/checkout').set('Cookie', borrowerCookie);
+
+    const res = await request(app)
+      .post(`/api/minis/${miniId}/transfer`)
+      .set('Cookie', ownerCookie)
+      .send({ newOwnerId: newOwner.userId });
+
+    expect(res.status).toBe(409);
+  });
+
+  it('blocks transfer while the owner has it out on a quest', async () => {
+    const owner = await createTestUser({ username: 'olivia', email: 'olivia@example.com' });
+    const newOwner = await createTestUser({ username: 'nadia', email: 'nadia@example.com', collectionId: owner.collectionId });
+    const ownerCookie = authCookie({ userId: owner.userId, username: 'olivia', role: 'user', collectionId: owner.collectionId });
+
+    const createRes = await request(app).post('/api/minis').set('Cookie', ownerCookie).field('name', 'Beholder');
+    const miniId = createRes.body.miniId;
+    await request(app).post(`/api/minis/${miniId}/take-out`).set('Cookie', ownerCookie).send({});
+
+    const res = await request(app)
+      .post(`/api/minis/${miniId}/transfer`)
+      .set('Cookie', ownerCookie)
+      .send({ newOwnerId: newOwner.userId });
+
+    expect(res.status).toBe(409);
+  });
+
+  it('rejects a non-owner, non-admin member trying to transfer someone else\'s mini', async () => {
+    const owner = await createTestUser({ username: 'olivia', email: 'olivia@example.com' });
+    const bystander = await createTestUser({ username: 'bystander', email: 'bystander@example.com', collectionId: owner.collectionId });
+    const newOwner = await createTestUser({ username: 'nadia', email: 'nadia@example.com', collectionId: owner.collectionId });
+    const ownerCookie = authCookie({ userId: owner.userId, username: 'olivia', role: 'user', collectionId: owner.collectionId });
+    const bystanderCookie = authCookie({ userId: bystander.userId, username: 'bystander', role: 'user', collectionId: owner.collectionId });
+
+    const createRes = await request(app).post('/api/minis').set('Cookie', ownerCookie).field('name', 'Beholder');
+
+    const res = await request(app)
+      .post(`/api/minis/${createRes.body.miniId}/transfer`)
+      .set('Cookie', bystanderCookie)
+      .send({ newOwnerId: newOwner.userId });
+
+    expect(res.status).toBe(403);
   });
 });

@@ -77,6 +77,36 @@ export function tagList(value: unknown): Check<string[]> {
   return { ok: true, value: tags };
 }
 
+// A query-string value restricted to a fixed set of strings (e.g. ?sort=name).
+// Missing/empty means "not specified" (the caller supplies the default);
+// anything else not in the allowed list — including the array/object shapes
+// a crafted query string can produce — is rejected.
+export function optionalEnum<T extends string>(value: unknown, label: string, allowed: readonly T[]): Check<T | null> {
+  if (value === undefined || value === null || value === '') return { ok: true, value: null };
+  if (typeof value !== 'string' || !allowed.includes(value as T)) {
+    return { ok: false, error: `${label} must be one of: ${allowed.join(', ')}` };
+  }
+  return { ok: true, value: value as T };
+}
+
+// A query-string id (e.g. ?owner=5). Missing/empty means "not specified".
+export function optionalId(value: unknown, label: string): Check<number | null> {
+  if (value === undefined || value === null || value === '') return { ok: true, value: null };
+  if (typeof value !== 'string') return { ok: false, error: `${label} must be a valid id` };
+  const id = Number(value);
+  if (!Number.isInteger(id) || id <= 0) return { ok: false, error: `${label} must be a valid id` };
+  return { ok: true, value: id };
+}
+
+// A query-string boolean flag (e.g. ?available=1). Missing/empty means false;
+// the only other accepted value is '1', so a stray "false"/"0" from a client
+// bug is caught instead of silently doing nothing.
+export function optionalFlag(value: unknown, label: string): Check<boolean> {
+  if (value === undefined || value === null || value === '') return { ok: true, value: false };
+  if (value !== '1') return { ok: false, error: `${label} must be a valid flag` };
+  return { ok: true, value: true };
+}
+
 export function positiveId(value: unknown): Check<number> {
   if (typeof value !== 'number' || !Number.isInteger(value) || value <= 0) {
     return { ok: false, error: 'A valid id is required' };

@@ -4,6 +4,7 @@ import { api, Mini } from '../api/client';
 import MiniForm, { MiniFormValues } from '../components/MiniForm';
 import ConfirmDeleteModal from '../components/ConfirmDeleteModal';
 import MiniHistory from '../components/MiniHistory';
+import TransferMini from '../components/TransferMini';
 
 // Page for editing a mini you already own (or, if you're an admin, anyone's).
 // The server re-checks ownership on submit regardless of what's shown here.
@@ -78,6 +79,14 @@ export default function EditMiniPage(): React.ReactElement {
       {/* "Who's had this, how often" — collapsed by default, so a routine
           edit doesn't pay for a fetch nobody asked for. */}
       <MiniHistory miniId={mini.id} />
+
+      {/* Also collapsed by default — the member list is fetched only if asked. */}
+      <TransferMini
+        miniId={mini.id}
+        miniName={mini.name}
+        ownerId={mini.owner_id}
+        onTransferred={() => navigate('/')}
+      />
 
       {/* Kept separate from the form's own buttons so a mistaken click while
           editing doesn't land anywhere near "delete this permanently". */}

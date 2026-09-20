@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { requiredText, optionalText, emailAddress, tagList, positiveId, idList } from './inputs';
+import { requiredText, optionalText, emailAddress, tagList, positiveId, idList, optionalEnum, optionalId, optionalFlag } from './inputs';
 
 describe('requiredText', () => {
   it('trims and accepts text within the limit', () => {
@@ -139,5 +139,68 @@ describe('idList', () => {
     const many = Array.from({ length: 51 }, (_unused, i) => i + 1);
     expect(idList(many, 'miniIds', 50)).toMatchObject({ ok: false, error: expect.stringMatching(/50/) });
     expect(idList(many.slice(0, 50), 'miniIds', 50)).toMatchObject({ ok: true });
+  });
+});
+
+describe('optionalEnum', () => {
+  const SORT = ['newest', 'name', 'price'] as const;
+
+  it('treats missing, null, and empty string as "not specified"', () => {
+    expect(optionalEnum(undefined, 'Sort', SORT)).toEqual({ ok: true, value: null });
+    expect(optionalEnum(null, 'Sort', SORT)).toEqual({ ok: true, value: null });
+    expect(optionalEnum('', 'Sort', SORT)).toEqual({ ok: true, value: null });
+  });
+
+  it('accepts a value from the allowed list', () => {
+    expect(optionalEnum('name', 'Sort', SORT)).toEqual({ ok: true, value: 'name' });
+  });
+
+  it.each([
+    ['a value not in the list', 'bogus'],
+    ['an array (e.g. ?sort=a&sort=b)', ['newest', 'name']],
+    ['an object (e.g. ?sort[$ne]=x)', { $ne: 'x' }],
+    ['a number', 1],
+  ])('rejects %s', (_why, value) => {
+    expect(optionalEnum(value, 'Sort', SORT)).toMatchObject({ ok: false, error: expect.stringMatching(/sort/i) });
+  });
+});
+
+describe('optionalId', () => {
+  it('treats missing, null, and empty string as "not specified"', () => {
+    expect(optionalId(undefined, 'Owner')).toEqual({ ok: true, value: null });
+    expect(optionalId(null, 'Owner')).toEqual({ ok: true, value: null });
+    expect(optionalId('', 'Owner')).toEqual({ ok: true, value: null });
+  });
+
+  it('accepts a positive whole number given as a string', () => {
+    expect(optionalId('6', 'Owner')).toEqual({ ok: true, value: 6 });
+  });
+
+  it.each([
+    ['zero', '0'],
+    ['negative', '-1'],
+    ['a fraction', '1.5'],
+    ['non-numeric text', 'abc'],
+    ['a number instead of a string', 6],
+    ['an array (e.g. ?owner=1&owner=2)', ['1', '2']],
+    ['an object (e.g. ?owner[$ne]=1)', { $ne: '1' }],
+  ])('rejects %s', (_why, value) => {
+    expect(optionalId(value, 'Owner')).toMatchObject({ ok: false, error: expect.stringMatching(/owner/i) });
+  });
+});
+
+describe('optionalFlag', () => {
+  it('treats missing, null, and empty string as false', () => {
+    expect(optionalFlag(undefined, 'Available')).toEqual({ ok: true, value: false });
+    expect(optionalFlag(null, 'Available')).toEqual({ ok: true, value: false });
+    expect(optionalFlag('', 'Available')).toEqual({ ok: true, value: false });
+  });
+
+  it('accepts exactly "1" as true', () => {
+    expect(optionalFlag('1', 'Available')).toEqual({ ok: true, value: true });
+  });
+
+  it.each(['true', 'false', '0', 'yes', ['1', '1'], { $ne: '1' }, 1])('rejects %s', (value) => {
+    expect(optionalFlag(value, 'Available')).toMatchObject({ ok: false, error: expect.stringMatching(/available/i) });
   });
 });

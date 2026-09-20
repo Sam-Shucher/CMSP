@@ -1,10 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import DashboardPage, { SEARCH_DEBOUNCE_MS } from './DashboardPage';
 import { AuthContext } from '../App';
-import { CartItem, Mini, CART_CHANGED_EVENT } from '../api/client';
+import { CartItem, Mini, MiniOwner, CART_CHANGED_EVENT } from '../api/client';
 import { jsonResponse, urlOf, jsonBodyOf} from '../test/apiMock';
 
 const MINI_OWNED_BY_1: Mini = {
@@ -35,6 +35,7 @@ function mockApi({ minis = [MINI_OWNED_BY_1], cart = [] as CartItem[], onAddToCa
     const url = urlOf(input);
     const method = init?.method ?? 'GET';
     if (url.startsWith('/api/minis/tags')) return jsonResponse([]);
+    if (url.startsWith('/api/minis/owners')) return jsonResponse([]);
     if (url.startsWith('/api/minis')) return jsonResponse(minis);
     if (url === '/api/cart' && method === 'GET') return jsonResponse(cartItems);
     if (url === '/api/cart' && method === 'POST') {
@@ -125,10 +126,11 @@ describe('DashboardPage — mini detail overlay', () => {
 });
 
 describe('DashboardPage — browsing, search, and tags', () => {
-  function mockBrowse({ minis = [MINI_OWNED_BY_1], tags = ['boss', 'painted'], minisOk = true }: { minis?: Mini[]; tags?: string[]; minisOk?: boolean } = {}) {
+  function mockBrowse({ minis = [MINI_OWNED_BY_1], tags = ['boss', 'painted'], owners = [] as MiniOwner[], minisOk = true }: { minis?: Mini[]; tags?: string[]; owners?: MiniOwner[]; minisOk?: boolean } = {}) {
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
       const url = urlOf(input);
       if (url.startsWith('/api/minis/tags')) return jsonResponse(tags);
+      if (url.startsWith('/api/minis/owners')) return jsonResponse(owners);
       if (url.startsWith('/api/minis')) return minisOk ? jsonResponse(minis) : jsonResponse({ error: 'Server error' }, { ok: false });
       if (url === '/api/cart') return jsonResponse([]);
       return jsonResponse({}, { ok: false });
@@ -167,6 +169,70 @@ describe('DashboardPage — browsing, search, and tags', () => {
 
     await userEvent.click(screen.getByRole('button', { name: 'boss' }));
     await waitFor(() => expect(minisUrls().at(-1)).toBe('/api/minis?'));
+  });
+
+  it('sorts by name or price, and back to newest sends no sort param', async () => {
+    mockBrowse();
+    renderDashboard({ userId: 2, username: 'other', role: 'user' });
+    await screen.findByText('Dire Wolf');
+
+    await userEvent.selectOptions(screen.getByLabelText(/sort by/i), 'name');
+    await waitFor(() => expect(minisUrls().at(-1)).toBe('/api/minis?sort=name'));
+
+    await userEvent.selectOptions(screen.getByLabelText(/sort by/i), 'price');
+    await waitFor(() => expect(minisUrls().at(-1)).toBe('/api/minis?sort=price'));
+
+    await userEvent.selectOptions(screen.getByLabelText(/sort by/i), 'newest');
+    await waitFor(() => expect(minisUrls().at(-1)).toBe('/api/minis?'));
+  });
+
+  it('lists each owner\'s name as an option, plus "All owners"', async () => {
+    mockBrowse({ owners: [{ id: 7, name: 'Someone Else' }, { id: 9, name: 'Third Person' }] });
+    renderDashboard({ userId: 2, username: 'other', role: 'user' });
+    await screen.findByText('Dire Wolf');
+
+    const ownerSelect = screen.getByLabelText(/owner/i);
+    expect(within(ownerSelect).getByRole('option', { name: 'All owners' })).toBeInTheDocument();
+    expect(within(ownerSelect).getByRole('option', { name: 'Someone Else' })).toBeInTheDocument();
+    expect(within(ownerSelect).getByRole('option', { name: 'Third Person' })).toBeInTheDocument();
+  });
+
+  it('filters by owner from the dropdown, and back to "All owners" clears it', async () => {
+    mockBrowse({ owners: [{ id: 7, name: 'Someone Else' }] });
+    renderDashboard({ userId: 2, username: 'other', role: 'user' });
+    await screen.findByText('Dire Wolf');
+
+    await userEvent.selectOptions(screen.getByLabelText(/owner/i), '7');
+    await waitFor(() => expect(minisUrls().at(-1)).toBe('/api/minis?owner=7'));
+
+    await userEvent.selectOptions(screen.getByLabelText(/owner/i), 'All owners');
+    await waitFor(() => expect(minisUrls().at(-1)).toBe('/api/minis?'));
+  });
+
+  it('checking "Available only" filters, unchecking clears it', async () => {
+    mockBrowse();
+    renderDashboard({ userId: 2, username: 'other', role: 'user' });
+    await screen.findByText('Dire Wolf');
+
+    await userEvent.click(screen.getByRole('checkbox', { name: /available only/i }));
+    await waitFor(() => expect(minisUrls().at(-1)).toBe('/api/minis?available=1'));
+
+    await userEvent.click(screen.getByRole('checkbox', { name: /available only/i }));
+    await waitFor(() => expect(minisUrls().at(-1)).toBe('/api/minis?'));
+  });
+
+  it('combines search, tag, owner, sort, and available-only in one request', async () => {
+    mockBrowse({ owners: [{ id: 7, name: 'Someone Else' }] });
+    renderDashboard({ userId: 2, username: 'other', role: 'user' });
+    await screen.findByText('Dire Wolf');
+
+    await userEvent.type(screen.getByPlaceholderText(/search/i), 'wolf');
+    await userEvent.click(screen.getByRole('button', { name: 'boss' }));
+    await userEvent.selectOptions(screen.getByLabelText(/owner/i), '7');
+    await userEvent.selectOptions(screen.getByLabelText(/sort by/i), 'price');
+    await userEvent.click(screen.getByRole('checkbox', { name: /available only/i }));
+
+    await waitFor(() => expect(minisUrls().at(-1)).toBe('/api/minis?q=wolf&tag=boss&owner=7&sort=price&available=1'));
   });
 
   it('"All" clears the tag filter', async () => {
@@ -324,6 +390,7 @@ describe('DashboardPage — taking your own mini on a quest', () => {
       const url = urlOf(input);
       if (url === '/api/minis/1/take-out' && init?.method === 'POST') return jsonResponse(questing);
       if (url.startsWith('/api/minis/tags')) return jsonResponse([]);
+      if (url.startsWith('/api/minis/owners')) return jsonResponse([]);
       if (url.startsWith('/api/minis')) return jsonResponse([MINI_OWNED_BY_1]);
       if (url === '/api/cart') return jsonResponse([]);
       return jsonResponse({ error: 'unexpected' }, { ok: false });
@@ -344,6 +411,7 @@ describe('DashboardPage — taking your own mini on a quest', () => {
       const url = urlOf(input);
       if (url === '/api/minis/1/bring-back' && init?.method === 'POST') return jsonResponse(MINI_OWNED_BY_1);
       if (url.startsWith('/api/minis/tags')) return jsonResponse([]);
+      if (url.startsWith('/api/minis/owners')) return jsonResponse([]);
       if (url.startsWith('/api/minis')) return jsonResponse([questing]);
       if (url === '/api/cart') return jsonResponse([]);
       return jsonResponse({ error: 'unexpected' }, { ok: false });

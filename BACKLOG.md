@@ -14,8 +14,9 @@ first. Status is marked where work has started.
    longer without cancelling and re-requesting. Blocked while anyone is in the
    hold line, the way a library refuses a renewal on a reserved book. Bounded by
    the same three months as any loan, counted from the handoff.
-2. **Sort and filter the browse page** — not started. Only one tag plus a
-   search today. Available-only, by owner, newest, name, price.
+2. **Sort and filter the browse page** — *done*. Available-only checkbox, an
+   owner dropdown (`GET /api/minis/owners`), and sort by newest/name/price,
+   alongside the existing search and tag pill.
 3. **A mini's history** — *done*. Who has had it and how often. Owner (or
    admin) only, on the edit page, collapsed until asked — this app otherwise
    keeps a mini's CURRENT borrower anonymous to bystanders, so a full
@@ -32,8 +33,11 @@ first. Status is marked where work has started.
    aren't the right list to offer there, and the backend already refuses an
    admin sneaking their own mini into someone else's set if that were tried
    directly.
-5. **Transfer ownership** — someone sells or gives a mini to another member.
-   Today the only path is delete and re-add, which throws away its history.
+5. **Transfer ownership** — *done*. Owner (or an admin) picks another member
+   on the edit page (`POST /api/minis/:id/transfer`); keeps tags, photos,
+   price, and lending history — blocked while the mini has an active request/
+   loan or is out on a quest, and it leaves any set it was part of (sets are
+   one owner's own minis).
 6. **Lost / damaged as a loan outcome** — statuses are negotiating, adventuring,
    returned, cancelled. Real life also includes "it broke" and "it never came
    back", and there's nowhere to record either.
@@ -68,6 +72,12 @@ first. Status is marked where work has started.
 16. **A message thread per loan** — negotiation is structured fields, with no
     room for "running 20 minutes late". So people drop to texting and the app
     loses the record of what was agreed.
+17. **Toggle price visibility per collection** — some groups don't want a
+    dollar figure on every mini at all. Needs a persisted per-collection
+    setting (a new column or a `collection_settings` table) gating price on
+    cards, the detail view, and the "sort by price" option — per `CLAUDE.md`'s
+    schema-change rule, that's a `schema.sql` change paired with a migration
+    file, not designed further here.
 
 **Decided against, with reasons:**
 
