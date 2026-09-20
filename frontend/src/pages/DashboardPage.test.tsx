@@ -221,6 +221,42 @@ describe('DashboardPage — browsing, search, and tags', () => {
     await waitFor(() => expect(minisUrls().at(-1)).toBe('/api/minis?'));
   });
 
+  it('checking "Only my minis" filters to your own owner id, unchecking clears it', async () => {
+    mockBrowse();
+    renderDashboard({ userId: 2, username: 'other', role: 'user' });
+    await screen.findByText('Dire Wolf');
+
+    await userEvent.click(screen.getByRole('checkbox', { name: /only my minis/i }));
+    await waitFor(() => expect(minisUrls().at(-1)).toBe('/api/minis?owner=2'));
+
+    await userEvent.click(screen.getByRole('checkbox', { name: /only my minis/i }));
+    await waitFor(() => expect(minisUrls().at(-1)).toBe('/api/minis?'));
+  });
+
+  it('picking a different owner from the dropdown un-checks "Only my minis"', async () => {
+    mockBrowse({ owners: [{ id: 7, name: 'Someone Else' }] });
+    renderDashboard({ userId: 2, username: 'other', role: 'user' });
+    await screen.findByText('Dire Wolf');
+
+    await userEvent.click(screen.getByRole('checkbox', { name: /only my minis/i }));
+    await waitFor(() => expect(minisUrls().at(-1)).toBe('/api/minis?owner=2'));
+
+    await userEvent.selectOptions(screen.getByLabelText(/^owner$/i), '7');
+    await waitFor(() => expect(minisUrls().at(-1)).toBe('/api/minis?owner=7'));
+    expect(screen.getByRole('checkbox', { name: /only my minis/i })).not.toBeChecked();
+  });
+
+  it('picking your own name from the owner dropdown checks "Only my minis" too — same underlying filter', async () => {
+    mockBrowse({ owners: [{ id: 2, name: 'Own Display Name' }] });
+    renderDashboard({ userId: 2, username: 'other', role: 'user' });
+    await screen.findByText('Dire Wolf');
+
+    await userEvent.selectOptions(screen.getByLabelText(/^owner$/i), '2');
+
+    await waitFor(() => expect(minisUrls().at(-1)).toBe('/api/minis?owner=2'));
+    expect(screen.getByRole('checkbox', { name: /only my minis/i })).toBeChecked();
+  });
+
   it('combines search, tag, owner, sort, and available-only in one request', async () => {
     mockBrowse({ owners: [{ id: 7, name: 'Someone Else' }] });
     renderDashboard({ userId: 2, username: 'other', role: 'user' });

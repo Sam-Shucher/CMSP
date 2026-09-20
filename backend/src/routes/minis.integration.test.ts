@@ -159,6 +159,88 @@ describe('GET /api/minis (real database)', () => {
   });
 });
 
+describe('GET /api/minis — sort, owner filter, and available-only (real database)', () => {
+  it('filters to only the selected owner\'s minis', async () => {
+    const olivia = await createTestUser({ username: 'olivia', email: 'olivia@example.com' });
+    const bruno = await createTestUser({ username: 'bruno', email: 'bruno@example.com', collectionId: olivia.collectionId });
+    await pool.execute('INSERT INTO minis (name, owner_id, collection_id) VALUES (?, ?, ?)', ['Olivia\'s Wolf', olivia.userId, olivia.collectionId]);
+    await pool.execute('INSERT INTO minis (name, owner_id, collection_id) VALUES (?, ?, ?)', ['Bruno\'s Beholder', bruno.userId, olivia.collectionId]);
+
+    const cookie = authCookie({ userId: olivia.userId, username: 'olivia', role: 'user', collectionId: olivia.collectionId });
+    const res = await request(app).get(`/api/minis?owner=${bruno.userId}`).set('Cookie', cookie);
+
+    expect(res.status).toBe(200);
+    expect(res.body.map((m: { name: string }) => m.name)).toEqual(['Bruno\'s Beholder']);
+  });
+
+  it('GET /api/minis/owners lists only members who actually own a mini here, not everyone in the collection', async () => {
+    const olivia = await createTestUser({ username: 'olivia', email: 'olivia@example.com' });
+    const bruno = await createTestUser({ username: 'bruno', email: 'bruno@example.com', collectionId: olivia.collectionId });
+    // A third member who owns nothing — must not appear in the owner filter.
+    await createTestUser({ username: 'bystander', email: 'bystander@example.com', collectionId: olivia.collectionId });
+    await pool.execute('INSERT INTO minis (name, owner_id, collection_id) VALUES (?, ?, ?)', ['Wolf', olivia.userId, olivia.collectionId]);
+    await pool.execute('INSERT INTO minis (name, owner_id, collection_id) VALUES (?, ?, ?)', ['Beholder', bruno.userId, olivia.collectionId]);
+
+    const cookie = authCookie({ userId: olivia.userId, username: 'olivia', role: 'user', collectionId: olivia.collectionId });
+    const res = await request(app).get('/api/minis/owners').set('Cookie', cookie);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual(expect.arrayContaining([
+      { id: olivia.userId, name: 'olivia display' },
+      { id: bruno.userId, name: 'bruno display' },
+    ]));
+    expect(res.body).toHaveLength(2);
+  });
+
+  it('sorts by name and by price against real data', async () => {
+    const { userId, collectionId } = await createTestUser();
+    const cookie = authCookie({ userId, username: 'owner', role: 'user', collectionId });
+    await request(app).post('/api/minis').set('Cookie', cookie).field('name', 'Zombie').field('price', '5.00');
+    await request(app).post('/api/minis').set('Cookie', cookie).field('name', 'Ancient Dragon').field('price', '50.00');
+    await request(app).post('/api/minis').set('Cookie', cookie).field('name', 'Beholder').field('price', '15.00');
+
+    const byName = await request(app).get('/api/minis?sort=name').set('Cookie', cookie);
+    expect(byName.body.map((m: { name: string }) => m.name)).toEqual(['Ancient Dragon', 'Beholder', 'Zombie']);
+
+    const byPrice = await request(app).get('/api/minis?sort=price').set('Cookie', cookie);
+    expect(byPrice.body.map((m: { name: string }) => m.name)).toEqual(['Zombie', 'Beholder', 'Ancient Dragon']);
+  });
+
+  it('available=1 excludes a mini that is out on loan or on a quest', async () => {
+    const owner = await createTestUser({ username: 'olivia', email: 'olivia@example.com' });
+    const borrower = await createTestUser({ username: 'bruno', email: 'bruno@example.com', collectionId: owner.collectionId });
+    const ownerCookie = authCookie({ userId: owner.userId, username: 'olivia', role: 'user', collectionId: owner.collectionId });
+    const borrowerCookie = authCookie({ userId: borrower.userId, username: 'bruno', role: 'user', collectionId: owner.collectionId });
+
+    await request(app).post('/api/minis').set('Cookie', ownerCookie).field('name', 'Free Wolf');
+    const loanedRes = await request(app).post('/api/minis').set('Cookie', ownerCookie).field('name', 'Loaned Wolf');
+    const questingRes = await request(app).post('/api/minis').set('Cookie', ownerCookie).field('name', 'Questing Wolf');
+
+    await request(app).post('/api/cart').set('Cookie', borrowerCookie).send({ miniId: loanedRes.body.miniId });
+    await request(app).post('/api/cart/checkout').set('Cookie', borrowerCookie);
+    await request(app).post(`/api/minis/${questingRes.body.miniId}/take-out`).set('Cookie', ownerCookie).send({});
+
+    const res = await request(app).get('/api/minis?available=1').set('Cookie', ownerCookie);
+
+    expect(res.body.map((m: { name: string }) => m.name)).toEqual(['Free Wolf']);
+  });
+
+  it('combines an owner filter with a tag filter and a sort together', async () => {
+    const olivia = await createTestUser({ username: 'olivia', email: 'olivia@example.com' });
+    const bruno = await createTestUser({ username: 'bruno', email: 'bruno@example.com', collectionId: olivia.collectionId });
+    const cookie = authCookie({ userId: olivia.userId, username: 'olivia', role: 'user', collectionId: olivia.collectionId });
+    const brunoCookie = authCookie({ userId: bruno.userId, username: 'bruno', role: 'user', collectionId: olivia.collectionId });
+
+    await request(app).post('/api/minis').set('Cookie', cookie).field('name', 'Owned Dragon').field('tags', 'dragon');
+    await request(app).post('/api/minis').set('Cookie', brunoCookie).field('name', 'Bruno Dragon').field('tags', 'dragon');
+    await request(app).post('/api/minis').set('Cookie', brunoCookie).field('name', 'Bruno Wolf').field('tags', 'wolf');
+
+    const res = await request(app).get(`/api/minis?owner=${bruno.userId}&tag=dragon&sort=name`).set('Cookie', cookie);
+
+    expect(res.body.map((m: { name: string }) => m.name)).toEqual(['Bruno Dragon']);
+  });
+});
+
 describe('Collection isolation (real database)', () => {
   it('never returns another collection\'s minis in the list, even to an admin of their own collection', async () => {
     const chicago = await createTestUser({ username: 'chicago-owner', email: 'chicago@example.com' });

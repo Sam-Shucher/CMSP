@@ -156,6 +156,18 @@ export default function DashboardPage(): React.ReactElement {
           />
           Available only
         </label>
+
+        {/* Just the owner filter pointed at yourself — checked whenever it
+            already is (e.g. you picked your own name from the dropdown above),
+            so the two controls can never disagree. */}
+        <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px', color: '#c9a84c', cursor: 'pointer' }}>
+          <input
+            type="checkbox"
+            checked={user != null && ownerId === String(user.userId)}
+            onChange={(e: React.ChangeEvent<HTMLInputElement>) => setOwnerId(e.target.checked && user != null ? String(user.userId) : '')}
+          />
+          Only my minis
+        </label>
       </div>
 
       {/* Tag filter pills — only shown once tags have loaded */}
