@@ -1,10 +1,12 @@
 // Wording for every in-app notification, in one place.
+import { readableDay } from './bookingRules';
 
 export type NotificationType =
   | 'hold_placed' | 'your_turn' | 'hold_became_request' | 'moved_up' | 'spot_opened' | 'mini_removed'
   | 'request_created' | 'terms_proposed' | 'terms_approved' | 'request_cancelled'
   | 'handed_off' | 'received' | 'returned' | 'overdue' | 'extended' | 'ownership_transferred'
-  | 'lost' | 'critically_wounded';
+  | 'lost' | 'critically_wounded' | 'condition_recorded'
+  | 'booking_placed' | 'booking_cancelled' | 'booking_started' | 'booking_became_request' | 'booking_missed';
 
 const MAX_LENGTH = 255; // notifications.message column
 
@@ -35,6 +37,17 @@ export const messages = {
   ownershipTransferred: (fromName: string, mini: string) => `${fromName} transferred ${mini} to you`,
   lost: (owner: string, mini: string) => `${owner} marked ${mini} as lost`,
   criticallyWounded: (owner: string, mini: string) => `${owner} marked ${mini} as critically wounded`,
+  conditionRecorded: (name: string, mini: string, phase: 'handoff' | 'return') =>
+    `${name} recorded how ${mini} looked at the ${phase}`,
+
+  bookingPlaced: (booker: string, mini: string, startsOn: string) =>
+    `${booker} booked ${mini} for ${readableDay(startsOn)}`,
+  bookingCancelled: (name: string, mini: string, startsOn: string) =>
+    `${name} cancelled the booking on ${mini} for ${readableDay(startsOn)}`,
+  bookingStarted: (mini: string) => `Your booking starts today — you can now negotiate for ${mini}`,
+  bookingBecameRequest: (booker: string, mini: string) => `${booker}'s booking on ${mini} is now a request`,
+  bookingMissed: (mini: string, startsOn: string) =>
+    `${mini} never came free for your booking on ${readableDay(startsOn)}`,
 };
 
 export function fitMessage(message: string): string {

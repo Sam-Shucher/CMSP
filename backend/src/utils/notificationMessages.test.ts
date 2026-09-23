@@ -28,6 +28,26 @@ describe('notification wording', () => {
     expect(messages.overdue('Dire Wolf')).toBe('Dire Wolf is overdue');
   });
 
+  it('reads naturally for a condition record', () => {
+    expect(messages.conditionRecorded('Bob', 'Dire Wolf', 'handoff'))
+      .toBe('Bob recorded how Dire Wolf looked at the handoff');
+    expect(messages.conditionRecorded('Bob', 'Dire Wolf', 'return'))
+      .toBe('Bob recorded how Dire Wolf looked at the return');
+  });
+
+  it('reads naturally for bookings', () => {
+    expect(messages.bookingPlaced('Alice', 'Dire Wolf', '2026-10-14'))
+      .toBe('Alice booked Dire Wolf for Oct 14, 2026');
+    expect(messages.bookingCancelled('Alice', 'Dire Wolf', '2026-10-14'))
+      .toBe('Alice cancelled the booking on Dire Wolf for Oct 14, 2026');
+    expect(messages.bookingStarted('Dire Wolf'))
+      .toBe('Your booking starts today — you can now negotiate for Dire Wolf');
+    expect(messages.bookingBecameRequest('Alice', 'Dire Wolf'))
+      .toBe('Alice\'s booking on Dire Wolf is now a request');
+    expect(messages.bookingMissed('Dire Wolf', '2026-10-14'))
+      .toBe('Dire Wolf never came free for your booking on Oct 14, 2026');
+  });
+
   it('never exceeds the 255-character column, trimming long names with an ellipsis', () => {
     const long = messages.requestCreated('x'.repeat(100), 'y'.repeat(255));
 

@@ -12,7 +12,7 @@ first. Status is marked where work has started.
 
 1. **Renew / extend a loan** — *done*. A borrower (or the owner) keeps a mini
    longer without cancelling and re-requesting. Blocked while anyone is in the
-   hold line, the way a library refuses a renewal on a reserved book. Bounded by
+   hold line, the way a library refuses a rene/claudwal on a reserved book. Bounded by
    the same three months as any loan, counted from the handoff.
 2. **Sort and filter the browse page** — *done*. Available-only checkbox, an
    owner dropdown (`GET /api/minis/owners`), and sort by newest/name/price,
@@ -38,9 +38,21 @@ first. Status is marked where work has started.
    price, and lending history — blocked while the mini has an active request/
    loan or is out on a quest, and it leaves any set it was part of (sets are
    one owner's own minis).
-6. **Lost / damaged as a loan outcome** — statuses are negotiating, adventuring,
-   returned, cancelled. Real life also includes "it broke" and "it never came
-   back", and there's nowhere to record either.
+6. **Lost / damaged as a loan outcome** — *done*. Two more ways `POST /api/loans/:id/return`
+   can end a loan (`{ outcome: 'lost' | 'critically_wounded' }`, next to the
+   default `'returned'`): the mini never comes back, or comes back broken —
+   "Critically Wounded" is this app's name for damaged. Either way the mini
+   is hidden from browse (`minis.condition_flag`/`condition_since`, a
+   separate concept from item 8's `archived_at` — the owner keeps full
+   access to see and clear it); `critically_wounded` needs the owner (or an
+   admin) to explicitly clear it from the mini's edit page before it can be
+   lent again, `lost` has nothing to restore but can be cleared the same way
+   if it turns up. Who was responsible for a given incident is visible only
+   to that mini's owner and admins (`GET /api/minis/:id/history`'s existing
+   scoping); a private, admin-only tally per borrower
+   (`GET /api/admin/loan-incidents`) makes a repeated pattern visible without
+   it being a public reliability score — same reasoning as the "decided
+   against" entry below.
 7. **Admin audit log** — *done*. A collection-scoped `audit_log` table records
    who did what and when — currently just member removals and mini restores —
    shown on the Admin page. Actor/target names are snapshotted at the time of
@@ -62,17 +74,40 @@ first. Status is marked where work has started.
     library, and genuinely good at a handoff.
 11. **Wishlist** — "looking for a Beholder", and owners see the matches.
 
-**Larger, would change how the app is used:**
+**Larger, would change how the app is used** (12 and 13 are done; the rest stand):
 
-12. **Condition record at handoff and return** — a note and a photo at each end
-    of a loan, so "the spear was already bent" is a fact instead of an argument.
-    The most valuable of these for lending fragile painted things, and it fits
-    the loan lifecycle that already exists (`handed_off_at`, `received_at`,
-    `returned_at`).
-13. **Booking for a date** — holds answer "tell me when it's free"; they don't
-    answer "I need these four for game night on the 14th", which is how tabletop
-    actually works. Needs real design: overlapping bookings, no-shows, and how
-    it interacts with the hold line.
+12. **Condition record at handoff and return** — *done*. A note (up to 1000
+    chars) and up to three photos at each end of a loan
+    (`POST /api/loans/:id/condition`, `loan_condition_reports` +
+    `loan_condition_photos`), so "the spear was already bent" is a fact instead
+    of an argument. **One report per person per end**, and none can be edited
+    or replaced — a record that can be rewritten later isn't one. A *return*
+    report stays fileable after the loan ends (the owner only has it back in
+    hand then); a *handoff* report closes when the loan does, because a fresh
+    claim about the handoff made once the mini is back and broken is exactly
+    the argument this replaces. Condition photos go through the same upload
+    pipeline as a mini's (extracted to `middleware/uploads.ts`) but are served
+    only to the loan's two people, not the whole collection
+    (`requireImageAccess`), and are in the housekeeping sweep's in-use query.
+13. **Booking for a date** — *done*. A claim on a range of days
+    (`bookings`, `POST /api/bookings/minis/:id`) — "I need it for game night on
+    the 14th" — bookable whether or not the mini is free today, which is what a
+    hold can't express. **No two bookings on one mini may overlap**, enforced
+    in a transaction that locks the mini row, same as the hold line; one
+    booking per person per mini, ten per mini, three months long, six months
+    ahead. *How it meets the hold line:* it doesn't compete with it. A hold
+    decides **who** is next; a booking constrains the **calendar** — a handoff
+    or extension whose due date would still have the mini out when someone
+    else's window begins is refused (`services/bookings.ts`'s
+    `bookingBlocking`). A hold promotion makes a request with no duration yet,
+    so it never conflicts on its own. *No-shows:* housekeeping turns a booking
+    into a request on its first day (`startDueBookings`), retrying hourly if
+    the mini is still out, and sweeps a window that passed without that,
+    telling the person it never came free (`sweepPastBookings`).
+    **Known gap:** a hold promoted the day before a booking starts can leave
+    the booker waiting behind a negotiation they can't jump. Revisit if it
+    bites — the fix is a priority check inside `promoteNextHold`, which would
+    mean widening its lock.
 14. **Web Push and a PWA install** — notifications only exist if someone opens
     the site, and there is no email by design. Web Push works on Android Chrome
     and on iOS 16.4+ for installed PWAs, and the tunnel already gives HTTPS. A

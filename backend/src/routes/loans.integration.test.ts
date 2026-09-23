@@ -612,3 +612,154 @@ describe('deleting a mini that is out on loan', () => {
     expect(res.status).toBe(409);
   });
 });
+
+// Feature 12: a note and a photo at each end, so "the spear was already bent"
+// is a fact instead of an argument. Against a real database, because what
+// matters is that both sides' records really coexist and survive.
+describe('condition reports', () => {
+  async function adventuring(): Promise<{ miniId: number; loanId: number }> {
+    const miniId = await createMini(owner, 'Dire Wolf');
+    const loanId = await requestMini(borrower, miniId);
+    await agreeOnTerms(loanId);
+    await act(owner, loanId, 'handoff');
+    return { miniId, loanId };
+  }
+
+  function record(who: TestUser, loanId: number, phase: string, note: string) {
+    return request(app).post(`/api/loans/${loanId}/condition`)
+      .set('Cookie', who.cookie)
+      .field('phase', phase)
+      .field('note', note);
+  }
+
+  it('keeps both sides\' accounts of the same handoff side by side', async () => {
+    const { loanId } = await adventuring();
+
+    await record(owner, loanId, 'handoff', 'Spear straight, base scuffed');
+    const res = await record(borrower, loanId, 'handoff', 'Spear looked bent to me');
+
+    expect(res.status).toBe(201);
+    expect(res.body).toHaveLength(2);
+    expect(res.body.map((r: { authorName: string; note: string }) => [r.authorName, r.note])).toEqual([
+      ['owner display', 'Spear straight, base scuffed'],
+      ['borrower display', 'Spear looked bent to me'],
+    ]);
+  });
+
+  it('refuses to let the same person rewrite their own account of an end', async () => {
+    const { loanId } = await adventuring();
+    await record(borrower, loanId, 'handoff', 'Looked fine');
+
+    const second = await record(borrower, loanId, 'handoff', 'Actually it was broken');
+
+    expect(second.status).toBe(409);
+    const reports = await request(app).get(`/api/loans/${loanId}/condition`).set('Cookie', borrower.cookie);
+    expect(reports.body).toHaveLength(1);
+    expect(reports.body[0].note).toBe('Looked fine');
+  });
+
+  it('lets the same person record both ends of the same loan', async () => {
+    const { loanId } = await adventuring();
+
+    expect((await record(borrower, loanId, 'handoff', 'Fine at pickup')).status).toBe(201);
+    expect((await record(borrower, loanId, 'return', 'Still fine going back')).status).toBe(201);
+  });
+
+  // The window the whole feature depends on: a claim about the handoff can't
+  // be invented once the mini is back and something is wrong with it.
+  it('closes the handoff once the loan is over, but leaves the return open', async () => {
+    const { loanId } = await adventuring();
+    await act(owner, loanId, 'return');
+
+    expect((await record(owner, loanId, 'handoff', 'It was perfect, honest')).status).toBe(409);
+    expect((await record(owner, loanId, 'return', 'Came back with a chipped base')).status).toBe(201);
+  });
+
+  it('is invisible to anyone else in the collection', async () => {
+    const { loanId } = await adventuring();
+    await record(owner, loanId, 'handoff', 'Spear straight');
+
+    expect((await request(app).get(`/api/loans/${loanId}/condition`).set('Cookie', bystander.cookie)).status).toBe(404);
+    expect((await record(bystander, loanId, 'return', 'Looks broken to me')).status).toBe(404);
+  });
+
+  it('counts on the loan itself, and says which ends are still open', async () => {
+    const { loanId } = await adventuring();
+    await record(owner, loanId, 'handoff', 'Spear straight');
+
+    const loans = await request(app).get('/api/loans').set('Cookie', owner.cookie);
+    expect(loans.body[0]).toMatchObject({ conditionReports: 1, openConditionPhases: ['handoff', 'return'] });
+
+    await act(owner, loanId, 'return');
+    const after = await request(app).get('/api/loans').set('Cookie', owner.cookie);
+    expect(after.body[0].openConditionPhases).toEqual(['return']);
+  });
+
+  it('goes with the loan when the mini is deleted', async () => {
+    const { miniId, loanId } = await adventuring();
+    await record(owner, loanId, 'handoff', 'Spear straight');
+    await act(owner, loanId, 'return');
+
+    expect((await request(app).delete(`/api/minis/${miniId}`).set('Cookie', owner.cookie)).status).toBe(200);
+    const [left] = await pool.query('SELECT id FROM loan_condition_reports');
+    expect(left).toEqual([]);
+  });
+});
+
+// Feature 13, where it meets a loan: a booking constrains the calendar, so the
+// mini has to be home before someone else's booked window begins.
+describe('a booking blocking a loan', () => {
+  const DAY = 24 * 60 * 60 * 1000;
+  function day(offset: number): string {
+    return new Date(Date.now() + offset * DAY).toISOString().slice(0, 10);
+  }
+
+  async function bookedBy(who: TestUser, miniId: number, from: number, to: number = from) {
+    return request(app).post(`/api/bookings/minis/${miniId}`).set('Cookie', who.cookie)
+      .send({ startsOn: day(from), endsOn: day(to) });
+  }
+
+  it('refuses a handoff whose loan would still be out on the booked day', async () => {
+    const miniId = await createMini(owner, 'Dire Wolf');
+    expect((await bookedBy(bystander, miniId, 7)).status).toBe(201);
+    const loanId = await requestMini(borrower, miniId);
+    await agreeOnTerms(loanId, 14); // 14 days out, so it runs straight through day 7
+
+    const res = await act(owner, loanId, 'handoff');
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toMatch(/bystander display has this booked/i);
+  });
+
+  it('allows a handoff that lands back before the booked day', async () => {
+    const miniId = await createMini(owner, 'Dire Wolf');
+    await bookedBy(bystander, miniId, 20);
+    const loanId = await requestMini(borrower, miniId);
+    await agreeOnTerms(loanId, 5);
+
+    expect((await act(owner, loanId, 'handoff')).status).toBe(200);
+  });
+
+  it('never blocks someone on their own booking', async () => {
+    const miniId = await createMini(owner, 'Dire Wolf');
+    await bookedBy(borrower, miniId, 7);
+    const loanId = await requestMini(borrower, miniId);
+    await agreeOnTerms(loanId, 14);
+
+    expect((await act(owner, loanId, 'handoff')).status).toBe(200);
+  });
+
+  it('refuses an extension that would run into the booked days', async () => {
+    const miniId = await createMini(owner, 'Dire Wolf');
+    const loanId = await requestMini(borrower, miniId);
+    await agreeOnTerms(loanId, 5);
+    await act(owner, loanId, 'handoff');
+    await bookedBy(bystander, miniId, 10);
+
+    const res = await request(app).post(`/api/loans/${loanId}/extend`)
+      .set('Cookie', borrower.cookie).send({ extraDays: 14 });
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toMatch(/has this booked from/i);
+  });
+});

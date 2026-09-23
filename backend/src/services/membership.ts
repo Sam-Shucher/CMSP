@@ -3,6 +3,7 @@ import path from 'path';
 import { rows, firstRow, firstValue, change } from '../db/query';
 import { uploadsDir, MINI_ARCHIVE_GRACE_DAYS } from '../config';
 import { dropHoldsInCollection, announceMiniRemoved, promoteNextHold } from './holds';
+import { dropBookingsInCollection } from './bookings';
 import { logAdminAction, displayNameOf } from '../db/auditLog';
 import * as events from './loanEvents';
 
@@ -69,6 +70,9 @@ export async function removeMember(userId: number, collectionId: number, actorId
   }
 
   await dropHoldsInCollection(userId, collectionId);
+  // Their claims on other people's calendars go too — a booking by someone who
+  // isn't in the group any more would come due and find nobody to hand it to.
+  await dropBookingsInCollection(userId, collectionId);
   await change(
     'DELETE ci FROM cart_items ci JOIN minis m ON m.id = ci.mini_id WHERE ci.user_id = ? AND m.collection_id = ?',
     [userId, collectionId]
@@ -107,6 +111,7 @@ export async function removeMember(userId: number, collectionId: number, actorId
       await change('DELETE FROM holds WHERE mini_id = ?', [mini.id]);
       await change('DELETE FROM hold_watchers WHERE mini_id = ?', [mini.id]);
       await change('DELETE FROM cart_items WHERE mini_id = ?', [mini.id]);
+      await change('DELETE FROM bookings WHERE mini_id = ?', [mini.id]);
     }
   }
 

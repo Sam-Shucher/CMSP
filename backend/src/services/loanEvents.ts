@@ -156,6 +156,20 @@ export function lost(loanId: number): Promise<void> {
   });
 }
 
+// Someone wrote down what the mini looked like at one end of the loan. The
+// other side is told, because a record only settles an argument if both
+// people know it was made.
+export function conditionRecorded(loanId: number, actorId: number, phase: 'handoff' | 'return'): Promise<void> {
+  return safely('condition recorded', async () => {
+    const loan = await loadLoan(loanId);
+    if (!loan) return;
+    const { otherId, actorName } = sides(loan, actorId);
+    await notify([otherId], {
+      ...base(loan), type: 'condition_recorded', message: messages.conditionRecorded(actorName, loan.mini_name, phase),
+    });
+  });
+}
+
 export function criticallyWounded(loanId: number): Promise<void> {
   return safely('critically wounded', async () => {
     const loan = await loadLoan(loanId);

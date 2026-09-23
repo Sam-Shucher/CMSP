@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { api, Loan, MyHolds, LOANS_CHANGED_EVENT } from '../api/client';
+import { api, Loan, MyHolds, MyBooking, MyBookings, LOANS_CHANGED_EVENT } from '../api/client';
 import LoanCard from '../components/LoanCard';
 import { POLL_MS } from '../limits';
 
@@ -14,6 +14,17 @@ const rowStyle: React.CSSProperties = {
   background: '#252219', border: '1px solid #3d3629', borderRadius: '8px',
 };
 
+function readableDay(day: string): string {
+  return new Date(`${day}T00:00:00Z`).toLocaleDateString(undefined, { month: 'short', day: 'numeric', timeZone: 'UTC' });
+}
+
+// A single day booked as itself reads as one date, not as a range of one.
+function bookingSpan(booking: MyBooking): string {
+  return booking.startsOn === booking.endsOn
+    ? readableDay(booking.startsOn)
+    : `${readableDay(booking.startsOn)} – ${readableDay(booking.endsOn)}`;
+}
+
 // Everything you're borrowing or lending in this collection. Each mini is
 // its own request, grouped by the person on the other side of the desk.
 export default function LoansPage(): React.ReactElement {
@@ -24,6 +35,7 @@ export default function LoansPage(): React.ReactElement {
 
   const [holds, setHolds] = useState<MyHolds>({ holds: [], watching: [] });
   const [holdError, setHoldError] = useState<string>('');
+  const [bookings, setBookings] = useState<MyBookings>({ mine: [], onMyMinis: [] });
 
   const loadLoans = useCallback(async (): Promise<void> => {
     try {
@@ -45,12 +57,25 @@ export default function LoansPage(): React.ReactElement {
     }
   }, []);
 
+  const loadBookings = useCallback(async (): Promise<void> => {
+    try {
+      const data = await api<Partial<MyBookings>>('/api/bookings');
+      setBookings({
+        mine: Array.isArray(data.mine) ? data.mine : [],
+        onMyMinis: Array.isArray(data.onMyMinis) ? data.onMyMinis : [],
+      });
+    } catch {
+      // Bookings are extra here too.
+    }
+  }, []);
+
   // The other person acts from their own screen, so keep up: reload when a
   // notification is opened, when you come back to the tab, and every so often.
   useEffect(() => {
     const reload = (): void => {
       void loadLoans();
       void loadHolds();
+      void loadBookings();
     };
     const reloadIfVisible = (): void => {
       if (document.visibilityState === 'visible') reload();
@@ -66,7 +91,7 @@ export default function LoansPage(): React.ReactElement {
       document.removeEventListener('visibilitychange', reloadIfVisible);
       clearInterval(timer);
     };
-  }, [loadLoans, loadHolds]);
+  }, [loadLoans, loadHolds, loadBookings]);
 
   async function holdAction(path: string): Promise<void> {
     setHoldError('');
@@ -76,6 +101,16 @@ export default function LoansPage(): React.ReactElement {
       setHoldError(err instanceof Error ? err.message : 'Something went wrong');
     }
     await loadHolds();
+  }
+
+  async function cancelBooking(bookingId: number): Promise<void> {
+    setHoldError('');
+    try {
+      await api(`/api/bookings/${bookingId}`, { method: 'DELETE' });
+    } catch (err: unknown) {
+      setHoldError(err instanceof Error ? err.message : 'Something went wrong');
+    }
+    await loadBookings();
   }
 
   useEffect(() => {
@@ -172,6 +207,43 @@ export default function LoansPage(): React.ReactElement {
         </section>
       )}
 
+      {(bookings.mine.length > 0 || bookings.onMyMinis.length > 0) && (
+        <section aria-label="Booked days" style={{ marginBottom: '28px' }}>
+          <h3 style={{ fontSize: '17px', color: '#c9a84c', marginBottom: '4px' }}>Booked days</h3>
+          <p style={{ fontSize: '12px', color: '#8a7d6a', marginBottom: '12px' }}>
+            A booking becomes a request on its first day, as long as the mini is free by then.
+          </p>
+          {[
+            ...bookings.mine.map(booking => ({ booking, mine: true })),
+            ...bookings.onMyMinis.map(booking => ({ booking, mine: false })),
+          ].map(({ booking, mine }) => (
+            <div key={booking.id} style={rowStyle}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontWeight: 600 }}>{booking.miniName}</div>
+                <div style={{ fontSize: '12px', color: '#8a7d6a' }}>
+                  {bookingSpan(booking)}
+                  {' · '}
+                  {mine ? `from ${booking.ownerName}` : `booked by ${booking.holderName}`}
+                  {booking.note ? ` · ${booking.note}` : ''}
+                  {booking.started ? ' · now a request' : ''}
+                </div>
+              </div>
+              {!booking.started && (
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  aria-label={`Cancel the booking on ${booking.miniName}`}
+                  onClick={() => void cancelBooking(booking.id)}
+                  style={{ padding: '6px 12px', fontSize: '13px' }}
+                >
+                  Cancel booking
+                </button>
+              )}
+            </div>
+          ))}
+        </section>
+      )}
+
       {holds.watching.length > 0 && (
         <section aria-label="Notify me when a spot opens" style={{ marginBottom: '28px' }}>
           <h3 style={{ fontSize: '17px', color: '#c9a84c', marginBottom: '12px' }}>Notify me when a spot opens</h3>
@@ -197,7 +269,8 @@ export default function LoansPage(): React.ReactElement {
 
       {loading ? (
         <p style={{ color: '#8a7d6a' }}>Loading…</p>
-      ) : loans.length === 0 && holds.holds.length === 0 && holds.watching.length === 0 && !error ? (
+      ) : loans.length === 0 && holds.holds.length === 0 && holds.watching.length === 0
+        && bookings.mine.length === 0 && bookings.onMyMinis.length === 0 && !error ? (
         <div style={{ textAlign: 'center', padding: '40px 0', color: '#8a7d6a' }}>
           <p style={{ fontSize: '18px', marginBottom: '8px' }}>No requests or loans yet</p>
           <Link to="/">Browse the collection</Link>

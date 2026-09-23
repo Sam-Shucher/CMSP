@@ -95,7 +95,9 @@ async function resetData() {
   const conn = await connect(E2E_DB);
   try {
     for (const table of [
-      'notifications', 'holds', 'hold_watchers', 'cart_items', 'loans',
+      'notifications', 'holds', 'hold_watchers', 'bookings',
+      'loan_condition_photos', 'loan_condition_reports',
+      'cart_items', 'loans',
       'mini_tags', 'mini_images', 'minis', 'sets', 'tags', 'approved_emails',
     ]) {
       await conn.query(`DELETE FROM ${table}`);

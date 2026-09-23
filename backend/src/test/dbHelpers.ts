@@ -20,7 +20,8 @@ export async function assertDatabaseReachable(): Promise<void> {
 // Children before parents, because of foreign keys.
 export async function resetDatabase(): Promise<void> {
   for (const table of [
-    'notifications', 'holds', 'hold_watchers',
+    'notifications', 'holds', 'hold_watchers', 'bookings',
+    'loan_condition_photos', 'loan_condition_reports',
     'cart_items', 'loans', 'mini_tags', 'mini_images', 'minis', 'sets', 'tags',
     'approved_emails', 'collection_memberships', 'sessions', 'users', 'collections',
   ]) {

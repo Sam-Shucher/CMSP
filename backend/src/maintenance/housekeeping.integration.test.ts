@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import request from 'supertest';
 import fs from 'fs';
 import path from 'path';
-import { RowDataPacket } from 'mysql2';
+import { RowDataPacket, ResultSetHeader } from 'mysql2';
 import { createApp } from '../app';
 import { pool } from '../db/connection';
 import { uploadsDir } from '../config';
@@ -206,5 +206,35 @@ describe('purging archived minis past their grace period', () => {
     const result = await runHousekeeping({ log: quiet });
 
     expect(result.archivedMinisPurged).toBe(0);
+  });
+});
+
+// CLAUDE.md's rule: a new place that stores an upload path has to be added to
+// the sweep's in-use query. Condition photos (feature 12) are that new place,
+// and without this the sweep would quietly delete them an hour after they were
+// taken — with the rows still pointing at the missing files.
+describe('photos attached to a loan\'s condition report', () => {
+  it('are kept, while a genuinely unused photo beside them still goes', async () => {
+    const miniId = await createMini(owner, 'Dire Wolf');
+    const [loan] = await pool.execute<ResultSetHeader>(
+      `INSERT INTO loans (mini_id, collection_id, borrower_id, owner_id, status, handed_off_at)
+       VALUES (?, ?, ?, ?, 'adventuring', NOW())`,
+      [miniId, owner.collectionId, other.userId, owner.userId]
+    );
+    const [report] = await pool.execute<ResultSetHeader>(
+      'INSERT INTO loan_condition_reports (loan_id, phase, author_id, note) VALUES (?, ?, ?, ?)',
+      [loan.insertId, 'handoff', other.userId, 'Spear already bent']
+    );
+    await pool.execute(
+      'INSERT INTO loan_condition_photos (report_id, image_path, position) VALUES (?, ?, 0)',
+      [report.insertId, '/uploads/bent-spear.png']
+    );
+    writePhoto('bent-spear.png');
+    writePhoto('nobody-wants-me.png');
+
+    const result = await sweepOrphanedUploads({ uploadsDir: dir, log: quiet });
+
+    expect(result.deleted).toEqual(['nobody-wants-me.png']);
+    expect(onDisk()).toEqual(['bent-spear.png']);
   });
 });

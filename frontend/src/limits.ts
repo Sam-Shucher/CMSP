@@ -3,6 +3,8 @@
 //   LIMITS            → backend/src/utils/inputs.ts
 //   MAX_DURATION_DAYS → backend/src/utils/loanRules.ts
 //   MAX_IMAGES, MAX_PHOTO_BYTES, MAX_PRICE → backend/src/routes/minis.ts
+//   MAX_BOOKING_DAYS, MAX_BOOKING_AHEAD_DAYS → backend/src/utils/bookingRules.ts
+//   MAX_CONDITION_PHOTOS → backend/src/utils/conditionReports.ts
 export const LIMITS = {
   displayName: 100,
   neighborhood: 100,
@@ -18,6 +20,11 @@ export const LIMITS = {
   photoBytes: 10 * 1024 * 1024,
   setName: 100,
   setMembers: 50, // most a single set-membership change can touch at once
+  conditionNote: 1000,   // a note about how a mini looked at one end of a loan
+  conditionPhotos: 3,    // and how many photos can go with it
+  bookingNote: 255,      // "game night at the shop"
+  bookingDays: 90,       // a booking can't reserve longer than a loan can run
+  bookingAheadDays: 180, // and can't be made further out than that
 } as const;
 
 // How often the pages that show other people's activity check for changes.

@@ -6,6 +6,7 @@ import { purgeExpiredNotifications } from '../db/notifications';
 import { uploadsDir as configuredUploadsDir } from '../config';
 import { notifyOverdueLoans } from '../services/loanEvents';
 import { promoteStrandedHolds } from '../services/holds';
+import { startDueBookings, sweepPastBookings } from '../services/bookings';
 import { purgeArchivedMinis } from '../services/membership';
 
 // Background cleanup ("garbage collection"). Rejected uploads are already
@@ -46,10 +47,14 @@ export async function sweepOrphanedUploads(options: SweepOptions = {}): Promise<
 
   // Read what's in use FIRST. If the database can't be read this throws, and
   // nothing is deleted — "unknown" must never be treated as "unused".
+  // Every place an upload path can be stored. A new one added without being
+  // listed here would have its files quietly deleted an hour later.
   const referenced = await rows<{ image_path: string }>(
     `SELECT image_path FROM mini_images
      UNION
-     SELECT image_path FROM minis WHERE image_path IS NOT NULL` // legacy single-photo column
+     SELECT image_path FROM minis WHERE image_path IS NOT NULL -- legacy single-photo column
+     UNION
+     SELECT image_path FROM loan_condition_photos`
   );
   const inUse = new Set(referenced.map(image => path.basename(image.image_path)));
 
@@ -82,6 +87,8 @@ export interface HousekeepingResult {
   notificationsPurged: number;
   overdueAnnounced: number;
   holdsPromoted: number;
+  bookingsStarted: number;
+  bookingsCleared: number;
   archivedMinisPurged: number;
 }
 
@@ -89,7 +96,8 @@ export interface HousekeepingResult {
 export async function runHousekeeping(options: SweepOptions = {}): Promise<HousekeepingResult> {
   const log = options.log ?? console.log;
   const result: HousekeepingResult = {
-    uploadsDeleted: 0, sessionsPurged: 0, notificationsPurged: 0, overdueAnnounced: 0, holdsPromoted: 0, archivedMinisPurged: 0,
+    uploadsDeleted: 0, sessionsPurged: 0, notificationsPurged: 0, overdueAnnounced: 0, holdsPromoted: 0,
+    bookingsStarted: 0, bookingsCleared: 0, archivedMinisPurged: 0,
   };
 
   async function step(label: string, work: () => Promise<void>): Promise<void> {
@@ -105,13 +113,19 @@ export async function runHousekeeping(options: SweepOptions = {}): Promise<House
   await step('Notification cleanup', async () => { result.notificationsPurged = await purgeExpiredNotifications(); });
   await step('Overdue notices', async () => { result.overdueAnnounced = await notifyOverdueLoans(); });
   await step('Hold promotion', async () => { result.holdsPromoted = await promoteStrandedHolds(); });
+  // Bookings come due before the past ones are cleared, so one whose first and
+  // last day are both today still gets its chance before being swept.
+  await step('Booking start', async () => { result.bookingsStarted = await startDueBookings(); });
+  await step('Booking cleanup', async () => { result.bookingsCleared = await sweepPastBookings(); });
   await step('Archived mini cleanup', async () => { result.archivedMinisPurged = await purgeArchivedMinis(); });
 
   if (Object.values(result).some(n => n > 0)) {
     log(
       `Housekeeping: removed ${result.uploadsDeleted} unused photo(s), ${result.sessionsPurged} ended session(s), ` +
-      `${result.notificationsPurged} read notification(s), ${result.archivedMinisPurged} archived mini(s) past their grace period; ` +
-      `announced ${result.overdueAnnounced} overdue loan(s); promoted ${result.holdsPromoted} waiting hold(s)`
+      `${result.notificationsPurged} read notification(s), ${result.bookingsCleared} finished booking(s), ` +
+      `${result.archivedMinisPurged} archived mini(s) past their grace period; ` +
+      `announced ${result.overdueAnnounced} overdue loan(s); promoted ${result.holdsPromoted} waiting hold(s); ` +
+      `started ${result.bookingsStarted} booking(s)`
     );
   }
   return result;

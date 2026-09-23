@@ -4,6 +4,8 @@ import path from 'path';
 import { LIMITS } from './utils/inputs';
 import { MAX_DURATION_DAYS } from './utils/loanRules';
 import { MAX_QUEST_DAYS } from './utils/quest';
+import { MAX_BOOKING_DAYS, MAX_BOOKING_AHEAD_DAYS } from './utils/bookingRules';
+import { MAX_CONDITION_PHOTOS } from './utils/conditionReports';
 import { MAX_IMAGES, MAX_PHOTO_BYTES, MAX_PRICE } from './routes/minis';
 
 // frontend/src/limits.ts is a hand-copied mirror of the numbers this side
@@ -55,6 +57,8 @@ describe('frontend/src/limits.ts mirrors what the server actually enforces', () 
     ['search', () => LIMITS.search],
     ['setName', () => LIMITS.setName],
     ['setMembers', () => LIMITS.setMembers],
+    ['conditionNote', () => LIMITS.conditionNote],
+    ['bookingNote', () => LIMITS.bookingNote],
   ])('mirrors the %s length limit', (name: string, server: () => number) => {
     expect(mirrored(name)).toBe(server());
   });
@@ -65,10 +69,21 @@ describe('frontend/src/limits.ts mirrors what the server actually enforces', () 
     expect(mirrored('price')).toBe(MAX_PRICE);
   });
 
+  // A date picker that offers days the server will refuse is the same trap
+  // the quest ceiling fell into — hence these, added with the feature.
+  it('mirrors how long a booking may run and how far ahead it may be made', () => {
+    expect(mirrored('bookingDays')).toBe(MAX_BOOKING_DAYS);
+    expect(mirrored('bookingAheadDays')).toBe(MAX_BOOKING_AHEAD_DAYS);
+  });
+
+  it('mirrors how many photos a condition report takes', () => {
+    expect(mirrored('conditionPhotos')).toBe(MAX_CONDITION_PHOTOS);
+  });
+
   // If a limit is added on this side, the mirror should grow with it — this at
   // least fails loudly when the file stops being parseable in the shape above.
   it('can still read every value it checks', () => {
-    for (const name of ['loanDays', 'questDays', 'photosPerMini', 'photoBytes', 'price', 'search']) {
+    for (const name of ['loanDays', 'questDays', 'photosPerMini', 'photoBytes', 'price', 'search', 'bookingDays', 'bookingAheadDays', 'conditionPhotos']) {
       expect(Number.isFinite(mirrored(name)), name).toBe(true);
     }
   });

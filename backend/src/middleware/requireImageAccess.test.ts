@@ -35,7 +35,23 @@ describe('requireImageAccess', () => {
     await requireImageAccess(reqFor('/1700000000-abc.png'), mockRes(), next);
 
     expect(next).toHaveBeenCalledWith();
-    expect(execute).toHaveBeenCalledWith(expect.stringContaining('collection_memberships'), ['/uploads/1700000000-abc.png', 7]);
+    expect(execute).toHaveBeenCalledWith(
+      expect.stringContaining('collection_memberships'),
+      ['/uploads/1700000000-abc.png', 7, '/uploads/1700000000-abc.png', 7, 7]
+    );
+  });
+
+  // A condition photo belongs to a loan, and a loan is only ever visible to
+  // its two people — so the second branch asks about the loan, not about
+  // membership of the collection.
+  it('asks whether a condition photo\'s asker is on that loan, either side', async () => {
+    execute.mockResolvedValueOnce([[{ found: 1 }]]);
+
+    await requireImageAccess(reqFor('/1700000000-abc.png'), mockRes(), vi.fn());
+
+    const [sql] = execute.mock.calls[0];
+    expect(String(sql)).toContain('loan_condition_photos');
+    expect(String(sql)).toMatch(/l\.borrower_id = \? OR l\.owner_id = \?/);
   });
 
   it('hides a photo from someone outside its collection, as if it did not exist', async () => {

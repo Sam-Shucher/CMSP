@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { api, Loan, LoanStage } from '../api/client';
 import { formatTimeRemaining, fromDateTimeLocalValue, toDateTimeLocalValue } from '../utils/loanTime';
+import ConditionReports from './ConditionReports';
 import { LIMITS } from '../limits';
 
 const MAX_DURATION_DAYS = LIMITS.loanDays;
@@ -332,6 +333,17 @@ export default function LoanCard({ loan, now, otherOpenRequests, onUpdated }: Lo
           Reported {loan.status === 'lost' ? 'lost' : 'critically wounded'} on {new Date(loan.returnedAt).toLocaleDateString()}
           {isOwner && loan.status === 'critically_wounded' && ' — clear it from the mini\'s edit page once it\'s fine to lend again'}
         </p>
+      )}
+
+      {/* What it looked like at each end. Offered from the handoff onwards —
+          before that there is nothing to record, so nothing to show. */}
+      {(loan.conditionReports > 0 || loan.openConditionPhases.length > 0) && (
+        <ConditionReports
+          loanId={loan.id}
+          reportCount={loan.conditionReports}
+          openPhases={loan.openConditionPhases}
+          onRecorded={onUpdated}
+        />
       )}
 
       {error && <div className="error-msg" style={{ marginTop: '10px' }}>{error}</div>}

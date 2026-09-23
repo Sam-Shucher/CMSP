@@ -110,6 +110,12 @@ SQL step for the person deploying this.
 
 This project is built test-driven: write the test (mocked unit test for
 route logic; real-database integration test for anything SQL-shaped)
-before writing the implementation. Both suites must pass, along with
-`tsc --noEmit` in both `backend/` and `frontend/`, before considering a
-change done.
+before writing the implementation.
+
+**Claude does not run the test suites, `npm run test:e2e`, or
+`tsc --noEmit` after finishing a feature or fix.** The user runs those
+themselves and reports back the results or anything that needs changing.
+Claude should still write/update tests as part of test-driven development,
+and may run a single targeted test file while actively debugging a specific
+failure the user has already reported — just not the full suites as a
+"did I finish" check.

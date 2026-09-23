@@ -21,6 +21,7 @@ if (process.env.UPLOADS_DIR) fs.mkdirSync(process.env.UPLOADS_DIR, { recursive: 
 //   db/sessions        → sessions.test.ts (unmocked) + sessions.integration.test.ts
 //   db/notifications   → notifications.integration.test.ts
 //   services/holds     → holds.integration.test.ts
+//   services/bookings  → bookings.integration.test.ts
 //   services/loanEvents→ notifications.integration.test.ts
 //   services/membership (purgeArchivedMinis only — admin.test.ts mocks
 //     removeMember itself, overriding this for that file) → membership.integration.test.ts
@@ -56,6 +57,20 @@ vi.mock('../services/holds', () => ({
   promoteStrandedHolds: vi.fn(async () => 0),
 }));
 
+vi.mock('../services/bookings', () => ({
+  MAX_BOOKINGS_PER_MINI: 10,
+  placeBooking: vi.fn(async () => ({ ok: true, bookingId: 1 })),
+  cancelBooking: vi.fn(async () => ({ ok: true })),
+  miniCalendar: vi.fn(async () => ({ max: 10, bookings: [] })),
+  listMyBookings: vi.fn(async () => ({ mine: [], onMyMinis: [] })),
+  // Nobody has days claimed unless a test says so — otherwise every handoff
+  // in every other file would need a booking lookup threading through it.
+  bookingBlocking: vi.fn(async () => null),
+  startDueBookings: vi.fn(async () => 0),
+  sweepPastBookings: vi.fn(async () => 0),
+  dropBookingsInCollection: vi.fn(async () => {}),
+}));
+
 vi.mock('../services/membership', () => ({
   removeMember: vi.fn(async () => ({ ok: true, accountDeleted: false, minisRemoved: 0 })),
   purgeArchivedMinis: vi.fn(async () => 0),
@@ -71,6 +86,7 @@ vi.mock('../services/loanEvents', () => ({
   handedOff: vi.fn(async () => {}),
   received: vi.fn(async () => {}),
   extended: vi.fn(async () => {}),
+  conditionRecorded: vi.fn(async () => {}),
   returned: vi.fn(async () => {}),
   lost: vi.fn(async () => {}),
   criticallyWounded: vi.fn(async () => {}),

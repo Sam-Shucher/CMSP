@@ -46,7 +46,7 @@ describe('hostile text from other members renders as plain text', () => {
       status: 'adventuring', stage: 'adventuring', handoffWhen: null, handoffWhere: XSS, handoffHow: SCRIPT,
       durationDays: 7, borrowerApproved: true, ownerApproved: true, handedOffAt: null, receivedAt: null,
       dueAt: new Date(Date.now() + 86_400_000).toISOString(), returnedAt: null, createdAt: '2026-01-01T00:00:00.000Z',
-      holdsWaiting: 0, extendableDays: 76,
+      holdsWaiting: 0, extendableDays: 76, conditionReports: 0, openConditionPhases: [],
     };
     const { container } = render(<LoanCard loan={loan} now={new Date()} otherOpenRequests={0} onUpdated={vi.fn()} />);
 

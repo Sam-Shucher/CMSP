@@ -3,6 +3,7 @@ import { Mini } from '../api/client';
 import MiniStatusBadge from './MiniStatusBadge';
 import { formatBackBy, todayInputValue, latestBackByInputValue, clampBackBy } from '../utils/questDates';
 import HoldPanel from './HoldPanel';
+import BookingPanel from './BookingPanel';
 
 type MiniDetailModalProps = {
   mini: Mini;
@@ -14,7 +15,9 @@ type MiniDetailModalProps = {
   // Owner-only "On a Quest" controls, shown when both are provided.
   onTakeOut?: (backBy: string | null) => Promise<void>;
   onBringBack?: () => Promise<void>;
-  // Show the hold line (looked up from the server) for unavailable minis.
+  // Whether this modal may look things up from the server: the hold line for
+  // unavailable minis, and the booking calendar. Off everywhere the modal is
+  // shown without a live collection behind it.
   showHolds?: boolean;
 };
 
@@ -205,6 +208,10 @@ export default function MiniDetailModal({ mini, onClose, isOwn = false, inCart =
                 // Keyed by status so the line reloads when the mini's status changes.
                 <HoldPanel key={`${mini.id}-${mini.status}`} miniId={mini.id} status={mini.status} isOwn={isOwn} />
               )}
+              {/* The hold line is about who is next; this is about which days
+                  are claimed — so unlike the line, it's worth showing whether
+                  or not the mini happens to be free today. */}
+              {showHolds && <BookingPanel key={`booking-${mini.id}`} miniId={mini.id} isOwn={isOwn} />}
             </div>
           )}
         </div>

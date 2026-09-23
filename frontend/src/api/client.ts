@@ -238,4 +238,58 @@ export type Loan = {
   createdAt: string;
   holdsWaiting: number;   // people in line for this mini — nobody can keep it longer while they wait
   extendableDays: number; // days of the three months still available to extend into, 0 if none
+  conditionReports: number;                 // how many condition notes have been filed on this loan
+  openConditionPhases: ConditionPhase[];    // which ends can still be recorded, from where this loan stands
+};
+
+// Which end of a loan a condition report is about.
+export type ConditionPhase = 'handoff' | 'return';
+
+// One row from GET /api/loans/:id/condition — what a mini looked like at one
+// end of a loan, as one of the two people saw it. Only they can read these.
+export type ConditionReport = {
+  id: number;
+  phase: ConditionPhase;
+  authorId: number;
+  authorName: string;
+  note: string | null;
+  photos: string[];
+  createdAt: string;
+};
+
+// One entry from GET /api/bookings/minis/:id — a claim on a range of days.
+// holderName and note are null unless you're the owner or the booker.
+export type CalendarEntry = {
+  id: number;
+  startsOn: string; // YYYY-MM-DD
+  endsOn: string;   // YYYY-MM-DD, inclusive
+  holderName: string | null;
+  note: string | null;
+  mine: boolean;
+  started: boolean; // it already became a request
+};
+
+export type MiniBookings = {
+  max: number;
+  bookings: CalendarEntry[];
+};
+
+// One row from GET /api/bookings
+export type MyBooking = {
+  id: number;
+  miniId: number;
+  miniName: string;
+  miniImage: string | null;
+  ownerName: string;
+  holderName: string;
+  startsOn: string;
+  endsOn: string;
+  note: string | null;
+  started: boolean;
+  loanId: number | null;
+};
+
+export type MyBookings = {
+  mine: MyBooking[];
+  onMyMinis: MyBooking[];
 };

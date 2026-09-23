@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import request from 'supertest';
 import { authCookie } from '../test/helpers';
+import { bookingBlocking } from '../services/bookings';
 
 // The loan rules and SQL are exercised end-to-end in loans.integration.test.ts.
 // These mocked tests cover the two things a real database won't do on demand:
@@ -48,6 +49,7 @@ function loanRow(overrides: Record<string, unknown> = {}) {
     owner_username: 'owner',
     owner_name: 'Owner',
     holds_waiting: 0, // the query counts the hold line; nobody waiting by default
+    condition_reports: 0, // and the condition reports filed on this loan
     ...overrides,
   };
 }
@@ -56,6 +58,8 @@ const NO_ROWS_CHANGED = [{ affectedRows: 0 }];
 
 beforeEach(() => {
   execute.mockReset();
+  // Nobody has days claimed on the mini unless a test says otherwise.
+  vi.mocked(bookingBlocking).mockReset().mockResolvedValue(null);
   vi.spyOn(console, 'error').mockImplementation(() => {});
 });
 
@@ -205,6 +209,70 @@ describe('POST /api/loans/:id/extend', () => {
   });
 });
 
+// A hold decides WHO is next; a booking constrains the CALENDAR. The mini has
+// to be home before someone else's booked window begins, so the two places
+// that set a due date — the handoff and an extension — both have to ask.
+describe('a booking blocks a loan that would still be out on its first day', () => {
+  const AGREED = { status: 'negotiating', borrower_approved: 1, owner_approved: 1 };
+  const OUT = { status: 'adventuring', handed_off_at: new Date('2026-10-01T18:00:00.000Z'), due_at: new Date('2026-10-15T18:00:00.000Z') };
+  const CLAIMED = { startsOn: '2026-10-10', holderName: 'Wendy Waiting' };
+
+  it('refuses the handoff, naming who booked it and from when', async () => {
+    vi.mocked(bookingBlocking).mockResolvedValue(CLAIMED);
+    execute
+      .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
+      .mockResolvedValueOnce([[loanRow(AGREED)]]);
+
+    const res = await request(app).post('/api/loans/5/handoff').set('Cookie', authCookie(OWNER));
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toMatch(/Wendy Waiting has this booked from Oct 10, 2026/);
+    expect(execute.mock.calls.some(([sql]) => String(sql).includes('UPDATE loans'))).toBe(false);
+  });
+
+  // It asks about the date this loan would actually run to, not about today.
+  it('asks using the due date the agreed duration produces', async () => {
+    execute
+      .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
+      .mockResolvedValueOnce([[loanRow(AGREED)]])
+      .mockResolvedValueOnce([{ affectedRows: 1 }])
+      .mockResolvedValueOnce([[loanRow({ status: 'adventuring' })]]);
+
+    await request(app).post('/api/loans/5/handoff').set('Cookie', authCookie(OWNER));
+
+    // 14 agreed days from the handoff, and the mini this loan is for.
+    expect(bookingBlocking).toHaveBeenCalledWith(42, expect.any(Date), BORROWER.userId);
+    const [, askedDueAt] = vi.mocked(bookingBlocking).mock.calls[0];
+    expect(askedDueAt.getTime()).toBeGreaterThan(Date.now() + 13 * 24 * 60 * 60 * 1000);
+  });
+
+  it('refuses an extension that would run into the booked days', async () => {
+    vi.mocked(bookingBlocking).mockResolvedValue(CLAIMED);
+    execute
+      .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
+      .mockResolvedValueOnce([[loanRow(OUT)]])
+      .mockResolvedValueOnce([[{ waiting: 0 }]]);
+
+    const res = await request(app).post('/api/loans/5/extend').set('Cookie', authCookie(BORROWER)).send({ extraDays: 7 });
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toMatch(/booked from Oct 10, 2026/);
+    expect(execute.mock.calls.some(([sql]) => String(sql).includes('UPDATE loans SET duration_days'))).toBe(false);
+  });
+
+  it('lets a handoff through when nobody has claimed those days', async () => {
+    execute
+      .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
+      .mockResolvedValueOnce([[loanRow(AGREED)]])
+      .mockResolvedValueOnce([{ affectedRows: 1 }])
+      .mockResolvedValueOnce([[loanRow({ status: 'adventuring' })]]);
+
+    const res = await request(app).post('/api/loans/5/handoff').set('Cookie', authCookie(OWNER));
+
+    expect(res.status).toBe(200);
+  });
+});
+
 describe('POST /api/loans/:id/return — lost and critically wounded outcomes', () => {
   const OUT = { status: 'adventuring', handed_off_at: new Date('2026-10-01T18:00:00.000Z'), due_at: new Date('2026-10-15T18:00:00.000Z') };
 
@@ -217,6 +285,7 @@ describe('POST /api/loans/:id/return — lost and critically wounded outcomes', 
       .mockResolvedValueOnce([{ affectedRows: 0 }]) // DELETE holds
       .mockResolvedValueOnce([{ affectedRows: 0 }]) // DELETE hold_watchers
       .mockResolvedValueOnce([{ affectedRows: 0 }]) // DELETE cart_items
+      .mockResolvedValueOnce([{ affectedRows: 0 }]) // DELETE bookings
       .mockResolvedValueOnce([[loanRow({ ...OUT, status: outcome })]]); // sendLoan's re-fetch
 
     const res = await request(app).post('/api/loans/5/return').set('Cookie', authCookie(OWNER)).send({ outcome });
@@ -228,6 +297,7 @@ describe('POST /api/loans/:id/return — lost and critically wounded outcomes', 
     expect(execute).toHaveBeenCalledWith(expect.stringContaining('DELETE FROM holds'), [42]);
     expect(execute).toHaveBeenCalledWith(expect.stringContaining('DELETE FROM hold_watchers'), [42]);
     expect(execute).toHaveBeenCalledWith(expect.stringContaining('DELETE FROM cart_items'), [42]);
+    expect(execute).toHaveBeenCalledWith(expect.stringContaining('DELETE FROM bookings'), [42]);
   });
 
   it('defaults to a normal return when no outcome is given', async () => {
@@ -253,6 +323,206 @@ describe('POST /api/loans/:id/return — lost and critically wounded outcomes', 
 
     expect(res.status).toBe(400);
     expect(execute).not.toHaveBeenCalledWith(expect.stringContaining('UPDATE loans'), expect.anything());
+  });
+});
+
+// A condition report says what the mini looked like at one end of a loan.
+// The real storage and reading back is exercised in loans.integration.test.ts;
+// what matters here is that the lifecycle rules are enforced on the server and
+// that a second report from the same person can't overwrite the first.
+describe('POST /api/loans/:id/condition', () => {
+  const OUT = { status: 'adventuring', handed_off_at: new Date('2026-10-01T18:00:00.000Z'), due_at: new Date('2026-10-15T18:00:00.000Z') };
+  const RECORDED = [{ affectedRows: 1, insertId: 77 }];
+  const ALREADY_RECORDED = [{ affectedRows: 0, insertId: 0 }];
+
+  function reportRow(overrides: Record<string, unknown> = {}) {
+    return {
+      id: 77, phase: 'handoff', author_id: BORROWER.userId, author_name: 'Borrower',
+      note: 'The spear was already bent', created_at: new Date('2026-10-01T18:05:00.000Z'),
+      photos: null, ...overrides,
+    };
+  }
+
+  it('records a note from the borrower while the mini is out', async () => {
+    execute
+      .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
+      .mockResolvedValueOnce([[loanRow(OUT)]])
+      .mockResolvedValueOnce(RECORDED)
+      .mockResolvedValueOnce([[reportRow()]]);
+
+    const res = await request(app).post('/api/loans/5/condition')
+      .set('Cookie', authCookie(BORROWER))
+      .field('phase', 'handoff')
+      .field('note', 'The spear was already bent');
+
+    expect(res.status).toBe(201);
+    expect(res.body).toEqual([expect.objectContaining({
+      phase: 'handoff', note: 'The spear was already bent', authorName: 'Borrower', photos: [],
+    })]);
+    expect(execute).toHaveBeenCalledWith(
+      expect.stringContaining('INSERT IGNORE INTO loan_condition_reports'),
+      [5, 'handoff', BORROWER.userId, 'The spear was already bent']
+    );
+  });
+
+  it('lets the owner record their own side of the same end', async () => {
+    execute
+      .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
+      .mockResolvedValueOnce([[loanRow(OUT)]])
+      .mockResolvedValueOnce(RECORDED)
+      .mockResolvedValueOnce([[reportRow({ author_id: OWNER.userId, author_name: 'Owner' })]]);
+
+    const res = await request(app).post('/api/loans/5/condition')
+      .set('Cookie', authCookie(OWNER))
+      .field('phase', 'handoff')
+      .field('note', 'Spear was straight when it left me');
+
+    expect(res.status).toBe(201);
+  });
+
+  // A record that can be rewritten later isn't a record — that is the whole
+  // point of the feature, so the second attempt is refused, not merged.
+  it('refuses a second report from the same person for the same end', async () => {
+    execute
+      .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
+      .mockResolvedValueOnce([[loanRow(OUT)]])
+      .mockResolvedValueOnce(ALREADY_RECORDED);
+
+    const res = await request(app).post('/api/loans/5/condition')
+      .set('Cookie', authCookie(BORROWER))
+      .field('phase', 'handoff')
+      .field('note', 'Actually it was fine');
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toMatch(/already recorded/i);
+    expect(execute).not.toHaveBeenCalledWith(expect.stringContaining('loan_condition_photos'), expect.anything());
+  });
+
+  it('refuses a claim about the handoff once the loan is over', async () => {
+    execute
+      .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
+      .mockResolvedValueOnce([[loanRow({ ...OUT, status: 'returned', returned_at: new Date('2026-10-14T10:00:00.000Z') })]]);
+
+    const res = await request(app).post('/api/loans/5/condition')
+      .set('Cookie', authCookie(BORROWER))
+      .field('phase', 'handoff')
+      .field('note', 'It was already bent, honest');
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toMatch(/while the mini is out/i);
+    expect(execute).not.toHaveBeenCalledWith(expect.stringContaining('INSERT IGNORE INTO loan_condition_reports'), expect.anything());
+  });
+
+  // The owner only has it back in hand once the loan has ended.
+  it('still accepts a report about the return after the loan is over', async () => {
+    execute
+      .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
+      .mockResolvedValueOnce([[loanRow({ ...OUT, status: 'returned', returned_at: new Date('2026-10-14T10:00:00.000Z') })]])
+      .mockResolvedValueOnce(RECORDED)
+      .mockResolvedValueOnce([[reportRow({ phase: 'return' })]]);
+
+    const res = await request(app).post('/api/loans/5/condition')
+      .set('Cookie', authCookie(OWNER))
+      .field('phase', 'return')
+      .field('note', 'Came back with a chipped base');
+
+    expect(res.status).toBe(201);
+  });
+
+  it('refuses any report on a request that never changed hands', async () => {
+    execute
+      .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
+      .mockResolvedValueOnce([[loanRow()]]); // still negotiating
+
+    const res = await request(app).post('/api/loans/5/condition')
+      .set('Cookie', authCookie(BORROWER))
+      .field('phase', 'return')
+      .field('note', 'Looks great');
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toMatch(/changed hands/i);
+  });
+
+  it('refuses an empty report — a blank note and no photo records nothing', async () => {
+    execute
+      .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
+      .mockResolvedValueOnce([[loanRow(OUT)]]);
+
+    const res = await request(app).post('/api/loans/5/condition')
+      .set('Cookie', authCookie(BORROWER))
+      .field('phase', 'handoff')
+      .field('note', '   ');
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/note or a photo/i);
+    expect(execute).not.toHaveBeenCalledWith(expect.stringContaining('INSERT IGNORE INTO loan_condition_reports'), expect.anything());
+  });
+
+  it('refuses a phase that isn\'t one end of a loan', async () => {
+    execute
+      .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
+      .mockResolvedValueOnce([[loanRow(OUT)]]);
+
+    const res = await request(app).post('/api/loans/5/condition')
+      .set('Cookie', authCookie(BORROWER))
+      .field('phase', 'midway')
+      .field('note', 'Halfway through it was fine');
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/handoff/);
+  });
+
+  it('refuses a note longer than the column holds', async () => {
+    execute
+      .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
+      .mockResolvedValueOnce([[loanRow(OUT)]]);
+
+    const res = await request(app).post('/api/loans/5/condition')
+      .set('Cookie', authCookie(BORROWER))
+      .field('phase', 'handoff')
+      .field('note', 'x'.repeat(1001));
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/1000 characters/);
+  });
+
+  it('is not open to anyone but the two people on the loan', async () => {
+    execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED).mockResolvedValueOnce([[]]);
+
+    const res = await request(app).post('/api/loans/5/condition')
+      .set('Cookie', authCookie({ userId: 99, username: 'nosy', role: 'user', collectionId: 10 }))
+      .field('phase', 'handoff')
+      .field('note', 'Just curious');
+
+    expect(res.status).toBe(404);
+  });
+});
+
+describe('GET /api/loans/:id/condition', () => {
+  it('returns both sides\' reports, with their photos split out', async () => {
+    execute
+      .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
+      .mockResolvedValueOnce([[loanRow({ status: 'adventuring', handed_off_at: new Date('2026-10-01T18:00:00.000Z') })]])
+      .mockResolvedValueOnce([[
+        { id: 1, phase: 'handoff', author_id: 1, author_name: 'Owner', note: 'All good', created_at: new Date('2026-10-01T18:01:00.000Z'), photos: '/uploads/a.jpg,/uploads/b.jpg' },
+        { id: 2, phase: 'handoff', author_id: 2, author_name: 'Borrower', note: null, created_at: new Date('2026-10-01T18:02:00.000Z'), photos: '/uploads/c.jpg' },
+      ]]);
+
+    const res = await request(app).get('/api/loans/5/condition').set('Cookie', authCookie(BORROWER));
+
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveLength(2);
+    expect(res.body[0].photos).toEqual(['/uploads/a.jpg', '/uploads/b.jpg']);
+    expect(res.body[1]).toEqual(expect.objectContaining({ note: null, photos: ['/uploads/c.jpg'] }));
+  });
+
+  it('404s for someone who isn\'t on the loan', async () => {
+    execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED).mockResolvedValueOnce([[]]);
+
+    const res = await request(app).get('/api/loans/5/condition')
+      .set('Cookie', authCookie({ userId: 99, username: 'nosy', role: 'user', collectionId: 10 }));
+
+    expect(res.status).toBe(404);
   });
 });
 

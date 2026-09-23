@@ -19,6 +19,8 @@ export const LIMITS = {
   password: 1024,
   setName: 100,
   setMembers: 50, // most a single set-membership change can touch at once
+  conditionNote: 1000, // "the spear was already bent" — a paragraph, not an essay
+  bookingNote: 255,    // "game night at the shop"
 } as const;
 
 // Whitespace plus invisible formatting characters (zero-width spaces, joiners,

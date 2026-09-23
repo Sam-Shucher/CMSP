@@ -194,6 +194,67 @@ CREATE TABLE IF NOT EXISTS loans (
   FOREIGN KEY (cancelled_by) REFERENCES users(id) ON DELETE SET NULL
 );
 
+-- What state a mini was in at each end of a loan, so "the spear was already
+-- bent" is a fact rather than an argument. One report per person per phase:
+-- the owner and the borrower each get their own say at the handoff and at the
+-- return, and neither can edit or replace what they filed. No name snapshot
+-- here (unlike audit_log): a loan is already CASCADE-deleted with either
+-- person's account, so a report can never outlive the people it is about.
+CREATE TABLE IF NOT EXISTS loan_condition_reports (
+  id         INT PRIMARY KEY AUTO_INCREMENT,
+  loan_id    INT NOT NULL,
+  phase      ENUM('handoff', 'return') NOT NULL,
+  author_id  INT NOT NULL,
+  note       VARCHAR(1000) NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE (loan_id, phase, author_id),
+  FOREIGN KEY (loan_id) REFERENCES loans(id) ON DELETE CASCADE,
+  FOREIGN KEY (author_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+-- Up to 3 photos per report (position 0-2, enforced in application code),
+-- exactly like mini_images. maintenance/housekeeping.ts counts these as
+-- in-use files, so its sweep never deletes one.
+CREATE TABLE IF NOT EXISTS loan_condition_photos (
+  id         INT PRIMARY KEY AUTO_INCREMENT,
+  report_id  INT NOT NULL,
+  image_path VARCHAR(500) NOT NULL,
+  position   TINYINT NOT NULL DEFAULT 0,
+  INDEX idx_loan_condition_photos_report (report_id, position),
+  FOREIGN KEY (report_id) REFERENCES loan_condition_reports(id) ON DELETE CASCADE
+);
+
+-- "I need this for game night on the 14th" — a claim on a date range, where a
+-- hold (below) is a claim on a place in a queue. No two bookings on the same
+-- mini may overlap; services/bookings.ts enforces that in a transaction that
+-- locks the mini row, the same way the hold line does.
+--
+-- A booking constrains the loan CALENDAR: a handoff or extension whose due
+-- date reaches someone else's booked window is refused (routes/loans.ts).
+-- started_at/loan_id are set once housekeeping turns it into a request on its
+-- first day; a booking whose window passes without that is a no-show and is
+-- swept away with a notice.
+CREATE TABLE IF NOT EXISTS bookings (
+  id            INT PRIMARY KEY AUTO_INCREMENT,
+  mini_id       INT NOT NULL,
+  collection_id INT NOT NULL,
+  user_id       INT NOT NULL,
+  starts_on     DATE NOT NULL,
+  ends_on       DATE NOT NULL,
+  note          VARCHAR(255) NULL, -- "game night at the shop"
+  loan_id       INT NULL,          -- the request it became, once it started
+  started_at    DATETIME NULL,     -- set even if the loan is later deleted
+  created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  -- Overlap checks and the calendar for one mini: WHERE mini_id = ? ORDER BY starts_on.
+  INDEX idx_bookings_mini_dates (mini_id, starts_on, ends_on),
+  -- "My bookings in this group", and the hourly sweep's WHERE starts_on <= CURDATE().
+  INDEX idx_bookings_collection_user (collection_id, user_id),
+  FOREIGN KEY (mini_id) REFERENCES minis(id) ON DELETE CASCADE,
+  FOREIGN KEY (collection_id) REFERENCES collections(id) ON DELETE CASCADE,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+  FOREIGN KEY (loan_id) REFERENCES loans(id) ON DELETE SET NULL
+);
+
 -- Holds: up to 3 people waiting (in id order) for a mini that isn't available.
 -- When it's confirmed back, the first hold automatically becomes a request.
 CREATE TABLE IF NOT EXISTS holds (

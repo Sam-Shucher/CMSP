@@ -1,5 +1,5 @@
 import { Router, Response } from 'express';
-import { rows, firstRow, firstValue, change } from '../db/query';
+import { rows, firstRow, firstValue, change, insert } from '../db/query';
 import { requireAuth } from '../middleware/requireAuth';
 import { route, idFrom } from '../utils/route';
 import { requireCollectionMembership, CollectionRequest } from '../middleware/requireCollectionMembership';
@@ -8,9 +8,15 @@ import {
   roleOf, parseTermsPatch, applyTermsEdit, termsChanged, approveTerms, stageOf, termsToCopy, dueAtFrom,
   parseExtension, HOLD_BLOCKS_EXTENSION, MAX_DURATION_DAYS,
 } from '../utils/loanRules';
+import { MAX_CONDITION_PHOTOS, checkPhase, parsePhase, openPhases } from '../utils/conditionReports';
 import * as events from '../services/loanEvents';
 import { promoteNextHold, announceMiniRemoved } from '../services/holds';
-import { optionalEnum } from '../utils/inputs';
+import { bookingBlocking } from '../services/bookings';
+import { bookingBlocksMessage } from '../utils/bookingRules';
+import { optionalEnum, optionalText, LIMITS } from '../utils/inputs';
+import {
+  photoUpload, handleUploadError, verifyImageContents, discardUploadsIfRejected, uploadPath,
+} from '../middleware/uploads';
 
 const router = Router();
 
@@ -42,7 +48,8 @@ interface LoanRow {
   borrower_name: string;
   owner_username: string;
   owner_name: string;
-  holds_waiting: number; // people in line for this mini — they block an extension
+  holds_waiting: number;     // people in line for this mini — they block an extension
+  condition_reports: number; // how many condition notes have been filed on this loan
 }
 
 // Params: collectionId, userId, userId — callers append further conditions.
@@ -51,7 +58,8 @@ const LOAN_SELECT = `
          (SELECT mi.image_path FROM mini_images mi WHERE mi.mini_id = m.id ORDER BY mi.position LIMIT 1) AS mini_image,
          b.username AS borrower_username, b.display_name AS borrower_name,
          o.username AS owner_username, o.display_name AS owner_name,
-         (SELECT COUNT(*) FROM holds h WHERE h.mini_id = m.id) AS holds_waiting
+         (SELECT COUNT(*) FROM holds h WHERE h.mini_id = m.id) AS holds_waiting,
+         (SELECT COUNT(*) FROM loan_condition_reports r WHERE r.loan_id = l.id) AS condition_reports
   FROM loans l
   JOIN minis m ON m.id = l.mini_id
   JOIN users b ON b.id = l.borrower_id
@@ -109,6 +117,11 @@ function serializeLoan(row: LoanRow, userId: number) {
     extendableDays: row.status === 'adventuring' && row.duration_days !== null
       ? Math.max(0, MAX_DURATION_DAYS - row.duration_days)
       : 0,
+    // Just the count and which ends are still open, so the card can offer the
+    // right thing without a second request; the notes and photos themselves
+    // come from GET /api/loans/:id/condition when someone opens them.
+    conditionReports: Number(row.condition_reports),
+    openConditionPhases: openPhases({ status: row.status, handedOffAt: row.handed_off_at }),
   };
 }
 
@@ -244,7 +257,16 @@ router.post('/:id/handoff', withLoan(async (req, res, row) => {
     return fail(res, { ok: false, status: 409, error: 'Both of you need to approve the terms before the handoff' });
   }
 
+  // Someone may have claimed days this loan would run through. A hold decides
+  // who is next; a booking constrains the calendar — the mini has to be home
+  // before the first booked day, so a loan that couldn't be is refused here
+  // rather than discovered on the morning of their game night.
   const handedOffAt = nowToTheSecond();
+  const booked = await bookingBlocking(row.mini_id, dueAtFrom(handedOffAt, snapshot.durationDays!), row.borrower_id);
+  if (booked) {
+    return fail(res, { ok: false, status: 409, error: bookingBlocksMessage(booked.holderName, booked.startsOn) });
+  }
+
   const handedOff = await change(
     `UPDATE loans SET status = 'adventuring', handed_off_at = ?, due_at = ?
      WHERE id = ? AND status = 'negotiating' AND borrower_approved = 1 AND owner_approved = 1`,
@@ -302,6 +324,13 @@ router.post('/:id/extend', withLoan(async (req, res, row) => {
   if (waiting > 0) return fail(res, { ok: false, status: 409, error: HOLD_BLOCKS_EXTENSION });
 
   const dueAt = dueAtFrom(row.handed_off_at!, parsed.totalDays);
+  // Same rule as the handoff: keeping it longer can't run into days someone
+  // else has booked.
+  const booked = await bookingBlocking(row.mini_id, dueAt, row.borrower_id);
+  if (booked) {
+    return fail(res, { ok: false, status: 409, error: bookingBlocksMessage(booked.holderName, booked.startsOn) });
+  }
+
   const extended = await change(
     `UPDATE loans SET duration_days = ?, due_at = ?, overdue_notified_at = NULL
      WHERE id = ? AND status = 'adventuring'`,
@@ -351,10 +380,116 @@ router.post('/:id/return', withLoan(async (req, res, row) => {
     await change('DELETE FROM holds WHERE mini_id = ?', [row.mini_id]);
     await change('DELETE FROM hold_watchers WHERE mini_id = ?', [row.mini_id]);
     await change('DELETE FROM cart_items WHERE mini_id = ?', [row.mini_id]);
+    // Claimed days go the same way: announceMiniRemoved has just told those
+    // people it isn't coming, so leaving the booking would have it come due
+    // on a mini that can't be lent.
+    await change('DELETE FROM bookings WHERE mini_id = ?', [row.mini_id]);
     await (outcome === 'lost' ? events.lost(row.id) : events.criticallyWounded(row.id));
   }
   await sendLoan(req, res, row.id);
 }));
+
+// ---------------------------------------------------------------------------
+// Condition reports — what the mini looked like at each end of the loan, so
+// "the spear was already bent" is a fact instead of an argument. Each side
+// files their own, at each end, and nobody can edit or replace one afterwards:
+// a record that can be rewritten later is not a record. See
+// utils/conditionReports.ts for when each end is still open.
+// ---------------------------------------------------------------------------
+
+interface ConditionReportRow {
+  id: number;
+  phase: 'handoff' | 'return';
+  author_id: number;
+  author_name: string;
+  note: string | null;
+  created_at: Date;
+  photos: string | null; // GROUP_CONCAT of image paths, in position order
+}
+
+const CONDITION_SELECT = `
+  SELECT r.id, r.phase, r.author_id, r.note, r.created_at, u.display_name AS author_name,
+         (SELECT GROUP_CONCAT(p.image_path ORDER BY p.position SEPARATOR ',')
+          FROM loan_condition_photos p WHERE p.report_id = r.id) AS photos
+  FROM loan_condition_reports r
+  JOIN users u ON u.id = r.author_id
+  WHERE r.loan_id = ?
+  ORDER BY r.created_at, r.id
+`;
+
+function serializeReport(row: ConditionReportRow) {
+  return {
+    id: row.id,
+    phase: row.phase,
+    authorId: row.author_id,
+    authorName: row.author_name,
+    note: row.note,
+    photos: row.photos ? row.photos.split(',') : [],
+    createdAt: iso(row.created_at),
+  };
+}
+
+async function sendReports(res: Response, loanId: number, status: 200 | 201): Promise<void> {
+  const reports = await rows<ConditionReportRow>(CONDITION_SELECT, [loanId]);
+  res.status(status).json(reports.map(serializeReport));
+}
+
+const TOO_MANY_PHOTOS = `A condition report can have at most ${MAX_CONDITION_PHOTOS} photos`;
+
+// GET /api/loans/:id/condition
+// Every report on this loan — both sides', both ends'. Only the borrower and
+// owner can reach it, because withLoan 404s anyone else.
+router.get('/:id/condition', withLoan(async (_req, res, row) => {
+  await sendReports(res, row.id, 200);
+}));
+
+// POST /api/loans/:id/condition   multipart: phase, note?, photos (0-3)
+// File your own record of one end of this loan.
+router.post(
+  '/:id/condition',
+  discardUploadsIfRejected,
+  photoUpload('photos', MAX_CONDITION_PHOTOS),
+  handleUploadError(TOO_MANY_PHOTOS),
+  verifyImageContents,
+  withLoan(async (req, res, row) => {
+    const files = (req.files as Express.Multer.File[] | undefined) ?? [];
+    const body = (req.body ?? {}) as Record<string, unknown>;
+
+    const phase = parsePhase(body.phase);
+    if (!phase.ok) return fail(res, { ok: false, status: 400, error: phase.error });
+
+    const allowed = checkPhase({ status: row.status, handedOffAt: row.handed_off_at }, phase.value);
+    if (!allowed.ok) return fail(res, allowed);
+
+    const note = optionalText(body.note, 'Note', LIMITS.conditionNote);
+    if (!note.ok) return fail(res, { ok: false, status: 400, error: note.error });
+    if (note.value === null && files.length === 0) {
+      return fail(res, { ok: false, status: 400, error: 'Add a note or a photo — an empty report records nothing' });
+    }
+
+    // INSERT IGNORE against UNIQUE (loan_id, phase, author_id): a second
+    // report from the same person for the same end inserts nothing, which is
+    // how a double-submit (or a deliberate rewrite) is refused atomically.
+    const report = await insert(
+      'INSERT IGNORE INTO loan_condition_reports (loan_id, phase, author_id, note) VALUES (?, ?, ?, ?)',
+      [row.id, phase.value, req.user!.userId, note.value]
+    );
+    if (!report.inserted) {
+      return fail(res, { ok: false, status: 409, error: `You already recorded how it looked at the ${phase.value}` });
+    }
+
+    if (files.length > 0) {
+      const paths = files.map(uploadPath);
+      await change(
+        `INSERT INTO loan_condition_photos (report_id, image_path, position) VALUES ${paths.map(() => '(?, ?, ?)').join(', ')}`,
+        paths.flatMap((imagePath, position) => [report.id, imagePath, position])
+      );
+    }
+
+    await events.conditionRecorded(row.id, req.user!.userId, phase.value);
+    await sendReports(res, row.id, 201);
+  })
+);
 
 // POST /api/loans/:id/cancel
 // Either side can back out before the handoff.

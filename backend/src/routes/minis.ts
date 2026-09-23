@@ -1,7 +1,4 @@
-import { Router, Request, Response, NextFunction } from 'express';
-import multer from 'multer';
-import path from 'path';
-import fs from 'fs';
+import { Router, Response } from 'express';
 import { rows, firstRow, firstValue, change, insert } from '../db/query';
 import { requireAuth } from '../middleware/requireAuth';
 import { rateLimit } from '../middleware/rateLimit';
@@ -10,19 +7,22 @@ import { requireCollectionMembership, CollectionRequest } from '../middleware/re
 import { matchesSearch } from '../utils/search';
 import { activeLoanStatusSql, miniStatusFrom } from '../utils/miniStatus';
 import { requiredText, optionalText, tagList, optionalEnum, optionalId, optionalFlag, positiveId, LIMITS, Check } from '../utils/inputs';
-import { uploadsDir as configuredUploadsDir } from '../config';
 import { parseBackBy } from '../utils/quest';
 import { daysOut } from '../utils/loanRules';
-import { detectImageType, IMAGE_HEADER_BYTES } from '../utils/imageType';
+import {
+  photoUpload, handleUploadError, verifyImageContents, discardUploadsIfRejected,
+  uploadPath, deleteUpload, MAX_PHOTO_BYTES,
+} from '../middleware/uploads';
 import { promoteNextHold, announceMiniRemoved } from '../services/holds';
 import { notify } from '../db/notifications';
 import { messages } from '../utils/notificationMessages';
 
 const router = Router();
 // Mirrored by frontend/src/limits.ts (photosPerMini, photoBytes) and pinned to
-// it by limitsMirror.test.ts.
+// it by limitsMirror.test.ts. The byte ceiling is shared with every other
+// photo the app takes, so it lives with the upload pipeline itself.
 export const MAX_IMAGES = 3;
-export const MAX_PHOTO_BYTES = 10 * 1024 * 1024; // large enough for a camera photo
+export { MAX_PHOTO_BYTES };
 
 // Every route in this file is scoped to the caller's active collection.
 // requireCollectionMembership re-verifies that membership against the
@@ -30,123 +30,12 @@ export const MAX_PHOTO_BYTES = 10 * 1024 * 1024; // large enough for a camera ph
 // the verified id as req.collectionId — every query below filters on it.
 router.use(requireAuth, requireCollectionMembership);
 
-// Ensure the uploads directory exists when the server starts.
-// Uploaded images live here and are served as static files by index.ts.
-const uploadsDir = configuredUploadsDir();
-if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
-
-// Must run BEFORE multer. Photos are written to disk as the request arrives,
-// before we know whether the request will be accepted — so if the response
-// ends up being an error (not your mini, bad input, too many photos, a server
-// error), delete whatever this request saved instead of leaving it behind.
-function discardUploadsIfRejected(req: Request, res: Response, next: NextFunction): void {
-  res.on('finish', () => {
-    if (res.statusCode < 400) return;
-    const files = (req.files as Express.Multer.File[] | undefined) ?? [];
-    for (const file of files) {
-      fs.rmSync(file.path, { force: true });
-    }
-  });
-  next();
-}
-
-// ---------------------------------------------------------------------------
-// File upload configuration (multer)
-// ---------------------------------------------------------------------------
-
-// The only file types accepted, and the extension each is saved with. SVG is
-// deliberately absent — it's an "image" that can carry scripts.
-const IMAGE_EXTENSIONS: Record<string, string> = {
-  'image/jpeg': '.jpg',
-  'image/jpg': '.jpg',
-  'image/png': '.png',
-  'image/gif': '.gif',
-  'image/webp': '.webp',
-};
-
-// diskStorage tells multer to save files to disk (vs keeping them in memory).
-const storage = multer.diskStorage({
-  destination: uploadsDir,
-  // A unique, server-generated name. The extension comes from the checked
-  // image type — NEVER the uploader's filename, or "evil.html" labelled as a
-  // PNG would be saved as .html and served back as a live web page.
-  filename: (_req, file, cb) => {
-    const unique = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    cb(null, `${unique}${IMAGE_EXTENSIONS[file.mimetype.toLowerCase()]}`);
-  },
-});
-
-const upload = multer({
-  storage,
-  limits: {
-    fileSize: MAX_PHOTO_BYTES,
-    files: MAX_IMAGES,
-    fields: 20,
-    fieldSize: 100 * 1024,
-  },
-  fileFilter: (_req, file, cb) => {
-    // Only accept images — reject PDFs, executables, SVGs, etc.
-    if (IMAGE_EXTENSIONS[file.mimetype.toLowerCase()]) {
-      cb(null, true);
-    } else {
-      cb(new Error('Only image files are allowed (jpg, png, gif, webp)'));
-    }
-  },
-});
-
-// Converts a multer/fileFilter error into a clean 400 JSON response instead
-// of Express's default HTML error page. Placed right after upload.array(...)
-// in each route's middleware list — Express routes to it only when that
-// middleware calls next(err).
-function handleUploadError(err: unknown, _req: Request, res: Response, next: NextFunction): void {
-  if (err instanceof multer.MulterError) {
-    const tooMany = err.code === 'LIMIT_FILE_COUNT' || err.code === 'LIMIT_UNEXPECTED_FILE';
-    res.status(400).json({
-      error: tooMany ? `You can have at most ${MAX_IMAGES} photos per mini`
-        : err.code === 'LIMIT_FILE_SIZE' ? 'Each photo must be 10 MB or smaller'
-        : 'Invalid upload',
-    });
-    return;
-  }
-  if (err instanceof Error) {
-    res.status(400).json({ error: err.message });
-    return;
-  }
-  next(err);
-}
-
-// Runs after multer has saved the files: checks each one really is an image
-// (not, say, a text file renamed .png) and gives it the extension of what it
-// actually is. Anything else is refused by name — and discardUploadsIfRejected
-// then deletes everything this request saved.
-function verifyImageContents(req: Request, res: Response, next: NextFunction): void {
-  const files = (req.files as Express.Multer.File[] | undefined) ?? [];
-  for (const file of files) {
-    const head = Buffer.alloc(IMAGE_HEADER_BYTES);
-    const fd = fs.openSync(file.path, 'r');
-    let bytesRead: number;
-    try {
-      bytesRead = fs.readSync(fd, head, 0, IMAGE_HEADER_BYTES, 0);
-    } finally {
-      fs.closeSync(fd);
-    }
-
-    const ext = detectImageType(head.subarray(0, bytesRead));
-    if (!ext) {
-      const shownName = file.originalname.slice(0, 80);
-      res.status(400).json({ error: `"${shownName}" isn't a photo we can open — use a JPG, PNG, GIF, or WebP` });
-      return;
-    }
-    if (path.extname(file.filename) !== ext) {
-      const renamed = `${path.basename(file.filename, path.extname(file.filename))}${ext}`;
-      const renamedPath = path.join(path.dirname(file.path), renamed);
-      fs.renameSync(file.path, renamedPath);
-      file.filename = renamed;
-      file.path = renamedPath;
-    }
-  }
-  next();
-}
+// Photos: saved to disk as the request arrives, checked against their real
+// bytes, and deleted again if the request ends up rejected. All of that is
+// middleware/uploads.ts — shared with a loan's condition photos.
+const uploadImages = photoUpload('images', MAX_IMAGES);
+const TOO_MANY_IMAGES = `You can have at most ${MAX_IMAGES} photos per mini`;
+const uploadErrors = handleUploadError(TOO_MANY_IMAGES);
 
 // ---------------------------------------------------------------------------
 // Row types — these tell TypeScript the shape of each DB row we SELECT
@@ -311,7 +200,7 @@ async function setTags(miniId: number, tagNames: string[]): Promise<void> {
 async function setImages(miniId: number, keptPaths: string[], newFiles: Express.Multer.File[]): Promise<void> {
   await change('DELETE FROM mini_images WHERE mini_id = ?', [miniId]);
 
-  const allPaths = [...keptPaths, ...newFiles.map(f => `/uploads/${f.filename}`)];
+  const allPaths = [...keptPaths, ...newFiles.map(uploadPath)];
   if (allPaths.length === 0) return;
 
   await change(
@@ -547,7 +436,7 @@ router.get('/:id/history', route(async (req, res) => {
 // POST /api/minis
 // Creates a new mini in the caller's active collection. Expects multipart/form-data.
 // Fields: name (required), description, tags (comma-separated), images (0-3 files).
-router.post('/', discardUploadsIfRejected, upload.array('images', MAX_IMAGES), handleUploadError, verifyImageContents, route(async (req, res) => {
+router.post('/', discardUploadsIfRejected, uploadImages, uploadErrors, verifyImageContents, route(async (req, res) => {
   const files = (req.files as Express.Multer.File[] | undefined) ?? [];
 
   const fields = parseMiniFields((req.body ?? {}) as Record<string, unknown>);
@@ -576,7 +465,7 @@ router.post('/', discardUploadsIfRejected, upload.array('images', MAX_IMAGES), h
 // Expects multipart/form-data. `existingImages` is a JSON array of image
 // paths (from the mini's current photos) to keep; any new files in the
 // `images` field are appended after them, capped at MAX_IMAGES total.
-router.patch('/:id', discardUploadsIfRejected, upload.array('images', MAX_IMAGES), handleUploadError, verifyImageContents, route(async (req, res) => {
+router.patch('/:id', discardUploadsIfRejected, uploadImages, uploadErrors, verifyImageContents, route(async (req, res) => {
   const miniId = idFrom(req.params.id);
   const existingImages = (req.body as Record<string, unknown> | undefined)?.existingImages;
   const newFiles = (req.files as Express.Multer.File[] | undefined) ?? [];
@@ -621,7 +510,7 @@ router.patch('/:id', discardUploadsIfRejected, upload.array('images', MAX_IMAGES
     : [];
 
   if (keptPaths.length + newFiles.length > MAX_IMAGES) {
-    res.status(400).json({ error: `You can have at most ${MAX_IMAGES} photos per mini` });
+    res.status(400).json({ error: TOO_MANY_IMAGES });
     return;
   }
 
@@ -645,8 +534,7 @@ router.patch('/:id', discardUploadsIfRejected, upload.array('images', MAX_IMAGES
   await setImages(miniId, keptPaths, newFiles);
 
   for (const droppedPath of droppedPaths) {
-    const oldFile = path.join(uploadsDir, path.basename(droppedPath));
-    fs.unlink(oldFile, () => {}); // best-effort cleanup; ignore errors
+    deleteUpload(droppedPath); // best-effort cleanup; ignore errors
   }
 
   await sendMini(res, miniId);
@@ -920,7 +808,7 @@ router.delete('/:id', route(async (req, res) => {
   await change('DELETE FROM minis WHERE id = ?', [miniId]);
 
   for (const { image_path } of images) {
-    fs.unlink(path.join(uploadsDir, path.basename(image_path)), () => {}); // best-effort cleanup
+    deleteUpload(image_path); // best-effort cleanup
   }
 
   res.json({ message: 'Mini deleted' });

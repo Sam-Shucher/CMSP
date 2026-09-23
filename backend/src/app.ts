@@ -11,6 +11,7 @@ import usersRouter from './routes/users';
 import cartRouter from './routes/cart';
 import loansRouter from './routes/loans';
 import holdsRouter from './routes/holds';
+import bookingsRouter from './routes/bookings';
 import notificationsRouter from './routes/notifications';
 import healthRouter from './routes/health';
 import { requireAuth } from './middleware/requireAuth';
@@ -73,6 +74,7 @@ export function createApp(options: { frontendDist?: string; uploadsDir?: string 
   app.use('/api/cart',  cartRouter);   // /api/cart (basket + checkout)
   app.use('/api/loans', loansRouter);  // /api/loans (negotiation, handoff, return)
   app.use('/api/holds', holdsRouter);  // /api/holds (the line for unavailable minis, notify list)
+  app.use('/api/bookings', bookingsRouter); // /api/bookings (claiming days ahead — "game night on the 14th")
   app.use('/api/notifications', notificationsRouter); // /api/notifications (the bell)
   app.use('/api/health', healthRouter); // /api/health (public: up/down for a probe)
 

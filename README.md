@@ -94,6 +94,44 @@ UPDATE collection_memberships SET role = 'admin'
   before they can do anything else. Everyone can also change their own password
   from their profile at any time.
 
+## Condition records
+
+Lending a painted mini and getting it back with a bent spear is how a lending
+group stops being one. So both people can write down what it looked like at
+each end of a loan — a note and up to three photos, from the Loans page:
+
+- Each side files **their own** record, at the **handoff** and at the
+  **return**, and nothing can be edited or replaced afterwards. A record that
+  can be rewritten later isn't a record.
+- The **return** can still be recorded after the loan ends, because that's when
+  the owner actually has it back in hand. The **handoff** can't — a fresh claim
+  about how it looked at pickup, made once the mini is back and something is
+  wrong with it, is exactly the argument this exists to replace.
+- Condition photos are visible only to the two people on that loan, not to the
+  whole collection the way a mini's own photos are.
+
+## Booking for a date
+
+A hold answers "tell me when it's free". A booking answers "I need this for
+game night on the 14th", which is how tabletop actually works. From a mini's
+detail view, pick a day (or a range) and claim it, whether or not the mini
+happens to be free right now.
+
+- **No two bookings on one mini can overlap** — first to book gets the days.
+  One booking per person per mini, up to ten per mini, three months long, six
+  months ahead.
+- **Which days are booked is public** to the collection (that's what makes a
+  calendar useful); **who** booked them is shown only to the mini's owner and
+  the person themselves — the same rule the hold line follows for names.
+- **How it meets the hold line:** they don't compete. A hold decides *who* is
+  next; a booking constrains the *calendar*. A handoff or a "keep it longer"
+  whose due date would still have the mini out when someone else's booked
+  window opens is refused, naming the date it has to be back by.
+- **It becomes a request on its first morning**, automatically, and you're
+  told. If the mini is still out with someone, it keeps trying each hour —
+  and if the whole window passes without it ever coming free, the booking is
+  cleared and you're told that too, rather than left wondering.
+
 ## Sessions and cleanup
 
 - Logins are server-side sessions: they end after **2 days unused** or **7 days**
@@ -124,12 +162,16 @@ npm --prefix backend run test:integration           # backend integration tests
 npm --prefix frontend run test                      # frontend tests
 npm run test:e2e                                    # Playwright end-to-end
 
-npx tsc --noEmit -p backend                          # backend type-check
-npx tsc --noEmit -p frontend                         # frontend type-check
+(cd backend && npx tsc --noEmit)                     # backend type-check
+(cd frontend && npx tsc --noEmit)                    # frontend type-check
 npm run lint                                         # ESLint over backend, frontend, tests
 
 docker compose -f docker-compose.test.yml down -v   # tear the DB back down
 ```
+
+Both type-checks have to be run from inside their own package — `tsc -p frontend`
+from the repo root can't resolve Vite's ambient types and reports a phantom
+error on the CSS import.
 
 Details on each below.
 

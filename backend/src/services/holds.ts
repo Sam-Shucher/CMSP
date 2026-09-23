@@ -367,14 +367,20 @@ export async function dropHoldsInCollection(userId: number, collectionId: number
   );
 }
 
-// Before a mini is deleted: let everyone waiting for it know.
+// Before a mini is deleted: let everyone waiting for it know — people in
+// line, people on the notify list, and anyone who had booked days on it,
+// since all three vanish with the mini and nothing else would tell them.
 export async function announceMiniRemoved(miniId: number): Promise<void> {
   const mini = await firstRow<{ name: string; collection_id: number }>(
     'SELECT name, collection_id FROM minis WHERE id = ?',
     [miniId]
   );
   if (!mini) return;
-  const waiting = [...await currentLine(miniId), ...await watcherIds(miniId)];
+  const booked = await rows<{ user_id: number }>(
+    'SELECT DISTINCT user_id FROM bookings WHERE mini_id = ? AND ends_on >= CURDATE()',
+    [miniId]
+  );
+  const waiting = [...await currentLine(miniId), ...await watcherIds(miniId), ...booked.map(b => b.user_id)];
   await notify(waiting, {
     collectionId: mini.collection_id, type: 'mini_removed', message: messages.miniRemoved(mini.name), miniId,
   });

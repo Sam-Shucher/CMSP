@@ -7,10 +7,13 @@ import { AuthRequest } from './requireAuth';
 // "..", hidden files — is refused before it reaches the disk or the database.
 const SAFE_UPLOAD_NAME = /^\/[A-Za-z0-9-]+\.(png|jpg|gif|webp)$/;
 
-// Mounted under /uploads, after requireAuth. A photo is only served to members
-// of the collection its mini belongs to — same rule as the mini itself — so a
-// leaked or guessed link is useless to anyone outside that group. Everyone
-// else gets 404, as if the photo didn't exist.
+// Mounted under /uploads, after requireAuth. A mini's photo is only served to
+// members of the collection it belongs to — same rule as the mini itself — so
+// a leaked or guessed link is useless to anyone outside that group.
+//
+// A loan's condition photo is narrower still: it is part of a loan, and a loan
+// is only ever visible to its borrower and owner (routes/loans.ts), so the
+// photo is too. Everyone else gets 404, as if it didn't exist.
 export async function requireImageAccess(req: AuthRequest, res: Response, next: NextFunction): Promise<void> {
   if (!SAFE_UPLOAD_NAME.test(req.path)) {
     res.status(404).json({ error: 'Not found' });
@@ -24,8 +27,14 @@ export async function requireImageAccess(req: AuthRequest, res: Response, next: 
        JOIN minis m ON m.id = mi.mini_id
        JOIN collection_memberships cm ON cm.collection_id = m.collection_id
        WHERE mi.image_path = ? AND cm.user_id = ?
+       UNION
+       SELECT 1 AS found
+       FROM loan_condition_photos p
+       JOIN loan_condition_reports r ON r.id = p.report_id
+       JOIN loans l ON l.id = r.loan_id
+       WHERE p.image_path = ? AND (l.borrower_id = ? OR l.owner_id = ?)
        LIMIT 1`,
-      [`/uploads${req.path}`, req.user!.userId]
+      [`/uploads${req.path}`, req.user!.userId, `/uploads${req.path}`, req.user!.userId, req.user!.userId]
     );
 
     if (!visible) {
