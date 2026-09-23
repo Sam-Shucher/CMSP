@@ -12,6 +12,7 @@ import { purgeEndedSessions } from '../db/sessions';
 import { purgeExpiredNotifications } from '../db/notifications';
 import { notifyOverdueLoans } from '../services/loanEvents';
 import { promoteStrandedHolds } from '../services/holds';
+import { purgeArchivedMinis } from '../services/membership';
 import { sweepOrphanedUploads, runHousekeeping, startHousekeeping, ORPHAN_MIN_AGE_MS } from './housekeeping';
 
 // The sweep's SQL is checked against real MariaDB in
@@ -37,6 +38,7 @@ beforeEach(() => {
   vi.mocked(purgeExpiredNotifications).mockReset().mockResolvedValue(0);
   vi.mocked(notifyOverdueLoans).mockReset().mockResolvedValue(0);
   vi.mocked(promoteStrandedHolds).mockReset().mockResolvedValue(0);
+  vi.mocked(purgeArchivedMinis).mockReset().mockResolvedValue(0);
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'housekeeping-'));
 });
 
@@ -138,7 +140,7 @@ describe('sweepOrphanedUploads', () => {
 });
 
 describe('runHousekeeping', () => {
-  it('sweeps uploads, purges ended sessions and read notifications, announces overdue loans, and promotes stranded holds', async () => {
+  it('sweeps uploads, purges ended sessions and read notifications, announces overdue loans, promotes stranded holds, and purges archived minis', async () => {
     addFile('orphan.png', 2 * HOUR);
     addFile('used.png', 2 * HOUR);
     execute.mockResolvedValueOnce(referenced('used.png'));
@@ -146,10 +148,13 @@ describe('runHousekeeping', () => {
     vi.mocked(purgeExpiredNotifications).mockResolvedValueOnce(3);
     vi.mocked(notifyOverdueLoans).mockResolvedValueOnce(2);
     vi.mocked(promoteStrandedHolds).mockResolvedValueOnce(1);
+    vi.mocked(purgeArchivedMinis).mockResolvedValueOnce(5);
 
     const result = await runHousekeeping({ uploadsDir: dir, log: quiet });
 
-    expect(result).toEqual({ uploadsDeleted: 1, sessionsPurged: 4, notificationsPurged: 3, overdueAnnounced: 2, holdsPromoted: 1 });
+    expect(result).toEqual({
+      uploadsDeleted: 1, sessionsPurged: 4, notificationsPurged: 3, overdueAnnounced: 2, holdsPromoted: 1, archivedMinisPurged: 5,
+    });
   });
 
   it('never throws — a failed step is logged, the others still run, and it\'s tried again next time', async () => {
@@ -158,10 +163,11 @@ describe('runHousekeeping', () => {
     vi.mocked(purgeExpiredNotifications).mockRejectedValue(new Error('connection lost'));
     vi.mocked(notifyOverdueLoans).mockRejectedValue(new Error('connection lost'));
     vi.mocked(promoteStrandedHolds).mockResolvedValueOnce(1);
+    vi.mocked(purgeArchivedMinis).mockRejectedValue(new Error('connection lost'));
     const log = vi.fn();
 
     await expect(runHousekeeping({ uploadsDir: dir, log })).resolves.toEqual({
-      uploadsDeleted: 0, sessionsPurged: 0, notificationsPurged: 0, overdueAnnounced: 0, holdsPromoted: 1,
+      uploadsDeleted: 0, sessionsPurged: 0, notificationsPurged: 0, overdueAnnounced: 0, holdsPromoted: 1, archivedMinisPurged: 0,
     });
     expect(log).toHaveBeenCalledWith(expect.stringMatching(/failed/i));
   });

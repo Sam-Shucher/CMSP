@@ -20,13 +20,14 @@ interface CartRow {
   owner_username: string;
   active_loan_status: string | null;
   on_quest_since: Date | null;
+  condition_flag: string | null;
 }
 
 const CART_SELECT = `
   SELECT ci.mini_id, m.name,
          (SELECT mi.image_path FROM mini_images mi WHERE mi.mini_id = m.id ORDER BY mi.position LIMIT 1) AS image,
          u.id AS owner_id, u.display_name AS owner_name, u.username AS owner_username,
-         ${activeLoanStatusSql('m')} AS active_loan_status, m.on_quest_since
+         ${activeLoanStatusSql('m')} AS active_loan_status, m.on_quest_since, m.condition_flag
   FROM cart_items ci
   JOIN minis m ON m.id = ci.mini_id
   JOIN users u ON u.id = m.owner_id
@@ -42,7 +43,7 @@ function serializeCartItem(row: CartRow) {
     ownerId: row.owner_id,
     ownerName: row.owner_name,
     ownerUsername: row.owner_username,
-    status: miniStatusFrom(row.active_loan_status, row.on_quest_since),
+    status: miniStatusFrom(row.active_loan_status, row.on_quest_since, row.condition_flag),
   };
 }
 
@@ -63,8 +64,8 @@ router.post('/', route(async (req, res) => {
     return;
   }
 
-  const mini = await firstRow<{ owner_id: number; active_loan_status: string | null; on_quest_since: Date | null }>(
-    `SELECT m.owner_id, ${activeLoanStatusSql('m')} AS active_loan_status, m.on_quest_since
+  const mini = await firstRow<{ owner_id: number; active_loan_status: string | null; on_quest_since: Date | null; condition_flag: string | null }>(
+    `SELECT m.owner_id, ${activeLoanStatusSql('m')} AS active_loan_status, m.on_quest_since, m.condition_flag
      FROM minis m WHERE m.id = ? AND m.collection_id = ?`,
     [miniId, req.collectionId!]
   );
@@ -77,7 +78,7 @@ router.post('/', route(async (req, res) => {
     res.status(400).json({ error: "That's your own mini" });
     return;
   }
-  if (mini.active_loan_status ?? mini.on_quest_since) {
+  if (mini.active_loan_status ?? mini.on_quest_since ?? mini.condition_flag) {
     res.status(409).json({ error: "That mini isn't available right now" });
     return;
   }

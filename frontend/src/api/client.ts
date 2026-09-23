@@ -109,8 +109,11 @@ export type Collection = {
 };
 
 // requested = checked out and being negotiated; adventuring = handed off to a
-// borrower; on_quest = the owner took it out themselves (e.g. to bring to a game)
-export type MiniStatus = 'available' | 'requested' | 'adventuring' | 'on_quest';
+// borrower; on_quest = the owner took it out themselves (e.g. to bring to a
+// game); lost/critically_wounded = a loan ended that way (routes/loans.ts) —
+// hidden from browse either way; critically_wounded needs the owner to
+// clear it (POST /api/minis/:id/clear-condition) before it can be lent again.
+export type MiniStatus = 'available' | 'requested' | 'adventuring' | 'on_quest' | 'lost' | 'critically_wounded';
 
 // One row from GET /api/minis — the shape the backend sends back
 export type Mini = {
@@ -123,6 +126,8 @@ export type Mini = {
   available: boolean;         // status === 'available'
   on_quest_since?: string | null; // ISO timestamp while on a quest
   on_quest_until?: string | null; // optional "back by" date, YYYY-MM-DD
+  condition: 'lost' | 'critically_wounded' | null;
+  conditionSince: string | null; // ISO timestamp since the condition was set
   owner_name: string;         // display_name of the user who owns this mini
   owner_username: string;
   owner_id: number;
@@ -166,6 +171,7 @@ export type MiniHistoryEntry = {
   handedOffAt: string;       // ISO
   returnedAt: string | null; // null while still out
   ongoing: boolean;
+  outcome: string;           // 'returned' | 'lost' | 'critically_wounded' | 'adventuring' (still out)
   daysOut: number;
 };
 
@@ -207,7 +213,7 @@ export type NotificationItem = {
   createdAt: string;
 };
 
-export type LoanStage = 'negotiating' | 'agreed' | 'adventuring' | 'overdue' | 'returned' | 'cancelled';
+export type LoanStage = 'negotiating' | 'agreed' | 'adventuring' | 'overdue' | 'returned' | 'cancelled' | 'lost' | 'critically_wounded';
 
 // One row from GET /api/loans, seen from the current user's side
 export type Loan = {
@@ -217,7 +223,7 @@ export type Loan = {
   miniImage: string | null;
   role: 'borrower' | 'owner';
   counterpart: { id: number; username: string; displayName: string };
-  status: 'negotiating' | 'adventuring' | 'returned' | 'cancelled';
+  status: 'negotiating' | 'adventuring' | 'returned' | 'cancelled' | 'lost' | 'critically_wounded';
   stage: LoanStage;
   handoffWhen: string | null;  // ISO timestamp
   handoffWhere: string | null;

@@ -14,6 +14,7 @@ function entry(overrides: Partial<MiniHistoryEntry> = {}): MiniHistoryEntry {
     handedOffAt: '2026-08-01T18:00:00.000Z',
     returnedAt: '2026-08-08T18:00:00.000Z',
     ongoing: false,
+    outcome: 'returned',
     daysOut: 7,
     ...overrides,
   };
@@ -69,6 +70,28 @@ describe('MiniHistory', () => {
     await userEvent.click(screen.getByRole('button', { name: /view lending history/i }));
 
     expect(await screen.findByText(/still out/i)).toBeInTheDocument();
+  });
+
+  it('marks a loan that never came back as lost', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse([
+      entry({ ongoing: false, outcome: 'lost', returnedAt: '2026-08-10T00:00:00.000Z' }),
+    ]));
+
+    render(<MiniHistory miniId={42} />);
+    await userEvent.click(screen.getByRole('button', { name: /view lending history/i }));
+
+    expect(await screen.findByText(/never came back \(lost\)/i)).toBeInTheDocument();
+  });
+
+  it('marks a loan that came back broken as critically wounded', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse([
+      entry({ ongoing: false, outcome: 'critically_wounded', returnedAt: '2026-08-10T00:00:00.000Z' }),
+    ]));
+
+    render(<MiniHistory miniId={42} />);
+    await userEvent.click(screen.getByRole('button', { name: /view lending history/i }));
+
+    expect(await screen.findByText(/came back critically wounded/i)).toBeInTheDocument();
   });
 
   it('collapses again without fetching a second time', async () => {

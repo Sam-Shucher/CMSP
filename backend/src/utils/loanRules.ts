@@ -2,8 +2,8 @@
 // every rule can be unit tested directly. Routes in routes/loans.ts load a
 // loan, ask these functions what should happen, then persist the result.
 
-export type LoanStatus = 'negotiating' | 'adventuring' | 'returned' | 'cancelled';
-export type LoanStage = 'negotiating' | 'agreed' | 'adventuring' | 'overdue' | 'returned' | 'cancelled';
+export type LoanStatus = 'negotiating' | 'adventuring' | 'returned' | 'cancelled' | 'lost' | 'critically_wounded';
+export type LoanStage = 'negotiating' | 'agreed' | 'adventuring' | 'overdue' | 'returned' | 'cancelled' | 'lost' | 'critically_wounded';
 export type LoanRole = 'borrower' | 'owner';
 
 export interface LoanTerms {

@@ -99,11 +99,24 @@ CREATE TABLE IF NOT EXISTS minis (
   on_quest_since DATETIME NULL, -- set while the owner has taken it out themselves ("On a Quest")
   on_quest_until DATE NULL,     -- optional "back by" date while on a quest
   set_id        INT NULL, -- optional: this mini is part of an owner's named set (see sets above)
+  -- Set when the owner is removed from the collection but keeps another one —
+  -- hides the mini everywhere while giving an admin a window to restore it
+  -- before maintenance/housekeeping.ts permanently deletes it.
+  archived_at   DATETIME NULL,
+  -- Set by ending a loan as lost/critically wounded (routes/loans.ts) — hides
+  -- the mini from browse either way. No auto-purge: the owner (or an admin)
+  -- decides what happens next, by deleting it or, for critically_wounded,
+  -- clearing it back into service (POST /api/minis/:id/clear-condition).
+  -- Named condition_flag, not condition — that word is reserved in MariaDB.
+  condition_flag  ENUM('lost', 'critically_wounded') NULL,
+  condition_since DATETIME NULL,
   created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   -- Browsing a collection: WHERE collection_id = ? ORDER BY created_at DESC.
   INDEX idx_minis_collection_created (collection_id, created_at),
   INDEX idx_minis_set (set_id),
+  INDEX idx_minis_archived (archived_at),
+  INDEX idx_minis_condition (condition_flag),
   FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE,
   FOREIGN KEY (collection_id) REFERENCES collections(id) ON DELETE CASCADE,
   FOREIGN KEY (set_id) REFERENCES sets(id) ON DELETE SET NULL
@@ -155,7 +168,7 @@ CREATE TABLE IF NOT EXISTS loans (
   collection_id     INT NOT NULL,
   borrower_id       INT NOT NULL,
   owner_id          INT NOT NULL,
-  status            ENUM('negotiating', 'adventuring', 'returned', 'cancelled') NOT NULL DEFAULT 'negotiating',
+  status            ENUM('negotiating', 'adventuring', 'returned', 'cancelled', 'lost', 'critically_wounded') NOT NULL DEFAULT 'negotiating',
   handoff_when      DATETIME NULL,
   handoff_where     VARCHAR(255) NULL,
   handoff_how       VARCHAR(255) NULL,
@@ -220,6 +233,27 @@ CREATE TABLE IF NOT EXISTS notifications (
   FOREIGN KEY (collection_id) REFERENCES collections(id) ON DELETE CASCADE,
   FOREIGN KEY (mini_id) REFERENCES minis(id) ON DELETE SET NULL,
   FOREIGN KEY (loan_id) REFERENCES loans(id) ON DELETE SET NULL
+);
+
+-- A trace of admin actions with real consequences (removing a member,
+-- restoring an archived mini) — who did it, to/about whom, and when.
+-- actor/target are SET NULL rather than CASCADE, with the name snapshotted
+-- alongside: an account is deleted the moment its owner leaves their last
+-- collection, and the whole point of this log is to survive that.
+CREATE TABLE IF NOT EXISTS audit_log (
+  id             INT PRIMARY KEY AUTO_INCREMENT,
+  collection_id  INT NOT NULL,
+  actor_id       INT NULL,
+  actor_name     VARCHAR(100) NOT NULL,
+  action         VARCHAR(40) NOT NULL, -- 'member_removed' | 'mini_restored'
+  target_user_id INT NULL,
+  target_name    VARCHAR(100) NULL,
+  details        VARCHAR(500) NOT NULL,
+  created_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_audit_log_collection_created (collection_id, created_at),
+  FOREIGN KEY (collection_id) REFERENCES collections(id) ON DELETE CASCADE,
+  FOREIGN KEY (actor_id) REFERENCES users(id) ON DELETE SET NULL,
+  FOREIGN KEY (target_user_id) REFERENCES users(id) ON DELETE SET NULL
 );
 
 -- Bootstrap: create at least one collection, then add your own email to its

@@ -352,6 +352,9 @@ describe('App — admin page access', () => {
       '/api/auth/me': { ...USER, role: 'admin' },
       '/api/admin/approved-emails': [],
       '/api/admin/users': [],
+      '/api/admin/archived-minis': [],
+      '/api/admin/audit-log': [],
+      '/api/admin/loan-incidents': [],
     });
 
     render(<App />);

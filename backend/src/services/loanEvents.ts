@@ -148,6 +148,22 @@ export function returned(loanId: number): Promise<void> {
   });
 }
 
+export function lost(loanId: number): Promise<void> {
+  return safely('lost', async () => {
+    const loan = await loadLoan(loanId);
+    if (!loan) return;
+    await notify([loan.borrower_id], { ...base(loan), type: 'lost', message: messages.lost(loan.owner_name, loan.mini_name) });
+  });
+}
+
+export function criticallyWounded(loanId: number): Promise<void> {
+  return safely('critically wounded', async () => {
+    const loan = await loadLoan(loanId);
+    if (!loan) return;
+    await notify([loan.borrower_id], { ...base(loan), type: 'critically_wounded', message: messages.criticallyWounded(loan.owner_name, loan.mini_name) });
+  });
+}
+
 // Housekeeping: announce each newly overdue loan to both sides, exactly once.
 export async function notifyOverdueLoans(): Promise<number> {
   const overdueLoans = await rows<{ id: number }>(

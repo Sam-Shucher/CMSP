@@ -84,7 +84,9 @@ export default function LoansPage(): React.ReactElement {
   }, []);
 
   const active = loans.filter((l: Loan) => l.status === 'negotiating' || l.status === 'adventuring');
-  const history = loans.filter((l: Loan) => l.status === 'returned' || l.status === 'cancelled');
+  const history = loans.filter((l: Loan) =>
+    l.status === 'returned' || l.status === 'cancelled' || l.status === 'lost' || l.status === 'critically_wounded'
+  );
 
   // "Apply to all" copies terms between the same borrower and owner, so only
   // open requests in the same direction with the same person count.

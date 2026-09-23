@@ -30,7 +30,7 @@ describe('hostile text from other members renders as plain text', () => {
     const mini: Mini = {
       id: 1, name: XSS, description: SCRIPT, images: [], price: 0, status: 'available', available: true,
       owner_name: XSS, owner_username: 'x', owner_id: 2, tags: [SCRIPT], created_at: '2026-01-01T00:00:00.000Z',
-      set_id: null, set_name: null,
+      set_id: null, set_name: null, condition: null, conditionSince: null,
     };
     const { container } = render(<MiniDetailModal mini={mini} onClose={vi.fn()} />);
 

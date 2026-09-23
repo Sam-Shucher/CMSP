@@ -161,6 +161,8 @@ export interface MiniRow {
   active_loan_status: string | null;
   on_quest_since: Date | null;
   on_quest_until: string | null; // formatted YYYY-MM-DD by the query
+  condition_flag: string | null;
+  condition_since: Date | null;
   owner_name: string;
   owner_username: string;
   owner_id: number;
@@ -208,6 +210,7 @@ export const MINI_SELECT = `
   SELECT m.id, m.name, m.description, m.price,
          ${activeLoanStatusSql('m')} AS active_loan_status,
          m.on_quest_since, DATE_FORMAT(m.on_quest_until, '%Y-%m-%d') AS on_quest_until,
+         m.condition_flag, m.condition_since,
          u.display_name AS owner_name, u.username AS owner_username, u.id AS owner_id,
          m.created_at, m.set_id, st.name AS set_name,
          GROUP_CONCAT(t.name ORDER BY t.name SEPARATOR ',') AS tags,
@@ -224,8 +227,8 @@ export const MINI_SELECT = `
 // (price as a number, tags/images as string arrays instead of CSV blobs,
 // availability derived from the mini's loans).
 export function serializeMini(row: MiniRow) {
-  const { active_loan_status, on_quest_since, on_quest_until, ...rest } = row;
-  const status = miniStatusFrom(active_loan_status, on_quest_since ?? null);
+  const { active_loan_status, on_quest_since, on_quest_until, condition_flag, condition_since, ...rest } = row;
+  const status = miniStatusFrom(active_loan_status, on_quest_since ?? null, condition_flag ?? null);
   return {
     ...rest,
     price: Number(row.price),
@@ -235,6 +238,8 @@ export function serializeMini(row: MiniRow) {
     available: status === 'available',
     on_quest_since: on_quest_since ? new Date(on_quest_since).toISOString() : null,
     on_quest_until: on_quest_since ? on_quest_until ?? null : null,
+    condition: condition_flag ?? null,
+    conditionSince: condition_since ? new Date(condition_since).toISOString() : null,
   };
 }
 
@@ -377,7 +382,7 @@ router.get('/', browseLimit, route(async (req, res) => {
   // applied afterwards in JS — see matchesSearch below — so a misspelled
   // search term still finds a close match, which plain SQL LIKE can't do.
   const params: (string | number)[] = [req.collectionId!];
-  const where: string[] = ['m.collection_id = ?'];
+  const where: string[] = ['m.collection_id = ?', 'm.archived_at IS NULL', 'm.condition_flag IS NULL'];
 
   if (tag) {
     // Subquery: find minis that have a tag matching the filter
@@ -420,7 +425,7 @@ router.get('/tags', route(async (req, res) => {
     `SELECT DISTINCT t.name FROM tags t
      JOIN mini_tags mt ON mt.tag_id = t.id
      JOIN minis m ON m.id = mt.mini_id
-     WHERE m.collection_id = ?
+     WHERE m.collection_id = ? AND m.archived_at IS NULL AND m.condition_flag IS NULL
      ORDER BY t.name`,
     [req.collectionId!]
   );
@@ -435,7 +440,7 @@ router.get('/owners', route(async (req, res) => {
   const owners = await rows<OwnerNameRow>(
     `SELECT DISTINCT u.id, u.display_name AS name
      FROM minis m JOIN users u ON m.owner_id = u.id
-     WHERE m.collection_id = ?
+     WHERE m.collection_id = ? AND m.archived_at IS NULL AND m.condition_flag IS NULL
      ORDER BY u.display_name`,
     [req.collectionId!]
   );
@@ -464,7 +469,7 @@ router.get('/collection-members', route(async (req, res) => {
 router.get('/:id', route(async (req, res) => {
   const miniId = idFrom(req.params.id);
   const mini = miniId === null ? null : await firstRow<MiniRow>(
-    `${MINI_SELECT} WHERE m.id = ? AND m.collection_id = ? GROUP BY m.id`,
+    `${MINI_SELECT} WHERE m.id = ? AND m.collection_id = ? AND m.archived_at IS NULL GROUP BY m.id`,
     [miniId, req.collectionId!]
   );
 
@@ -494,7 +499,7 @@ interface HistoryRow {
 router.get('/:id/history', route(async (req, res) => {
   const miniId = idFrom(req.params.id);
   const owned = miniId === null ? null : await firstRow<OwnerRow>(
-    'SELECT owner_id FROM minis WHERE id = ? AND collection_id = ?',
+    'SELECT owner_id FROM minis WHERE id = ? AND collection_id = ? AND archived_at IS NULL',
     [miniId, req.collectionId!]
   );
 
@@ -531,6 +536,10 @@ router.get('/:id/history', route(async (req, res) => {
     handedOffAt: entry.handed_off_at.toISOString(),
     returnedAt: entry.returned_at ? entry.returned_at.toISOString() : null,
     ongoing: entry.status === 'adventuring',
+    // 'returned' | 'lost' | 'critically_wounded' (a cancelled loan never
+    // reaches handed_off_at, so it can't appear here) — visible only to the
+    // owner/admin this route is already gated to.
+    outcome: entry.status,
     daysOut: daysOut(entry.handed_off_at, entry.returned_at, now),
   })));
 }));
@@ -573,7 +582,7 @@ router.patch('/:id', discardUploadsIfRejected, upload.array('images', MAX_IMAGES
   const newFiles = (req.files as Express.Multer.File[] | undefined) ?? [];
 
   const owned = miniId === null ? null : await firstRow<OwnerRow>(
-    'SELECT owner_id FROM minis WHERE id = ? AND collection_id = ?',
+    'SELECT owner_id FROM minis WHERE id = ? AND collection_id = ? AND archived_at IS NULL',
     [miniId, req.collectionId!]
   );
 
@@ -643,6 +652,39 @@ router.patch('/:id', discardUploadsIfRejected, upload.array('images', MAX_IMAGES
   await sendMini(res, miniId);
 }));
 
+// POST /api/minis/:id/clear-condition
+// Puts a mini back into service after being marked lost or critically
+// wounded (routes/loans.ts) — owner or admin, same as edit/delete/transfer
+// (unlike take-out/bring-back, this isn't about who physically has it right
+// now, it's a correction). "Lost" has nothing to restore automatically, but
+// nothing stops an owner clearing one they later found, same action either way.
+router.post('/:id/clear-condition', route(async (req, res) => {
+  const miniId = idFrom(req.params.id);
+  const mini = miniId === null ? null : await firstRow<{ owner_id: number; condition_flag: string | null }>(
+    'SELECT owner_id, condition_flag FROM minis WHERE id = ? AND collection_id = ?',
+    [miniId, req.collectionId!]
+  );
+
+  if (!mini || miniId === null) {
+    res.status(404).json({ error: 'Mini not found' });
+    return;
+  }
+
+  const isOwner = mini.owner_id === req.user!.userId;
+  const isAdmin = req.user!.role === 'admin';
+  if (!isOwner && !isAdmin) {
+    res.status(403).json({ error: 'You can only clear the condition on your own minis' });
+    return;
+  }
+  if (!mini.condition_flag) {
+    res.status(409).json({ error: 'This mini has no condition to clear' });
+    return;
+  }
+
+  await change('UPDATE minis SET condition_flag = NULL, condition_since = NULL WHERE id = ?', [miniId]);
+  await sendMini(res, miniId);
+}));
+
 interface TransferLookupRow {
   owner_id: number;
   owner_name: string;
@@ -663,7 +705,7 @@ router.post('/:id/transfer', route(async (req, res) => {
     `SELECT m.owner_id, u.display_name AS owner_name, m.name,
             ${activeLoanStatusSql('m')} AS active_loan_status, m.on_quest_since
      FROM minis m JOIN users u ON u.id = m.owner_id
-     WHERE m.id = ? AND m.collection_id = ?`,
+     WHERE m.id = ? AND m.collection_id = ? AND m.archived_at IS NULL`,
     [miniId, req.collectionId!]
   );
 
@@ -767,7 +809,7 @@ async function findOwnMini(req: CollectionRequest, res: Response): Promise<Owner
 
 // The mini as the browser expects it, freshly read back after a change.
 async function sendMini(res: Response, miniId: number): Promise<void> {
-  const mini = await firstRow<MiniRow>(`${MINI_SELECT} WHERE m.id = ? GROUP BY m.id`, [miniId]);
+  const mini = await firstRow<MiniRow>(`${MINI_SELECT} WHERE m.id = ? AND m.archived_at IS NULL GROUP BY m.id`, [miniId]);
   res.json(mini === null ? null : serializeMini(mini));
 }
 
@@ -849,7 +891,7 @@ router.delete('/:id', route(async (req, res) => {
 
   const mini = miniId === null ? null : await firstRow<OwnerRow>(
     `SELECT m.owner_id, ${activeLoanStatusSql('m')} AS active_loan_status
-     FROM minis m WHERE m.id = ? AND m.collection_id = ?`,
+     FROM minis m WHERE m.id = ? AND m.collection_id = ? AND m.archived_at IS NULL`,
     [miniId, req.collectionId!]
   );
 

@@ -21,7 +21,10 @@ interface SetRow {
 }
 
 async function membersOf(setId: number): Promise<ReturnType<typeof serializeMini>[]> {
-  const memberRows = await rows<MiniRow>(`${MINI_SELECT} WHERE m.set_id = ? GROUP BY m.id ORDER BY m.name`, [setId]);
+  const memberRows = await rows<MiniRow>(
+    `${MINI_SELECT} WHERE m.set_id = ? AND m.archived_at IS NULL AND m.condition_flag IS NULL GROUP BY m.id ORDER BY m.name`,
+    [setId]
+  );
   return memberRows.map(serializeMini);
 }
 
@@ -235,7 +238,7 @@ router.post('/:id/cart', route(async (req, res) => {
 
   const members = await rows<MemberAvailabilityRow>(
     `SELECT m.id, m.name, m.owner_id, ${activeLoanStatusSql('m')} AS active_loan_status, m.on_quest_since
-     FROM minis m WHERE m.set_id = ? AND m.collection_id = ?`,
+     FROM minis m WHERE m.set_id = ? AND m.collection_id = ? AND m.archived_at IS NULL AND m.condition_flag IS NULL`,
     [set.id, req.collectionId!]
   );
 

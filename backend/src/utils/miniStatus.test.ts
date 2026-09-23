@@ -24,6 +24,15 @@ describe('miniStatusFrom', () => {
   it('is available again once the owner brings it back', () => {
     expect(miniStatusFrom(null, null)).toBe('available');
   });
+
+  it('a condition wins over an active loan or quest, since ending one is what sets it', () => {
+    expect(miniStatusFrom('adventuring', null, 'lost')).toBe('lost');
+    expect(miniStatusFrom(null, new Date('2026-10-01T18:00:00Z'), 'critically_wounded')).toBe('critically_wounded');
+  });
+
+  it('ignores a condition of null', () => {
+    expect(miniStatusFrom('adventuring', null, null)).toBe('adventuring');
+  });
 });
 
 describe('activeLoanStatusSql', () => {

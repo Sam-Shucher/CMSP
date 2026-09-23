@@ -9,7 +9,8 @@ import {
   parseExtension, HOLD_BLOCKS_EXTENSION, MAX_DURATION_DAYS,
 } from '../utils/loanRules';
 import * as events from '../services/loanEvents';
-import { promoteNextHold } from '../services/holds';
+import { promoteNextHold, announceMiniRemoved } from '../services/holds';
+import { optionalEnum } from '../utils/inputs';
 
 const router = Router();
 
@@ -312,8 +313,11 @@ router.post('/:id/extend', withLoan(async (req, res, row) => {
   await sendLoan(req, res, row.id);
 }));
 
-// POST /api/loans/:id/return
-// Owner confirms they have the mini back.
+const RETURN_OUTCOMES = ['returned', 'lost', 'critically_wounded'] as const;
+
+// POST /api/loans/:id/return  { outcome?: 'returned' | 'lost' | 'critically_wounded' }
+// Owner confirms the loan is over — normally with the mini back in hand, but
+// real lending also ends with it never coming back, or coming back broken.
 router.post('/:id/return', withLoan(async (req, res, row) => {
   if (row.owner_id !== req.user!.userId) {
     return fail(res, { ok: false, status: 403, error: 'Only the owner can mark a mini returned' });
@@ -322,14 +326,33 @@ router.post('/:id/return', withLoan(async (req, res, row) => {
     return fail(res, { ok: false, status: 409, error: "This mini isn't out adventuring" });
   }
 
+  const outcomeCheck = optionalEnum((req.body as { outcome?: unknown } | undefined)?.outcome, 'Outcome', RETURN_OUTCOMES);
+  if (!outcomeCheck.ok) return fail(res, { ok: false, status: 400, error: outcomeCheck.error });
+  const outcome = outcomeCheck.value ?? 'returned';
+
   const returned = await change(
-    `UPDATE loans SET status = 'returned', returned_at = ? WHERE id = ? AND status = 'adventuring'`,
-    [nowToTheSecond(), row.id]
+    `UPDATE loans SET status = ?, returned_at = ? WHERE id = ? AND status = 'adventuring'`,
+    [outcome, nowToTheSecond(), row.id]
   );
   if (returned === 0) return fail(res, { ok: false, status: 409, error: "This mini isn't out adventuring" });
-  await events.returned(row.id);
-  // It's back — the first person in line (if any) is checked out now.
-  await promoteNextHold(row.mini_id);
+
+  if (outcome === 'returned') {
+    await events.returned(row.id);
+    // It's back — the first person in line (if any) is checked out now.
+    await promoteNextHold(row.mini_id);
+  } else {
+    // Lost or critically wounded: it isn't coming back into service on its
+    // own, so there's nobody to hand it to — flag the mini instead, and tell
+    // the hold line and notify list it's gone rather than leave them waiting
+    // on something that will never turn up. The row itself survives (unlike
+    // deleting the mini): the owner decides what happens next.
+    await change('UPDATE minis SET condition_flag = ?, condition_since = ? WHERE id = ?', [outcome, nowToTheSecond(), row.mini_id]);
+    await announceMiniRemoved(row.mini_id);
+    await change('DELETE FROM holds WHERE mini_id = ?', [row.mini_id]);
+    await change('DELETE FROM hold_watchers WHERE mini_id = ?', [row.mini_id]);
+    await change('DELETE FROM cart_items WHERE mini_id = ?', [row.mini_id]);
+    await (outcome === 'lost' ? events.lost(row.id) : events.criticallyWounded(row.id));
+  }
   await sendLoan(req, res, row.id);
 }));
 

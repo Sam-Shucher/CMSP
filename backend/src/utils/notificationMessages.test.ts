@@ -23,6 +23,8 @@ describe('notification wording', () => {
     expect(messages.handedOff('Owner', 'Dire Wolf', new Date(2026, 9, 15, 12))).toBe('Owner confirmed the handoff — Dire Wolf is adventuring with you until Oct 15');
     expect(messages.received('Bob', 'Dire Wolf')).toBe('Bob confirmed they got Dire Wolf');
     expect(messages.returned('Owner', 'Dire Wolf')).toBe('Owner marked Dire Wolf as returned');
+    expect(messages.lost('Owner', 'Dire Wolf')).toBe('Owner marked Dire Wolf as lost');
+    expect(messages.criticallyWounded('Owner', 'Dire Wolf')).toBe('Owner marked Dire Wolf as critically wounded');
     expect(messages.overdue('Dire Wolf')).toBe('Dire Wolf is overdue');
   });
 

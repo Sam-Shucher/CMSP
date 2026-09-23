@@ -205,6 +205,57 @@ describe('POST /api/loans/:id/extend', () => {
   });
 });
 
+describe('POST /api/loans/:id/return — lost and critically wounded outcomes', () => {
+  const OUT = { status: 'adventuring', handed_off_at: new Date('2026-10-01T18:00:00.000Z'), due_at: new Date('2026-10-15T18:00:00.000Z') };
+
+  it.each(['lost', 'critically_wounded'])('marks the loan %s, flags the mini, and clears its hold line and cart entries', async (outcome) => {
+    execute
+      .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
+      .mockResolvedValueOnce([[loanRow(OUT)]])
+      .mockResolvedValueOnce([{ affectedRows: 1 }]) // UPDATE loans
+      .mockResolvedValueOnce([{ affectedRows: 1 }]) // UPDATE minis condition
+      .mockResolvedValueOnce([{ affectedRows: 0 }]) // DELETE holds
+      .mockResolvedValueOnce([{ affectedRows: 0 }]) // DELETE hold_watchers
+      .mockResolvedValueOnce([{ affectedRows: 0 }]) // DELETE cart_items
+      .mockResolvedValueOnce([[loanRow({ ...OUT, status: outcome })]]); // sendLoan's re-fetch
+
+    const res = await request(app).post('/api/loans/5/return').set('Cookie', authCookie(OWNER)).send({ outcome });
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe(outcome);
+    expect(execute).toHaveBeenCalledWith(expect.stringContaining('UPDATE loans SET status = ?'), [outcome, expect.any(Date), 5]);
+    expect(execute).toHaveBeenCalledWith(expect.stringContaining('UPDATE minis SET condition_flag = ?'), [outcome, expect.any(Date), 42]);
+    expect(execute).toHaveBeenCalledWith(expect.stringContaining('DELETE FROM holds'), [42]);
+    expect(execute).toHaveBeenCalledWith(expect.stringContaining('DELETE FROM hold_watchers'), [42]);
+    expect(execute).toHaveBeenCalledWith(expect.stringContaining('DELETE FROM cart_items'), [42]);
+  });
+
+  it('defaults to a normal return when no outcome is given', async () => {
+    execute
+      .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
+      .mockResolvedValueOnce([[loanRow(OUT)]])
+      .mockResolvedValueOnce([{ affectedRows: 1 }])
+      .mockResolvedValueOnce([[loanRow({ ...OUT, status: 'returned' })]]);
+
+    const res = await request(app).post('/api/loans/5/return').set('Cookie', authCookie(OWNER)).send({});
+
+    expect(res.status).toBe(200);
+    expect(execute).toHaveBeenCalledWith(expect.stringContaining('UPDATE loans SET status = ?'), ['returned', expect.any(Date), 5]);
+    expect(execute).not.toHaveBeenCalledWith(expect.stringContaining('UPDATE minis SET condition_flag'), expect.anything());
+  });
+
+  it('rejects an outcome that isn\'t returned, lost, or critically_wounded', async () => {
+    execute
+      .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
+      .mockResolvedValueOnce([[loanRow(OUT)]]);
+
+    const res = await request(app).post('/api/loans/5/return').set('Cookie', authCookie(OWNER)).send({ outcome: 'exploded' });
+
+    expect(res.status).toBe(400);
+    expect(execute).not.toHaveBeenCalledWith(expect.stringContaining('UPDATE loans'), expect.anything());
+  });
+});
+
 describe('loans — scoping', () => {
   it('only ever looks up loans in the active collection that the caller is part of', async () => {
     execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED).mockResolvedValueOnce([[]]);

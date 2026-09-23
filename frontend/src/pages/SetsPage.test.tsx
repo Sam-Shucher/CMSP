@@ -17,6 +17,7 @@ function mini(overrides: Partial<Mini> = {}): Mini {
     status: 'available', available: true,
     owner_name: 'Olivia Owner', owner_username: 'olivia', owner_id: OWNER.userId,
     tags: [], created_at: '2026-01-01T00:00:00.000Z', set_id: null, set_name: null,
+    condition: null, conditionSince: null,
     ...overrides,
   };
 }

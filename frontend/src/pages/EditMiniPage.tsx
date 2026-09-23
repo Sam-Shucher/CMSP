@@ -15,6 +15,8 @@ export default function EditMiniPage(): React.ReactElement {
   const [loadError, setLoadError] = useState<string>('');
   const [confirmingDelete, setConfirmingDelete] = useState<boolean>(false);
   const [deleteError, setDeleteError] = useState<string>('');
+  const [clearingCondition, setClearingCondition] = useState<boolean>(false);
+  const [clearError, setClearError] = useState<string>('');
 
   useEffect(() => {
     api<Mini>(`/api/minis/${id}`)
@@ -33,6 +35,22 @@ export default function EditMiniPage(): React.ReactElement {
 
     await api(`/api/minis/${id}`, { method: 'PATCH', body: fd });
     navigate('/'); // back to the dashboard after a successful edit
+  }
+
+  // Puts a lost/critically wounded mini back into service — see
+  // routes/minis.ts's POST /:id/clear-condition. "Lost" has nothing to
+  // restore automatically, but nothing stops clearing one found later; same
+  // action either way.
+  async function handleClearCondition(): Promise<void> {
+    setClearError('');
+    setClearingCondition(true);
+    try {
+      setMini(await api<Mini>(`/api/minis/${id}/clear-condition`, { method: 'POST' }));
+    } catch (err: unknown) {
+      setClearError(err instanceof Error ? err.message : 'Failed to clear condition');
+    } finally {
+      setClearingCondition(false);
+    }
   }
 
   async function handleDelete(): Promise<void> {
@@ -62,6 +80,25 @@ export default function EditMiniPage(): React.ReactElement {
   return (
     <div style={{ padding: '28px 32px', maxWidth: '640px', margin: '0 auto' }}>
       <h2 style={{ fontSize: '22px', color: '#c9a84c', marginBottom: '24px' }}>Edit Mini</h2>
+
+      {/* Hidden from browse while this is set (routes/minis.ts) — shown here
+          since the owner/admin still needs full access to see and clear it. */}
+      {mini.condition && (
+        <div style={{
+          background: 'rgba(192, 57, 43, 0.1)', border: '1px solid #c0392b', borderRadius: '8px',
+          padding: '14px 16px', marginBottom: '20px',
+        }}>
+          <p style={{ fontSize: '13px', color: '#e8e0d0', marginBottom: clearError ? '8px' : '10px' }}>
+            This mini is marked <strong>{mini.condition === 'lost' ? 'Lost' : 'Critically Wounded'}</strong>
+            {mini.conditionSince ? ` since ${new Date(mini.conditionSince).toLocaleDateString()}` : ''} — hidden from the collection until cleared.
+          </p>
+          {clearError && <div className="error-msg" style={{ fontSize: '13px', marginBottom: '10px' }}>{clearError}</div>}
+          <button type="button" className="btn-secondary" disabled={clearingCondition} onClick={() => void handleClearCondition()}>
+            {clearingCondition ? 'Clearing…' : 'Clear condition'}
+          </button>
+        </div>
+      )}
+
       <MiniForm
         initialValues={{
           name: mini.name,

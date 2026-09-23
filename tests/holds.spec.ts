@@ -118,6 +118,7 @@ test('nobody in line can negotiate while the mini is still out adventuring', asy
   // Returned → Wendy is checked out automatically.
   await olivia.goto('/loans');
   await olivia.getByRole('button', { name: 'Mark returned' }).click();
+  await expect(olivia.getByRole('region', { name: 'History' })).toContainText('Returned');
   await wendy.reload();
   await expect(wendy.getByRole('region', { name: 'With Olivia Owner' })).toContainText('Dire Wolf');
   await expect(wendy.getByRole('button', { name: 'Propose terms' })).toBeVisible();

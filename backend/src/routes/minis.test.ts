@@ -225,6 +225,7 @@ describe('GET /api/minis/:id/history', () => {
       handedOffAt: '2026-09-01T18:00:00.000Z',
       returnedAt: '2026-09-15T18:00:00.000Z',
       ongoing: false,
+      outcome: 'returned',
       daysOut: 14,
     }]);
     const historyQuery = execute.mock.calls[2];
@@ -316,6 +317,29 @@ describe('mini status in responses', () => {
 
     expect(res.body).toMatchObject({ status, available, price: 12.5, tags: ['boss', 'painted'] });
     expect(res.body).not.toHaveProperty('active_loan_status');
+  });
+
+  it.each(['lost', 'critically_wounded'] as const)('a %s condition overrides an otherwise-available loan status', async (condition) => {
+    execute
+      .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
+      .mockResolvedValueOnce([[miniRow({
+        active_loan_status: null, condition_flag: condition, condition_since: new Date('2026-09-01T00:00:00.000Z'),
+      })]]);
+
+    const res = await request(app).get('/api/minis/42').set('Cookie', authCookie(OWNER));
+
+    expect(res.body).toMatchObject({
+      status: condition, available: false, condition, conditionSince: '2026-09-01T00:00:00.000Z',
+    });
+    expect(res.body).not.toHaveProperty('condition_flag');
+  });
+
+  it('has no condition when the mini has never been flagged', async () => {
+    execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED).mockResolvedValueOnce([[miniRow()]]);
+
+    const res = await request(app).get('/api/minis/42').set('Cookie', authCookie(OWNER));
+
+    expect(res.body).toMatchObject({ condition: null, conditionSince: null });
   });
 });
 
@@ -563,6 +587,16 @@ describe('GET /api/minis — owner filter', () => {
   });
 });
 
+describe('GET /api/minis — hides lost/critically-wounded minis', () => {
+  it('always excludes condition-flagged minis from the default query', async () => {
+    execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED).mockResolvedValueOnce([[]]);
+
+    await request(app).get('/api/minis').set('Cookie', authCookie(OWNER));
+
+    expect(execute).toHaveBeenCalledWith(expect.stringContaining('m.condition_flag IS NULL'), [COLLECTION_A]);
+  });
+});
+
 describe('GET /api/minis — available only filter', () => {
   it('adds a HAVING clause on availability when requested', async () => {
     execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED).mockResolvedValueOnce([[]]);
@@ -710,6 +744,14 @@ describe('GET /api/minis/tags', () => {
     expect(execute).toHaveBeenCalledWith(expect.stringContaining('m.collection_id = ?'), [COLLECTION_A]);
   });
 
+  it('excludes tags only used by a lost/critically-wounded mini', async () => {
+    execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED).mockResolvedValueOnce([[]]);
+
+    await request(app).get('/api/minis/tags').set('Cookie', authCookie(OWNER));
+
+    expect(execute).toHaveBeenCalledWith(expect.stringContaining('m.condition_flag IS NULL'), [COLLECTION_A]);
+  });
+
   it('is not swallowed by the /:id route', async () => {
     execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED).mockResolvedValueOnce([[]]);
 
@@ -730,6 +772,14 @@ describe('GET /api/minis/owners', () => {
     expect(res.status).toBe(200);
     expect(res.body).toEqual([{ id: 1, name: 'Owner Name' }, { id: 2, name: 'Someone Else' }]);
     expect(execute).toHaveBeenCalledWith(expect.stringContaining('m.collection_id = ?'), [COLLECTION_A]);
+  });
+
+  it('excludes an owner whose only mini is lost/critically-wounded', async () => {
+    execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED).mockResolvedValueOnce([[]]);
+
+    await request(app).get('/api/minis/owners').set('Cookie', authCookie(OWNER));
+
+    expect(execute).toHaveBeenCalledWith(expect.stringContaining('m.condition_flag IS NULL'), [COLLECTION_A]);
   });
 
   it('is not swallowed by the /:id route', async () => {
@@ -1418,6 +1468,66 @@ describe('DELETE /api/minis/:id', () => {
 
   it('returns 401 with no auth cookie', async () => {
     const res = await request(app).delete('/api/minis/42');
+    expect(res.status).toBe(401);
+  });
+});
+
+describe('POST /api/minis/:id/clear-condition', () => {
+  it('lets the owner clear a lost/critically-wounded mini back into service', async () => {
+    execute
+      .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
+      .mockResolvedValueOnce([[{ owner_id: 1, condition_flag: 'critically_wounded' }]])
+      .mockResolvedValueOnce([{ affectedRows: 1 }])
+      .mockResolvedValueOnce([[miniRow({ condition_flag: null, condition_since: null })]]);
+
+    const res = await request(app).post('/api/minis/42/clear-condition').set('Cookie', authCookie(OWNER));
+
+    expect(res.status).toBe(200);
+    expect(execute).toHaveBeenCalledWith(
+      expect.stringContaining('UPDATE minis SET condition_flag = NULL, condition_since = NULL'),
+      [42]
+    );
+  });
+
+  it('lets an admin clear someone else\'s mini in the same collection', async () => {
+    execute
+      .mockResolvedValueOnce(ADMIN_MEMBERSHIP)
+      .mockResolvedValueOnce([[{ owner_id: 1, condition_flag: 'lost' }]])
+      .mockResolvedValueOnce([{ affectedRows: 1 }])
+      .mockResolvedValueOnce([[miniRow({ condition_flag: null, condition_since: null })]]);
+
+    const res = await request(app).post('/api/minis/42/clear-condition').set('Cookie', authCookie(ADMIN));
+
+    expect(res.status).toBe(200);
+  });
+
+  it('rejects a non-owner, non-admin with 403', async () => {
+    execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED).mockResolvedValueOnce([[{ owner_id: 1, condition_flag: 'lost' }]]);
+
+    const res = await request(app).post('/api/minis/42/clear-condition').set('Cookie', authCookie(OTHER));
+
+    expect(res.status).toBe(403);
+    expect(execute).not.toHaveBeenCalledWith(expect.stringContaining('UPDATE minis'), expect.anything());
+  });
+
+  it('returns 404 when the mini does not exist', async () => {
+    execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED).mockResolvedValueOnce([[]]);
+
+    const res = await request(app).post('/api/minis/999/clear-condition').set('Cookie', authCookie(OWNER));
+
+    expect(res.status).toBe(404);
+  });
+
+  it('returns 409 when the mini has no condition to clear', async () => {
+    execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED).mockResolvedValueOnce([[{ owner_id: 1, condition_flag: null }]]);
+
+    const res = await request(app).post('/api/minis/42/clear-condition').set('Cookie', authCookie(OWNER));
+
+    expect(res.status).toBe(409);
+  });
+
+  it('returns 401 with no auth cookie', async () => {
+    const res = await request(app).post('/api/minis/42/clear-condition');
     expect(res.status).toBe(401);
   });
 });

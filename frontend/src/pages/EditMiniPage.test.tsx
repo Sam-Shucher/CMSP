@@ -227,3 +227,60 @@ describe('EditMiniPage — deleting the mini', () => {
     expect(fetch).toHaveBeenCalledTimes(1); // only the initial GET
   });
 });
+
+describe('EditMiniPage — condition (lost/critically wounded)', () => {
+  beforeEach(() => {
+    vi.stubGlobal('fetch', vi.fn());
+  });
+
+  it('shows nothing when the mini has no condition', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce({ ok: true, json: async () => MINI } as Response);
+
+    renderEditPage();
+    await screen.findByLabelText(/name/i);
+
+    expect(screen.queryByText(/marked/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /clear condition/i })).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ['lost', 'Lost'],
+    ['critically_wounded', 'Critically Wounded'],
+  ])('shows a banner and a Clear condition button for a %s mini', async (condition, label) => {
+    vi.mocked(fetch).mockResolvedValueOnce({
+      ok: true, json: async () => ({ ...MINI, condition, conditionSince: '2026-09-01T00:00:00.000Z' }),
+    } as Response);
+
+    renderEditPage();
+    await screen.findByLabelText(/name/i);
+
+    expect(screen.getByText(label)).toBeInTheDocument();
+    expect(screen.getByText(/hidden from the collection until cleared/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /clear condition/i })).toBeInTheDocument();
+  });
+
+  it('clears the condition and updates the page from the server\'s response', async () => {
+    vi.mocked(fetch)
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ ...MINI, condition: 'lost', conditionSince: '2026-09-01T00:00:00.000Z' }) } as Response)
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ ...MINI, condition: null, conditionSince: null }) } as Response);
+
+    renderEditPage();
+    await screen.findByLabelText(/name/i);
+    await userEvent.click(screen.getByRole('button', { name: /clear condition/i }));
+
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/minis/42/clear-condition', expect.objectContaining({ method: 'POST' })));
+    expect(screen.queryByText(/marked/i)).not.toBeInTheDocument();
+  });
+
+  it('shows the server\'s refusal if clearing fails', async () => {
+    vi.mocked(fetch)
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ ...MINI, condition: 'critically_wounded', conditionSince: '2026-09-01T00:00:00.000Z' }) } as Response)
+      .mockResolvedValueOnce({ ok: false, json: async () => ({ error: 'This mini has no condition to clear' }) } as Response);
+
+    renderEditPage();
+    await screen.findByLabelText(/name/i);
+    await userEvent.click(screen.getByRole('button', { name: /clear condition/i }));
+
+    expect(await screen.findByText(/no condition to clear/i)).toBeInTheDocument();
+  });
+});

@@ -59,6 +59,17 @@ describe('cart routes — input', () => {
     expect(execute).toHaveBeenCalledTimes(1); // only the membership check
   });
 
+  it.each(['lost', 'critically_wounded'])('refuses to add a %s mini to the cart', async (condition) => {
+    execute
+      .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
+      .mockResolvedValueOnce([[{ owner_id: 1, active_loan_status: null, on_quest_since: null, condition_flag: condition }]]);
+
+    const res = await request(app).post('/api/cart').set('Cookie', authCookie(BORROWER)).send({ miniId: 42 });
+
+    expect(res.status).toBe(409);
+    expect(execute).not.toHaveBeenCalledWith(expect.stringContaining('INSERT'), expect.anything());
+  });
+
   it('only removes from the logged-in user\'s own cart', async () => {
     execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED).mockResolvedValueOnce([{}]);
 

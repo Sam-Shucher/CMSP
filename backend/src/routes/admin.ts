@@ -2,13 +2,14 @@ import { Router } from 'express';
 import { rows, firstRow, change } from '../db/query';
 import { revokeAllSessions } from '../db/sessions';
 import { hashPassword, temporaryPassword as newTemporaryPassword } from '../utils/passwords';
-import { TEMP_PASSWORD_DAYS } from '../config';
+import { TEMP_PASSWORD_DAYS, MINI_ARCHIVE_GRACE_DAYS } from '../config';
 import { requireAuth } from '../middleware/requireAuth';
 import { requireAdmin } from '../middleware/requireAdmin';
 import { requireCollectionMembership } from '../middleware/requireCollectionMembership';
 import { route, idFrom } from '../utils/route';
-import { emailAddress } from '../utils/inputs';
+import { emailAddress, positiveId } from '../utils/inputs';
 import { removeMember } from '../services/membership';
+import { logAdminAction, listAuditLog, displayNameOf } from '../db/auditLog';
 
 const router = Router();
 
@@ -223,7 +224,7 @@ router.delete('/users/:id', route(async (req, res) => {
     return;
   }
 
-  const result = await removeMember(userId, req.collectionId!);
+  const result = await removeMember(userId, req.collectionId!, req.user!.userId);
   if (!result.ok) {
     res.status(result.status).json({ error: result.error });
     return;
@@ -235,8 +236,136 @@ router.delete('/users/:id', route(async (req, res) => {
   res.json({
     message: result.minisRemoved === 0
       ? 'Removed from this group'
-      : `Removed from this group — their ${result.minisRemoved} ${result.minisRemoved === 1 ? 'mini' : 'minis'} here ${result.minisRemoved === 1 ? 'was' : 'were'} removed too`,
+      : `Removed from this group — their ${result.minisRemoved} ${result.minisRemoved === 1 ? 'mini' : 'minis'} here ${result.minisRemoved === 1 ? 'was' : 'were'} archived, and will be permanently deleted in ${MINI_ARCHIVE_GRACE_DAYS} days unless an admin restores ${result.minisRemoved === 1 ? 'it' : 'them'}`,
   });
+}));
+
+// GET /api/admin/audit-log
+// A trace of admin actions with real consequences in this collection —
+// member removals and mini restores — newest first. See db/auditLog.ts for
+// why this never needs to join back to users: names are snapshotted at the
+// time of the action.
+router.get('/audit-log', route(async (req, res) => {
+  res.json(await listAuditLog(req.collectionId!));
+}));
+
+interface ArchivedMiniRow {
+  id: number;
+  name: string;
+  price: string;
+  owner_id: number;
+  owner_name: string;
+  archived_at: Date;
+}
+
+// GET /api/admin/archived-minis
+// Minis whose owner was removed from this collection but kept another one —
+// hidden everywhere else (see minis.ts/sets.ts's archived_at IS NULL guards),
+// restorable here until maintenance/housekeeping.ts purges them for good.
+router.get('/archived-minis', route(async (req, res) => {
+  const archived = await rows<ArchivedMiniRow>(
+    `SELECT m.id, m.name, m.price, u.id AS owner_id, u.display_name AS owner_name, m.archived_at
+     FROM minis m JOIN users u ON u.id = m.owner_id
+     WHERE m.collection_id = ? AND m.archived_at IS NOT NULL
+     ORDER BY m.archived_at`,
+    [req.collectionId!]
+  );
+  const now = Date.now();
+  res.json(archived.map(mini => {
+    const daysElapsed = Math.floor((now - new Date(mini.archived_at).getTime()) / (24 * 60 * 60 * 1000));
+    return {
+      id: mini.id,
+      name: mini.name,
+      price: Number(mini.price),
+      formerOwnerId: mini.owner_id,
+      formerOwnerName: mini.owner_name,
+      archivedAt: new Date(mini.archived_at).toISOString(),
+      daysLeft: Math.max(0, MINI_ARCHIVE_GRACE_DAYS - daysElapsed),
+    };
+  }));
+}));
+
+// POST /api/admin/archived-minis/:id/restore  { newOwnerId }
+// Gives an archived mini back before its grace period runs out. If the new
+// owner is the mini's ORIGINAL owner (re-invited during the window), it stays
+// in whatever set it was part of; anyone else gets it without one — same
+// reasoning as POST /api/minis/:id/transfer (a set is one owner's own minis).
+router.post('/archived-minis/:id/restore', route(async (req, res) => {
+  const miniId = idFrom(req.params.id);
+  const mini = miniId === null ? null : await firstRow<{ owner_id: number; set_id: number | null; name: string }>(
+    'SELECT owner_id, set_id, name FROM minis WHERE id = ? AND collection_id = ? AND archived_at IS NOT NULL',
+    [miniId, req.collectionId!]
+  );
+  if (!mini || miniId === null) {
+    res.status(404).json({ error: 'Archived mini not found' });
+    return;
+  }
+
+  const newOwnerCheck = positiveId((req.body as { newOwnerId?: unknown } | undefined)?.newOwnerId);
+  if (!newOwnerCheck.ok) {
+    res.status(400).json({ error: newOwnerCheck.error });
+    return;
+  }
+  const newOwnerId = newOwnerCheck.value;
+
+  const newOwner = await firstRow<{ display_name: string }>(
+    `SELECT u.display_name FROM users u JOIN collection_memberships cm ON cm.user_id = u.id
+     WHERE u.id = ? AND cm.collection_id = ?`,
+    [newOwnerId, req.collectionId!]
+  );
+  if (!newOwner) {
+    res.status(404).json({ error: 'That person isn\'t a member of this collection' });
+    return;
+  }
+
+  const keepSet = newOwnerId === mini.owner_id;
+  const restored = await change(
+    'UPDATE minis SET owner_id = ?, archived_at = NULL, set_id = ? WHERE id = ? AND collection_id = ? AND archived_at IS NOT NULL',
+    [newOwnerId, keepSet ? mini.set_id : null, miniId, req.collectionId!]
+  );
+  if (restored === 0) {
+    res.status(404).json({ error: 'Archived mini not found' });
+    return;
+  }
+
+  await logAdminAction({
+    collectionId: req.collectionId!, actorId: req.user!.userId, actorName: await displayNameOf(req.user!.userId, 'An admin'),
+    action: 'mini_restored', targetUserId: newOwnerId, targetName: newOwner.display_name,
+    details: `Restored ${mini.name} to ${newOwner.display_name}`,
+  });
+
+  res.json({ message: `Restored to ${newOwner.display_name}` });
+}));
+
+interface LoanIncidentRow {
+  borrower_id: number;
+  borrower_name: string;
+  lost_count: number;
+  wounded_count: number;
+}
+
+// GET /api/admin/loan-incidents
+// A private, per-borrower tally of lost/critically-wounded loans in this
+// collection — never shown to anyone but admins, and never a ranking (see
+// BACKLOG.md's reasoning against public reliability scores). The point is
+// only to make a repeated pattern visible to the people running the group.
+router.get('/loan-incidents', route(async (req, res) => {
+  const incidents = await rows<LoanIncidentRow>(
+    `SELECT b.id AS borrower_id, b.display_name AS borrower_name,
+            SUM(l.status = 'lost') AS lost_count,
+            SUM(l.status = 'critically_wounded') AS wounded_count
+     FROM loans l JOIN users b ON b.id = l.borrower_id
+     WHERE l.collection_id = ? AND l.status IN ('lost', 'critically_wounded')
+     GROUP BY b.id, b.display_name
+     ORDER BY (SUM(l.status = 'lost') + SUM(l.status = 'critically_wounded')) DESC`,
+    [req.collectionId!]
+  );
+  res.json(incidents.map(row => ({
+    borrowerId: row.borrower_id,
+    borrowerName: row.borrower_name,
+    lostCount: Number(row.lost_count),
+    woundedCount: Number(row.wounded_count),
+  })));
 }));
 
 export default router;

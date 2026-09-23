@@ -41,10 +41,21 @@ first. Status is marked where work has started.
 6. **Lost / damaged as a loan outcome** — statuses are negotiating, adventuring,
    returned, cancelled. Real life also includes "it broke" and "it never came
    back", and there's nowhere to record either.
-7. **Admin audit log** — removing a member deletes their minis. That much power
-   should leave a trace of who did it and when.
-8. **Grace period on member removal** — archive, then purge later, instead of an
-   immediate cascade. Same reasoning as the audit log.
+7. **Admin audit log** — *done*. A collection-scoped `audit_log` table records
+   who did what and when — currently just member removals and mini restores —
+   shown on the Admin page. Actor/target names are snapshotted at the time of
+   the action (`SET NULL` FKs, not `CASCADE`), so an entry survives the
+   account it's about being deleted, which happens routinely here.
+8. **Grace period on member removal** — *done*. A removed member's minis are
+   archived (hidden everywhere, restorable) instead of deleted outright, as
+   long as they still belong to another collection — an admin can give one
+   back to a current member from the new "Archived Minis" section before
+   `maintenance/housekeeping.ts` purges it 30 days later
+   (`MINI_ARCHIVE_GRACE_DAYS`). If the group removed from was their *last*
+   one, the account and its minis are still deleted immediately, same as
+   before — deferring that too would leave a zero-collection account
+   dangling for no real benefit here, so the grace period only covers the
+   case where they survive the removal.
 9. **Export my collection** — a member takes their own data out; doubles as a
    second backup path.
 10. **QR labels** — print a sheet, one per case, scan to open that mini. Very

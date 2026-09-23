@@ -22,6 +22,8 @@ if (process.env.UPLOADS_DIR) fs.mkdirSync(process.env.UPLOADS_DIR, { recursive: 
 //   db/notifications   → notifications.integration.test.ts
 //   services/holds     → holds.integration.test.ts
 //   services/loanEvents→ notifications.integration.test.ts
+//   services/membership (purgeArchivedMinis only — admin.test.ts mocks
+//     removeMember itself, overriding this for that file) → membership.integration.test.ts
 vi.mock('../db/sessions', () => ({
   createSession: vi.fn(async () => 'test-session-id'),
   touchSession: vi.fn(async () => true),
@@ -54,6 +56,11 @@ vi.mock('../services/holds', () => ({
   promoteStrandedHolds: vi.fn(async () => 0),
 }));
 
+vi.mock('../services/membership', () => ({
+  removeMember: vi.fn(async () => ({ ok: true, accountDeleted: false, minisRemoved: 0 })),
+  purgeArchivedMinis: vi.fn(async () => 0),
+}));
+
 vi.mock('../services/loanEvents', () => ({
   requestCreated: vi.fn(async () => {}),
   termsProposed: vi.fn(async () => {}),
@@ -65,5 +72,7 @@ vi.mock('../services/loanEvents', () => ({
   received: vi.fn(async () => {}),
   extended: vi.fn(async () => {}),
   returned: vi.fn(async () => {}),
+  lost: vi.fn(async () => {}),
+  criticallyWounded: vi.fn(async () => {}),
   notifyOverdueLoans: vi.fn(async () => 0),
 }));

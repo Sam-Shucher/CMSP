@@ -217,6 +217,11 @@ describe('stageOf', () => {
     expect(stageOf(loan({ status: 'returned' }), now)).toBe('returned');
     expect(stageOf(loan({ status: 'cancelled' }), now)).toBe('cancelled');
   });
+
+  it('passes lost and critically_wounded straight through too', () => {
+    expect(stageOf(loan({ status: 'lost' }), now)).toBe('lost');
+    expect(stageOf(loan({ status: 'critically_wounded' }), now)).toBe('critically_wounded');
+  });
 });
 
 describe('termsToCopy — "apply terms to all requests with this person"', () => {

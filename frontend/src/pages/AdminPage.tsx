@@ -26,6 +26,38 @@ type UserRow = {
   created_at: string;
 };
 
+// Shape of a row from GET /api/admin/archived-minis
+type ArchivedMini = {
+  id: number;
+  name: string;
+  formerOwnerId: number;
+  formerOwnerName: string;
+  daysLeft: number;
+};
+
+// Shape of a row from GET /api/admin/audit-log
+type AuditLogEntry = {
+  id: number;
+  action: string;
+  actorName: string;
+  targetName: string | null;
+  details: string;
+  createdAt: string;
+};
+
+// A restore awaiting confirmation.
+type PendingRestore = { miniId: number; miniName: string; newOwnerId: number; newOwnerName: string };
+
+// Shape of a row from GET /api/admin/loan-incidents — a private tally, never
+// shown to anyone but admins, and never a ranking (see BACKLOG.md's
+// reasoning against public reliability scores).
+type LoanIncident = {
+  borrowerId: number;
+  borrowerName: string;
+  lostCount: number;
+  woundedCount: number;
+};
+
 // Admin panel — lets admins manage the invite list and user roles.
 // Access is gated by the AdminRoute wrapper in App.tsx.
 // A pending destructive action awaiting type-to-confirm before it's carried out.
@@ -46,6 +78,9 @@ export default function AdminPage(): React.ReactElement {
   const activeCollectionName = collections.find(c => c.id === currentUser?.collectionId)?.name ?? '';
   const [emails, setEmails]     = useState<ApprovedEmail[]>([]);
   const [users, setUsers]       = useState<UserRow[]>([]);
+  const [archivedMinis, setArchivedMinis] = useState<ArchivedMini[]>([]);
+  const [auditLog, setAuditLog] = useState<AuditLogEntry[]>([]);
+  const [loanIncidents, setLoanIncidents] = useState<LoanIncident[]>([]);
   const invite = useValidatedForm({ email: '' }, {
     email: value => (value.trim() ? validateEmail(value).error ?? null : 'Enter the email address to invite.'),
   });
@@ -55,18 +90,27 @@ export default function AdminPage(): React.ReactElement {
   const [pendingDelete, setPendingDelete] = useState<PendingDelete | null>(null);
   const [pendingReset, setPendingReset] = useState<{ id: number; username: string } | null>(null);
   const [issuedPassword, setIssuedPassword] = useState<IssuedPassword | null>(null);
+  const [restoreTargets, setRestoreTargets] = useState<Record<number, string>>({}); // miniId -> selected newOwnerId
+  const [pendingRestore, setPendingRestore] = useState<PendingRestore | null>(null);
 
-  // Fetches both the invite list and the user list in parallel.
-  // Wrapped in useCallback so it can be added to the useEffect dependency array without
-  // causing an infinite loop (the function reference stays stable across renders).
+  // Fetches the invite list, the user list, archived minis, and the audit log
+  // in parallel. Wrapped in useCallback so it can be added to the useEffect
+  // dependency array without causing an infinite loop (the function reference
+  // stays stable across renders).
   const fetchData = useCallback(async (): Promise<void> => {
     try {
-      const [e, u] = await Promise.all([
+      const [e, u, a, log, incidents] = await Promise.all([
         api<ApprovedEmail[]>('/api/admin/approved-emails'),
         api<UserRow[]>('/api/admin/users'),
+        api<ArchivedMini[]>('/api/admin/archived-minis'),
+        api<AuditLogEntry[]>('/api/admin/audit-log'),
+        api<LoanIncident[]>('/api/admin/loan-incidents'),
       ]);
       setEmails(e);
       setUsers(u);
+      setArchivedMinis(a);
+      setAuditLog(log);
+      setLoanIncidents(incidents);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Failed to load admin data');
     }
@@ -142,6 +186,24 @@ export default function AdminPage(): React.ReactElement {
       setError(err instanceof Error ? err.message : 'Failed to remove');
     }
     setPendingDelete(null);
+    void fetchData();
+  }
+
+  // Gives an archived mini back to a current member, once the modal confirms.
+  async function confirmRestore(): Promise<void> {
+    if (!pendingRestore) return;
+    setError('');
+    setSuccess('');
+    try {
+      const result = await api<{ message?: string }>(
+        `/api/admin/archived-minis/${pendingRestore.miniId}/restore`,
+        { method: 'POST', json: { newOwnerId: pendingRestore.newOwnerId } }
+      );
+      if (result.message) setSuccess(result.message);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Failed to restore');
+    }
+    setPendingRestore(null);
     void fetchData();
   }
 
@@ -291,6 +353,114 @@ export default function AdminPage(): React.ReactElement {
         </table>
       </section>
 
+      {/* ------------------------------------------------------------------ */}
+      {/* Archived minis — left behind by a removed member who kept another  */}
+      {/* group; restorable until maintenance/housekeeping.ts purges them.   */}
+      {/* ------------------------------------------------------------------ */}
+      {archivedMinis.length > 0 && (
+        <section style={sectionStyle}>
+          <h3 style={sectionHeadStyle}>Archived Minis</h3>
+          <p style={{ fontSize: '13px', color: '#8a7d6a', marginBottom: '16px' }}>
+            Left behind when their owner was removed from {activeCollectionName}. Give one to a current member before it's deleted for good.
+          </p>
+          <table style={tableStyle}>
+            <thead>
+              <tr>
+                <th style={thStyle}>Mini</th>
+                <th style={thStyle}>Formerly owned by</th>
+                <th style={thStyle}>Deleted in</th>
+                <th style={thStyle}></th>
+              </tr>
+            </thead>
+            <tbody>
+              {archivedMinis.map((mini: ArchivedMini) => (
+                <tr key={mini.id} style={{ borderBottom: '1px solid #3d3629' }}>
+                  <td style={tdStyle}>{mini.name}</td>
+                  <td style={tdStyle}>{mini.formerOwnerName}</td>
+                  <td style={tdStyle}>{mini.daysLeft} day{mini.daysLeft === 1 ? '' : 's'}</td>
+                  <td style={tdStyle}>
+                    <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                      <select
+                        aria-label={`Give ${mini.name} to`}
+                        value={restoreTargets[mini.id] ?? ''}
+                        onChange={(e: React.ChangeEvent<HTMLSelectElement>) =>
+                          setRestoreTargets(prev => ({ ...prev, [mini.id]: e.target.value }))
+                        }
+                      >
+                        <option value="">Choose a member…</option>
+                        {users.map((u: UserRow) => (
+                          <option key={u.id} value={u.id}>{u.display_name}</option>
+                        ))}
+                      </select>
+                      <button
+                        className="btn-secondary"
+                        style={{ padding: '4px 10px', fontSize: '12px' }}
+                        disabled={!restoreTargets[mini.id]}
+                        onClick={() => {
+                          const newOwnerId = Number(restoreTargets[mini.id]);
+                          const newOwnerName = users.find(u => u.id === newOwnerId)?.display_name ?? '';
+                          setPendingRestore({ miniId: mini.id, miniName: mini.name, newOwnerId, newOwnerName });
+                        }}
+                      >
+                        Restore
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </section>
+      )}
+
+      {/* ------------------------------------------------------------------ */}
+      {/* Audit log — who removed whom, and what happened to their minis     */}
+      {/* ------------------------------------------------------------------ */}
+      {auditLog.length > 0 && (
+        <section style={sectionStyle}>
+          <h3 style={sectionHeadStyle}>Audit Log</h3>
+          <ul style={{ listStyle: 'none', padding: 0, margin: 0, display: 'flex', flexDirection: 'column', gap: '10px' }}>
+            {auditLog.map((entry: AuditLogEntry) => (
+              <li key={entry.id} style={{ fontSize: '13px', color: '#e8e0d0', paddingBottom: '10px', borderBottom: '1px solid #3d3629' }}>
+                <div>{entry.details}</div>
+                <div style={{ fontSize: '11px', color: '#8a7d6a', marginTop: '2px' }}>{new Date(entry.createdAt).toLocaleString()}</div>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
+      {/* ------------------------------------------------------------------ */}
+      {/* Lost & damaged — a private tally, so a pattern is visible to admins */}
+      {/* without being a public reliability score (see BACKLOG.md).         */}
+      {/* ------------------------------------------------------------------ */}
+      {loanIncidents.length > 0 && (
+        <section style={sectionStyle}>
+          <h3 style={sectionHeadStyle}>Lost &amp; Damaged</h3>
+          <p style={{ fontSize: '13px', color: '#8a7d6a', marginBottom: '16px' }}>
+            Visible only to admins — not a ranking, just a way to notice a pattern.
+          </p>
+          <table style={tableStyle}>
+            <thead>
+              <tr>
+                <th style={thStyle}>Borrower</th>
+                <th style={thStyle}>Lost</th>
+                <th style={thStyle}>Critically Wounded</th>
+              </tr>
+            </thead>
+            <tbody>
+              {loanIncidents.map((incident: LoanIncident) => (
+                <tr key={incident.borrowerId} style={{ borderBottom: '1px solid #3d3629' }}>
+                  <td style={tdStyle}>{incident.borrowerName}</td>
+                  <td style={tdStyle}>{incident.lostCount}</td>
+                  <td style={tdStyle}>{incident.woundedCount}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </section>
+      )}
+
       {pendingReset && (
         <ConfirmDeleteModal
           title="Reset password"
@@ -334,12 +504,23 @@ export default function AdminPage(): React.ReactElement {
           description={
             pendingDelete.kind === 'email'
               ? 'This removes the email from the invite list. It will not affect an account that already registered with it.'
-              : `This removes them from ${activeCollectionName} (their minis here go with it). If this is their only group, their whole account is deleted too. This cannot be undone.`
+              : `This removes them from ${activeCollectionName}. If they belong to another group, their minis here are archived — restorable from below for 30 days before they're deleted for good. If this is their only group, their whole account and minis are deleted immediately instead. This cannot be undone.`
           }
           confirmPhrase={pendingDelete.label}
           confirmButtonLabel={pendingDelete.kind === 'email' ? 'Delete' : 'Confirm Delete'}
           onConfirm={() => void confirmPendingDelete()}
           onCancel={() => setPendingDelete(null)}
+        />
+      )}
+
+      {pendingRestore && (
+        <ConfirmDeleteModal
+          title="Restore mini"
+          description={`This gives ${pendingRestore.miniName} to ${pendingRestore.newOwnerName}.`}
+          confirmPhrase={pendingRestore.newOwnerName}
+          confirmButtonLabel="Confirm Restore"
+          onConfirm={() => void confirmRestore()}
+          onCancel={() => setPendingRestore(null)}
         />
       )}
     </div>

@@ -169,3 +169,42 @@ describe('photos removed through the app', () => {
     expect(onDisk()).toEqual([]);
   });
 });
+
+describe('purging archived minis past their grace period', () => {
+  async function archiveMini(miniId: number, daysAgo: number): Promise<void> {
+    await pool.execute('UPDATE minis SET archived_at = NOW() - INTERVAL ? DAY WHERE id = ?', [daysAgo, miniId]);
+  }
+
+  it('deletes a mini (and its photo) once its grace period has passed', async () => {
+    const wolf = await createMini(owner, 'Dire Wolf');
+    writePhoto('1700000000-wolf.png');
+    await attach(wolf, '1700000000-wolf.png');
+    await archiveMini(wolf, 31); // MINI_ARCHIVE_GRACE_DAYS is 30
+
+    const result = await runHousekeeping({ log: quiet });
+
+    expect(result.archivedMinisPurged).toBe(1);
+    const [rows] = await pool.query<RowDataPacket[]>('SELECT id FROM minis WHERE id = ?', [wolf]);
+    expect(rows).toHaveLength(0);
+    expect(onDisk()).toEqual([]);
+  });
+
+  it('leaves an archived mini alone while it\'s still within its grace period', async () => {
+    const bear = await createMini(other, 'Owlbear');
+    await archiveMini(bear, 5);
+
+    const result = await runHousekeeping({ log: quiet });
+
+    expect(result.archivedMinisPurged).toBe(0);
+    const [rows] = await pool.query<RowDataPacket[]>('SELECT id FROM minis WHERE id = ?', [bear]);
+    expect(rows).toHaveLength(1);
+  });
+
+  it('leaves a mini that was never archived alone', async () => {
+    await createMini(owner, 'Just Browsing');
+
+    const result = await runHousekeeping({ log: quiet });
+
+    expect(result.archivedMinisPurged).toBe(0);
+  });
+});

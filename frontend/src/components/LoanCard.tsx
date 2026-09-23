@@ -13,6 +13,8 @@ const STAGE_LABELS: Record<LoanStage, string> = {
   overdue: 'Overdue',
   returned: 'Returned',
   cancelled: 'Cancelled',
+  lost: 'Lost',
+  critically_wounded: 'Critically Wounded',
 };
 
 const STAGE_COLORS: Record<LoanStage, string> = {
@@ -22,6 +24,8 @@ const STAGE_COLORS: Record<LoanStage, string> = {
   overdue: '#e74c3c',
   returned: '#8a7d6a',
   cancelled: '#8a7d6a',
+  lost: '#e74c3c',
+  critically_wounded: '#e74c3c',
 };
 
 type LoanCardProps = {
@@ -301,15 +305,33 @@ export default function LoanCard({ loan, now, otherOpenRequests, onUpdated }: Lo
           )}
 
           {isOwner && (
-            <button type="button" className="btn-primary" disabled={busy} onClick={() => void run(`/api/loans/${loan.id}/return`)} style={{ marginTop: '8px', padding: '6px 14px', fontSize: '13px' }}>
-              Mark returned
-            </button>
+            <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginTop: '8px' }}>
+              <button type="button" className="btn-primary" disabled={busy} onClick={() => void run(`/api/loans/${loan.id}/return`, { method: 'POST', json: { outcome: 'returned' } })} style={{ padding: '6px 14px', fontSize: '13px' }}>
+                Mark returned
+              </button>
+              {/* Real lending also ends with it never coming back, or coming back
+                  broken — recorded here rather than nowhere, same reasoning as
+                  a normal return, just a different outcome. */}
+              <button type="button" className="btn-danger" disabled={busy} onClick={() => void run(`/api/loans/${loan.id}/return`, { method: 'POST', json: { outcome: 'lost' } })} style={{ padding: '6px 14px', fontSize: '13px' }}>
+                Lost
+              </button>
+              <button type="button" className="btn-danger" disabled={busy} onClick={() => void run(`/api/loans/${loan.id}/return`, { method: 'POST', json: { outcome: 'critically_wounded' } })} style={{ padding: '6px 14px', fontSize: '13px' }}>
+                Critically Wounded
+              </button>
+            </div>
           )}
         </div>
       )}
 
       {loan.status === 'returned' && loan.returnedAt && (
         <p style={{ fontSize: '13px', color: '#8a7d6a' }}>Back home since {new Date(loan.returnedAt).toLocaleDateString()}</p>
+      )}
+
+      {(loan.status === 'lost' || loan.status === 'critically_wounded') && loan.returnedAt && (
+        <p style={{ fontSize: '13px', color: '#e74c3c' }}>
+          Reported {loan.status === 'lost' ? 'lost' : 'critically wounded'} on {new Date(loan.returnedAt).toLocaleDateString()}
+          {isOwner && loan.status === 'critically_wounded' && ' — clear it from the mini\'s edit page once it\'s fine to lend again'}
+        </p>
       )}
 
       {error && <div className="error-msg" style={{ marginTop: '10px' }}>{error}</div>}

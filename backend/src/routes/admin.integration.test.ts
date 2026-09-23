@@ -149,9 +149,13 @@ describe('removing a member who is part of loans', () => {
     const res = await remove(bruno);
 
     expect(res.status).toBe(200);
-    expect(res.body.message).toBe('Removed from this group — their 1 mini here was removed too');
-    expect(await rows('SELECT id FROM minis WHERE id = ?', [chicagoMini])).toEqual([]);
-    expect(await rows('SELECT id FROM minis WHERE id = ?', [dojoMini])).toHaveLength(1);
+    expect(res.body.message).toBe(
+      'Removed from this group — their 1 mini here was archived, and will be permanently deleted in 30 days unless an admin restores it'
+    );
+    // Archived, not deleted — she keeps another group, so there's a grace period.
+    expect(await rows('SELECT archived_at FROM minis WHERE id = ?', [chicagoMini])).toEqual([{ archived_at: expect.any(Date) }]);
+    expect((await request(app).get('/api/minis').set('Cookie', olivia.cookie)).body).toEqual([]); // hidden from browse either way
+    expect(await rows('SELECT archived_at FROM minis WHERE id = ?', [dojoMini])).toEqual([{ archived_at: null }]);
     expect(await rows("SELECT id FROM loans WHERE id = ? AND status = 'negotiating'", [dojoRequest])).toHaveLength(1);
   });
 
@@ -170,5 +174,122 @@ describe('removing a member who is part of loans', () => {
     await request(app).post(`/api/loans/${loanId}/return`).set('Cookie', olivia.cookie);
 
     expect((await remove(bruno)).status).toBe(200);
+  });
+});
+
+describe('GET /api/admin/audit-log', () => {
+  it('records a member removal, surviving the account being deleted along with it', async () => {
+    await remove(bruno); // his only collection here — account is deleted
+
+    const res = await request(app).get('/api/admin/audit-log').set('Cookie', admin.cookie);
+
+    expect(res.status).toBe(200);
+    expect(res.body[0]).toMatchObject({ action: 'member_removed', actorName: 'boss display', targetName: 'bruno display' });
+    expect(res.body[0].details).toMatch(/last one.*account.*deleted/i);
+  });
+});
+
+describe('GET /api/admin/archived-minis and POST .../restore', () => {
+  it('lists a removed member\'s archived minis, and restoring one gives it to a current member', async () => {
+    const dojo = await createCollection('dojo');
+    await joinCollection(bruno, dojo); // so removal from chicago archives instead of deleting outright
+    const beholder = await createMini(bruno, 'Beholder');
+
+    await remove(bruno);
+
+    const archived = await request(app).get('/api/admin/archived-minis').set('Cookie', admin.cookie);
+    expect(archived.body).toEqual([expect.objectContaining({ id: beholder, name: 'Beholder', formerOwnerName: 'bruno display' })]);
+    expect((await request(app).get('/api/minis').set('Cookie', olivia.cookie)).body).toEqual([]); // hidden while archived
+
+    const restoreRes = await request(app)
+      .post(`/api/admin/archived-minis/${beholder}/restore`)
+      .set('Cookie', admin.cookie)
+      .send({ newOwnerId: olivia.userId });
+
+    expect(restoreRes.status).toBe(200);
+    const visible = await request(app).get(`/api/minis/${beholder}`).set('Cookie', olivia.cookie);
+    expect(visible.body).toMatchObject({ owner_id: olivia.userId, name: 'Beholder' });
+    expect((await request(app).get('/api/admin/archived-minis').set('Cookie', admin.cookie)).body).toEqual([]);
+    expect((await request(app).get('/api/admin/audit-log').set('Cookie', admin.cookie)).body[0])
+      .toMatchObject({ action: 'mini_restored', targetName: 'olivia display' });
+  });
+
+  it('clears the mini\'s set when restored to someone other than its original owner', async () => {
+    const dojo = await createCollection('dojo');
+    await joinCollection(bruno, dojo);
+    const beholder = await createMini(bruno, 'Beholder');
+    const setRes = await request(app).post('/api/sets').set('Cookie', bruno.cookie).send({ name: 'Army', miniIds: [beholder] });
+    expect(setRes.status).toBe(201);
+
+    await remove(bruno);
+    await request(app).post(`/api/admin/archived-minis/${beholder}/restore`).set('Cookie', admin.cookie).send({ newOwnerId: olivia.userId });
+
+    const mini = await request(app).get(`/api/minis/${beholder}`).set('Cookie', olivia.cookie);
+    expect(mini.body.set_id).toBeNull();
+  });
+
+  it('keeps the mini\'s set when restored to its own original owner, re-invited during the grace period', async () => {
+    const dojo = await createCollection('dojo');
+    await joinCollection(bruno, dojo);
+    const beholder = await createMini(bruno, 'Beholder');
+    await request(app).post('/api/sets').set('Cookie', bruno.cookie).send({ name: 'Army', miniIds: [beholder] });
+
+    await remove(bruno);
+    await joinCollection(bruno, chicago); // re-invited during the grace period
+    await request(app).post(`/api/admin/archived-minis/${beholder}/restore`).set('Cookie', admin.cookie).send({ newOwnerId: bruno.userId });
+
+    const mini = await request(app).get(`/api/minis/${beholder}`).set('Cookie', olivia.cookie);
+    expect(mini.body.set_id).not.toBeNull();
+  });
+
+  it('rejects restoring to someone who isn\'t a member of this collection', async () => {
+    const dojo = await createCollection('dojo');
+    await joinCollection(bruno, dojo);
+    const beholder = await createMini(bruno, 'Beholder');
+    const outsider = await createUser('outsider', await createCollection('elsewhere'));
+
+    await remove(bruno);
+    const res = await request(app)
+      .post(`/api/admin/archived-minis/${beholder}/restore`)
+      .set('Cookie', admin.cookie)
+      .send({ newOwnerId: outsider.userId });
+
+    expect(res.status).toBe(404);
+  });
+});
+
+describe('GET /api/admin/loan-incidents', () => {
+  it('tallies lost and critically-wounded loans per borrower, scoped to this collection', async () => {
+    const dragon = await createMini(olivia, 'Dragon');
+    const beholder = await createMini(olivia, 'Beholder');
+    const owlbear = await createMini(olivia, 'Owlbear');
+    const dragonLoan = await checkOut(bruno, dragon);
+    const beholderLoan = await checkOut(bruno, beholder);
+    const owlbearLoan = await checkOut(theo, owlbear);
+    await handOff(olivia, bruno, dragonLoan);
+    await handOff(olivia, bruno, beholderLoan);
+    await handOff(olivia, theo, owlbearLoan);
+
+    await request(app).post(`/api/loans/${dragonLoan}/return`).set('Cookie', olivia.cookie).send({ outcome: 'lost' });
+    await request(app).post(`/api/loans/${beholderLoan}/return`).set('Cookie', olivia.cookie).send({ outcome: 'critically_wounded' });
+    await request(app).post(`/api/loans/${owlbearLoan}/return`).set('Cookie', olivia.cookie).send({ outcome: 'returned' });
+
+    const res = await request(app).get('/api/admin/loan-incidents').set('Cookie', admin.cookie);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual([{ borrowerId: bruno.userId, borrowerName: 'bruno display', lostCount: 1, woundedCount: 1 }]);
+  });
+
+  it('is empty when nothing has ever been lost or critically wounded', async () => {
+    const res = await request(app).get('/api/admin/loan-incidents').set('Cookie', admin.cookie);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual([]);
+  });
+
+  it('rejects a non-admin', async () => {
+    const res = await request(app).get('/api/admin/loan-incidents').set('Cookie', olivia.cookie);
+
+    expect(res.status).toBe(403);
   });
 });

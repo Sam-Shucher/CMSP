@@ -310,6 +310,92 @@ describe('handoff and return', () => {
   });
 });
 
+function returnAs(who: TestUser, loanId: number, outcome?: string) {
+  return request(app).post(`/api/loans/${loanId}/return`).set('Cookie', who.cookie).send(outcome ? { outcome } : {});
+}
+
+describe('lost and critically wounded outcomes', () => {
+  it.each(['lost', 'critically_wounded'])('marking a loan %s hides the mini from browse and notifies the borrower', async (outcome) => {
+    const miniId = await createMini(owner, 'Dire Wolf');
+    const loanId = await requestMini(borrower, miniId);
+    await agreeOnTerms(loanId);
+    await act(owner, loanId, 'handoff');
+
+    const res = await returnAs(owner, loanId, outcome);
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe(outcome);
+    expect((await request(app).get('/api/minis').set('Cookie', bystander.cookie)).body).toEqual([]);
+
+    const inbox = (await request(app).get('/api/notifications').set('Cookie', borrower.cookie)).body.items;
+    expect(inbox[0]).toMatchObject({ type: outcome, message: expect.stringContaining(outcome === 'lost' ? 'lost' : 'critically wounded') });
+  });
+
+  it('clears a real hold line and cart entries instead of promoting anyone, when marked lost', async () => {
+    const miniId = await createMini(owner, 'Dire Wolf');
+    const loanId = await requestMini(borrower, miniId);
+    await agreeOnTerms(loanId);
+    await act(owner, loanId, 'handoff');
+    await request(app).post(`/api/holds/minis/${miniId}`).set('Cookie', bystander.cookie);
+
+    await returnAs(owner, loanId, 'lost');
+
+    // Nothing was promoted into a new request for the mini.
+    const loans = (await request(app).get('/api/loans').set('Cookie', bystander.cookie)).body;
+    expect(loans).toEqual([]);
+    expect((await request(app).get('/api/holds').set('Cookie', bystander.cookie)).body.holds).toEqual([]);
+  });
+
+  it('reveals the outcome to the owner\'s history, but a bystander still can\'t see the mini at all', async () => {
+    const miniId = await createMini(owner, 'Dire Wolf');
+    const loanId = await requestMini(borrower, miniId);
+    await agreeOnTerms(loanId);
+    await act(owner, loanId, 'handoff');
+    await returnAs(owner, loanId, 'critically_wounded');
+
+    const history = await request(app).get(`/api/minis/${miniId}/history`).set('Cookie', owner.cookie);
+    expect(history.status).toBe(200);
+    expect(history.body[0]).toMatchObject({ outcome: 'critically_wounded' });
+
+    expect((await request(app).get(`/api/minis/${miniId}`).set('Cookie', bystander.cookie)).status).toBe(200); // GET :id isn't hidden...
+    expect((await request(app).get('/api/minis').set('Cookie', bystander.cookie)).body).toEqual([]); // ...but browse is
+  });
+
+  it('rejects placing a hold on a critically wounded mini even by direct request', async () => {
+    const miniId = await createMini(owner, 'Dire Wolf');
+    const loanId = await requestMini(borrower, miniId);
+    await agreeOnTerms(loanId);
+    await act(owner, loanId, 'handoff');
+    await returnAs(owner, loanId, 'critically_wounded');
+
+    const res = await request(app).post(`/api/holds/minis/${miniId}`).set('Cookie', bystander.cookie);
+
+    expect(res.status).toBe(409);
+  });
+
+  it('lets the owner clear a critically wounded mini back into service', async () => {
+    const miniId = await createMini(owner, 'Dire Wolf');
+    const loanId = await requestMini(borrower, miniId);
+    await agreeOnTerms(loanId);
+    await act(owner, loanId, 'handoff');
+    await returnAs(owner, loanId, 'critically_wounded');
+
+    const cleared = await request(app).post(`/api/minis/${miniId}/clear-condition`).set('Cookie', owner.cookie);
+
+    expect(cleared.status).toBe(200);
+    expect(cleared.body.status).toBe('available');
+    expect((await request(app).get('/api/minis').set('Cookie', bystander.cookie)).body).toHaveLength(1);
+  });
+
+  it('rejects an admin or owner clearing a mini that has no condition to clear', async () => {
+    const miniId = await createMini(owner, 'Dire Wolf');
+
+    const res = await request(app).post(`/api/minis/${miniId}/clear-condition`).set('Cookie', owner.cookie);
+
+    expect(res.status).toBe(409);
+  });
+});
+
 // Keeping a mini longer, against the real hold line.
 describe('extending a loan', () => {
   function extend(who: TestUser, loanId: number, extraDays: number) {

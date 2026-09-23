@@ -62,6 +62,11 @@ export const TEMP_PASSWORD_DAYS = 7;
 // unread again stops the clock; unread notifications are never removed.
 export const NOTIFICATION_KEEP_READ_DAYS = 2;
 
+// How long an archived mini (its owner was removed from the collection, but
+// keeps another one) stays recoverable before maintenance/housekeeping.ts
+// deletes it for good. See services/membership.ts.
+export const MINI_ARCHIVE_GRACE_DAYS = 30;
+
 // Which network interfaces to listen on (undefined = all). In production only
 // the Cloudflare tunnel on this same machine should reach the app — both
 // loopback addresses, since "localhost" can resolve to either one.

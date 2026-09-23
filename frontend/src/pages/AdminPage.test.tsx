@@ -32,6 +32,9 @@ function mockAdminApi(handler: Handler = () => undefined) {
     if (custom) return custom;
     if (url === '/api/admin/approved-emails') return jsonResponse(EMAILS);
     if (url === '/api/admin/users')            return jsonResponse(USERS);
+    if (url === '/api/admin/archived-minis')   return jsonResponse([]);
+    if (url === '/api/admin/audit-log')        return jsonResponse([]);
+    if (url === '/api/admin/loan-incidents')   return jsonResponse([]);
     return jsonResponse({ message: 'ok' });
   }));
 }
@@ -309,6 +312,9 @@ describe('AdminPage — type-to-confirm deletion', () => {
     vi.stubGlobal('fetch', vi.fn((url: string) => {
       if (url === '/api/admin/approved-emails') return Promise.resolve(jsonResponse(EMAILS));
       if (url === '/api/admin/users')            return Promise.resolve(jsonResponse(USERS));
+      if (url === '/api/admin/archived-minis')   return Promise.resolve(jsonResponse([]));
+      if (url === '/api/admin/audit-log')        return Promise.resolve(jsonResponse([]));
+      if (url === '/api/admin/loan-incidents')   return Promise.resolve(jsonResponse([]));
       return Promise.resolve(jsonResponse({ message: 'ok' }));
     }));
   });
@@ -389,5 +395,126 @@ describe('AdminPage — type-to-confirm deletion', () => {
     await userEvent.click(screen.getByRole('button', { name: /^confirm delete$/i }));
 
     expect(await screen.findByText(/needs to be marked returned first/)).toBeInTheDocument();
+  });
+});
+
+describe('AdminPage — archived minis', () => {
+  const ARCHIVED = [
+    { id: 42, name: 'Dire Wolf', formerOwnerId: 9, formerOwnerName: 'Departed Dave', daysLeft: 25 },
+  ];
+
+  it('shows nothing when there\'s nothing archived', async () => {
+    mockAdminApi();
+    renderAdminPage();
+    await screen.findByText('grunt');
+
+    expect(screen.queryByText(/archived minis/i)).not.toBeInTheDocument();
+  });
+
+  it('lists an archived mini with its former owner and days left', async () => {
+    mockAdminApi((url) => url === '/api/admin/archived-minis' ? jsonResponse(ARCHIVED) : undefined);
+    renderAdminPage();
+
+    expect(await screen.findByText('Dire Wolf')).toBeInTheDocument();
+    expect(screen.getByText('Departed Dave')).toBeInTheDocument();
+    expect(screen.getByText('25 days')).toBeInTheDocument();
+  });
+
+  it('disables Restore until a member is chosen', async () => {
+    mockAdminApi((url) => url === '/api/admin/archived-minis' ? jsonResponse(ARCHIVED) : undefined);
+    renderAdminPage();
+    await screen.findByText('Dire Wolf');
+
+    expect(screen.getByRole('button', { name: /^restore$/i })).toBeDisabled();
+
+    await userEvent.selectOptions(screen.getByLabelText(/give dire wolf to/i), '2');
+    expect(screen.getByRole('button', { name: /^restore$/i })).toBeEnabled();
+  });
+
+  it('restores to the chosen member once confirmed, and shows the server\'s message', async () => {
+    mockAdminApi((url, init) => {
+      if (url === '/api/admin/archived-minis') return jsonResponse(ARCHIVED);
+      if (url === '/api/admin/archived-minis/42/restore' && init?.method === 'POST') return jsonResponse({ message: 'Restored to Grunt' });
+      return undefined;
+    });
+    renderAdminPage();
+    await screen.findByText('Dire Wolf');
+
+    await userEvent.selectOptions(screen.getByLabelText(/give dire wolf to/i), '2');
+    await userEvent.click(screen.getByRole('button', { name: /^restore$/i }));
+    const confirmButton = await screen.findByRole('button', { name: /^confirm restore$/i });
+    expect(confirmButton).toBeDisabled();
+
+    await userEvent.type(screen.getByLabelText(/type/i), 'Grunt');
+    await userEvent.click(confirmButton);
+
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith(
+      '/api/admin/archived-minis/42/restore',
+      expect.objectContaining({ method: 'POST', body: JSON.stringify({ newOwnerId: 2 }) })
+    ));
+    expect(await screen.findByText('Restored to Grunt')).toBeInTheDocument();
+  });
+
+  it('shows the server\'s refusal if the restore fails', async () => {
+    mockAdminApi((url, init) => {
+      if (url === '/api/admin/archived-minis') return jsonResponse(ARCHIVED);
+      if (url === '/api/admin/archived-minis/42/restore' && init?.method === 'POST') return errorResponse('Archived mini not found');
+      return undefined;
+    });
+    renderAdminPage();
+    await screen.findByText('Dire Wolf');
+
+    await userEvent.selectOptions(screen.getByLabelText(/give dire wolf to/i), '2');
+    await userEvent.click(screen.getByRole('button', { name: /^restore$/i }));
+    await userEvent.type(await screen.findByLabelText(/type/i), 'Grunt');
+    await userEvent.click(screen.getByRole('button', { name: /^confirm restore$/i }));
+
+    expect(await screen.findByText('Archived mini not found')).toBeInTheDocument();
+  });
+});
+
+describe('AdminPage — audit log', () => {
+  const ENTRIES = [
+    { id: 1, action: 'member_removed', actorName: 'Boss', targetName: 'Grunt', details: 'Removed Grunt from the group', createdAt: '2026-01-01T00:00:00.000Z' },
+  ];
+
+  it('shows nothing when the log is empty', async () => {
+    mockAdminApi();
+    renderAdminPage();
+    await screen.findByText('grunt');
+
+    expect(screen.queryByText(/audit log/i)).not.toBeInTheDocument();
+  });
+
+  it('shows each entry\'s details', async () => {
+    mockAdminApi((url) => url === '/api/admin/audit-log' ? jsonResponse(ENTRIES) : undefined);
+    renderAdminPage();
+
+    expect(await screen.findByText('Removed Grunt from the group')).toBeInTheDocument();
+  });
+});
+
+describe('AdminPage — lost & damaged tally', () => {
+  const INCIDENTS = [
+    { borrowerId: 2, borrowerName: 'Grunt', lostCount: 2, woundedCount: 1 },
+  ];
+
+  it('shows nothing when nobody has lost or damaged anything', async () => {
+    mockAdminApi();
+    renderAdminPage();
+    await screen.findByText('grunt');
+
+    expect(screen.queryByText(/lost & damaged/i)).not.toBeInTheDocument();
+  });
+
+  it('lists each borrower\'s counts', async () => {
+    mockAdminApi((url) => url === '/api/admin/loan-incidents' ? jsonResponse(INCIDENTS) : undefined);
+    renderAdminPage();
+
+    const heading = await screen.findByText(/lost & damaged/i);
+    const section = heading.closest('section')!;
+    const row = within(section).getAllByRole('row').find(r => r.textContent?.includes('Grunt'))!;
+    expect(within(row).getByText('2')).toBeInTheDocument();
+    expect(within(row).getByText('1')).toBeInTheDocument();
   });
 });

@@ -65,6 +65,14 @@ export default function MiniHistory({ miniId }: { miniId: number }): React.React
                       <span>
                         since {new Date(entry.handedOffAt).toLocaleDateString()} (still out, {entry.daysOut} day{entry.daysOut === 1 ? '' : 's'} so far)
                       </span>
+                    ) : entry.outcome === 'lost' ? (
+                      <span style={{ color: '#e74c3c' }}>
+                        since {new Date(entry.handedOffAt).toLocaleDateString()} — never came back (lost)
+                      </span>
+                    ) : entry.outcome === 'critically_wounded' ? (
+                      <span style={{ color: '#e74c3c' }}>
+                        {new Date(entry.handedOffAt).toLocaleDateString()} to {entry.returnedAt ? new Date(entry.returnedAt).toLocaleDateString() : '—'} — came back critically wounded ({entry.daysOut} day{entry.daysOut === 1 ? '' : 's'})
+                      </span>
                     ) : (
                       <span>
                         {new Date(entry.handedOffAt).toLocaleDateString()} to {entry.returnedAt ? new Date(entry.returnedAt).toLocaleDateString() : '—'} ({entry.daysOut} day{entry.daysOut === 1 ? '' : 's'})

@@ -26,6 +26,7 @@ interface LockedMini {
   on_quest_since: Date | null;
   active_loan_status: string | null;
   active_borrower_id: number | null;
+  condition_flag: string | null;
 }
 
 interface LineEntry {
@@ -52,7 +53,7 @@ async function inTransaction<T>(work: (conn: PoolConnection) => Promise<T>): Pro
 
 async function lockMini(conn: PoolConnection, miniId: number, collectionId: number | null): Promise<LockedMini | null> {
   return firstRow<LockedMini>(
-    `SELECT m.id, m.name, m.owner_id, m.collection_id, m.on_quest_since,
+    `SELECT m.id, m.name, m.owner_id, m.collection_id, m.on_quest_since, m.condition_flag,
             (SELECT l.status FROM loans l WHERE l.mini_id = m.id AND l.status IN ('negotiating', 'adventuring') LIMIT 1) AS active_loan_status,
             (SELECT l.borrower_id FROM loans l WHERE l.mini_id = m.id AND l.status IN ('negotiating', 'adventuring') LIMIT 1) AS active_borrower_id
      FROM minis m
@@ -116,7 +117,10 @@ export async function placeHold(miniId: number, userId: number, collectionId: nu
     if (!mini) return { failure: NOT_FOUND };
     if (mini.owner_id === userId) return { failure: { ok: false, status: 400, error: 'That\'s your own mini' } };
 
-    const status = miniStatusFrom(mini.active_loan_status, mini.on_quest_since);
+    const status = miniStatusFrom(mini.active_loan_status, mini.on_quest_since, mini.condition_flag);
+    if (status === 'lost' || status === 'critically_wounded') {
+      return { failure: { ok: false, status: 409, error: 'This mini isn\'t available right now' } };
+    }
     if (status === 'available') {
       return { failure: { ok: false, status: 409, code: 'available', error: 'This mini is available — add it to your cart instead' } };
     }
@@ -299,7 +303,7 @@ export async function promoteNextHold(miniId: number): Promise<number | null> {
   try {
     const outcome = await inTransaction<PromotionOutcome>(async conn => {
       const mini = await lockMini(conn, miniId, null);
-      if (!mini || mini.active_loan_status || mini.on_quest_since) return null;
+      if (!mini || mini.active_loan_status || mini.on_quest_since || mini.condition_flag) return null;
 
       const line = await lockLine(conn, miniId);
       if (line.length === 0) return null;

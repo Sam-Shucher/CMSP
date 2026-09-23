@@ -239,6 +239,18 @@ describe('LoansPage', () => {
     expect(within(borrowing).getByText('Active One')).toBeInTheDocument();
   });
 
+  it('puts lost and critically wounded loans in history too', async () => {
+    mockLoans([
+      makeLoan({ miniName: 'Never Came Back', status: 'lost', stage: 'lost', returnedAt: '2026-09-10T00:00:00.000Z' }),
+      makeLoan({ miniName: 'Came Back Broken', status: 'critically_wounded', stage: 'critically_wounded', returnedAt: '2026-09-10T00:00:00.000Z' }),
+    ]);
+    renderLoans();
+
+    const history = await screen.findByRole('region', { name: /history/i });
+    expect(within(history).getByText('Never Came Back')).toBeInTheDocument();
+    expect(within(history).getByText('Came Back Broken')).toBeInTheDocument();
+  });
+
   it('offers "apply to all" only when there are several open requests with the same person', async () => {
     mockLoans([
       makeLoan({ miniName: 'Dire Wolf', counterpart: ALICE }),

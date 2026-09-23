@@ -113,6 +113,26 @@ UPDATE collection_memberships SET role = 'admin'
 
 ## Testing
 
+**Quick reference — everything, in order** (Docker Desktop must be running
+for the integration and e2e steps):
+
+```bash
+docker compose -f docker-compose.test.yml up -d    # MariaDB for integration + e2e
+
+npm --prefix backend run test                       # backend unit tests
+npm --prefix backend run test:integration           # backend integration tests
+npm --prefix frontend run test                      # frontend tests
+npm run test:e2e                                    # Playwright end-to-end
+
+npx tsc --noEmit -p backend                          # backend type-check
+npx tsc --noEmit -p frontend                         # frontend type-check
+npm run lint                                         # ESLint over backend, frontend, tests
+
+docker compose -f docker-compose.test.yml down -v   # tear the DB back down
+```
+
+Details on each below.
+
 ```bash
 npm --prefix backend run test        # unit tests — mocked DB, fast
 npm --prefix backend run test:integration   # real MariaDB, catches SQL bugs mocks can't

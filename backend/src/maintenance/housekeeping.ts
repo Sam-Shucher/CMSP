@@ -6,6 +6,7 @@ import { purgeExpiredNotifications } from '../db/notifications';
 import { uploadsDir as configuredUploadsDir } from '../config';
 import { notifyOverdueLoans } from '../services/loanEvents';
 import { promoteStrandedHolds } from '../services/holds';
+import { purgeArchivedMinis } from '../services/membership';
 
 // Background cleanup ("garbage collection"). Rejected uploads are already
 // deleted the moment they're rejected (see minis.ts), and deleting a mini or
@@ -81,12 +82,15 @@ export interface HousekeepingResult {
   notificationsPurged: number;
   overdueAnnounced: number;
   holdsPromoted: number;
+  archivedMinisPurged: number;
 }
 
 // One full pass. Never throws: each step's failure is logged and the next run tries again.
 export async function runHousekeeping(options: SweepOptions = {}): Promise<HousekeepingResult> {
   const log = options.log ?? console.log;
-  const result: HousekeepingResult = { uploadsDeleted: 0, sessionsPurged: 0, notificationsPurged: 0, overdueAnnounced: 0, holdsPromoted: 0 };
+  const result: HousekeepingResult = {
+    uploadsDeleted: 0, sessionsPurged: 0, notificationsPurged: 0, overdueAnnounced: 0, holdsPromoted: 0, archivedMinisPurged: 0,
+  };
 
   async function step(label: string, work: () => Promise<void>): Promise<void> {
     try {
@@ -101,11 +105,12 @@ export async function runHousekeeping(options: SweepOptions = {}): Promise<House
   await step('Notification cleanup', async () => { result.notificationsPurged = await purgeExpiredNotifications(); });
   await step('Overdue notices', async () => { result.overdueAnnounced = await notifyOverdueLoans(); });
   await step('Hold promotion', async () => { result.holdsPromoted = await promoteStrandedHolds(); });
+  await step('Archived mini cleanup', async () => { result.archivedMinisPurged = await purgeArchivedMinis(); });
 
   if (Object.values(result).some(n => n > 0)) {
     log(
       `Housekeeping: removed ${result.uploadsDeleted} unused photo(s), ${result.sessionsPurged} ended session(s), ` +
-      `${result.notificationsPurged} read notification(s); ` +
+      `${result.notificationsPurged} read notification(s), ${result.archivedMinisPurged} archived mini(s) past their grace period; ` +
       `announced ${result.overdueAnnounced} overdue loan(s); promoted ${result.holdsPromoted} waiting hold(s)`
     );
   }

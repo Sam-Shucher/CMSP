@@ -282,8 +282,10 @@ describe('DELETE /api/admin/users/:id (remove from collection)', () => {
       .set('Cookie', authCookie(ADMIN));
 
     expect(res.status).toBe(200);
-    expect(res.body.message).toBe('Removed from this group — their 2 minis here were removed too');
-    expect(removeMember).toHaveBeenCalledWith(2, COLLECTION_A);
+    expect(res.body.message).toBe(
+      'Removed from this group — their 2 minis here were archived, and will be permanently deleted in 30 days unless an admin restores them'
+    );
+    expect(removeMember).toHaveBeenCalledWith(2, COLLECTION_A, ADMIN.userId);
   });
 
   it('says so when the account was deleted too', async () => {
@@ -343,6 +345,178 @@ describe('DELETE /api/admin/users/:id (remove from collection)', () => {
   });
 });
 
+describe('GET /api/admin/audit-log', () => {
+  it('scopes the log to the admin\'s active collection', async () => {
+    execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED).mockResolvedValueOnce([[]]);
+
+    await request(app).get('/api/admin/audit-log').set('Cookie', authCookie(ADMIN));
+
+    expect(execute).toHaveBeenCalledWith(expect.stringContaining('collection_id = ?'), [COLLECTION_A]);
+  });
+
+  it('returns entries camelCased, newest first as the query already orders them', async () => {
+    execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED).mockResolvedValueOnce([[{
+      id: 1, action: 'member_removed', actor_name: 'Boss', target_name: 'Grunt',
+      details: 'Removed Grunt from the group', created_at: '2026-01-01T00:00:00.000Z',
+    }]]);
+
+    const res = await request(app).get('/api/admin/audit-log').set('Cookie', authCookie(ADMIN));
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual([{
+      id: 1, action: 'member_removed', actorName: 'Boss', targetName: 'Grunt',
+      details: 'Removed Grunt from the group', createdAt: '2026-01-01T00:00:00.000Z',
+    }]);
+  });
+});
+
+describe('GET /api/admin/archived-minis', () => {
+  it('scopes the list to the admin\'s active collection and only archived minis', async () => {
+    execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED).mockResolvedValueOnce([[]]);
+
+    await request(app).get('/api/admin/archived-minis').set('Cookie', authCookie(ADMIN));
+
+    expect(execute).toHaveBeenCalledWith(
+      expect.stringMatching(/m\.collection_id = \?[\s\S]*archived_at IS NOT NULL/),
+      [COLLECTION_A]
+    );
+  });
+
+  it('shows the former owner and days left before it\'s purged', async () => {
+    const archivedAt = new Date(Date.now() - 5 * 24 * 60 * 60 * 1000); // 5 days ago
+    execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED).mockResolvedValueOnce([[{
+      id: 42, name: 'Dire Wolf', price: '5.00', owner_id: 2, owner_name: 'Grunt', archived_at: archivedAt,
+    }]]);
+
+    const res = await request(app).get('/api/admin/archived-minis').set('Cookie', authCookie(ADMIN));
+
+    expect(res.status).toBe(200);
+    expect(res.body[0]).toMatchObject({
+      id: 42, name: 'Dire Wolf', price: 5, formerOwnerId: 2, formerOwnerName: 'Grunt', daysLeft: 25,
+    });
+  });
+});
+
+describe('POST /api/admin/archived-minis/:id/restore', () => {
+  it('restores to a current member, clearing its old set (a set is one owner\'s own minis)', async () => {
+    execute
+      .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
+      .mockResolvedValueOnce([[{ owner_id: 5, set_id: 9, name: 'Dire Wolf' }]]) // archived mini lookup
+      .mockResolvedValueOnce([[{ display_name: 'New Owner' }]])                // newOwnerId is a member
+      .mockResolvedValueOnce([{ affectedRows: 1 }])                            // UPDATE minis
+      .mockResolvedValueOnce([[{ display_name: 'Boss' }]])                     // actor's own display name
+      .mockResolvedValueOnce([{ affectedRows: 1 }]);                           // INSERT INTO audit_log
+
+    const res = await request(app)
+      .post('/api/admin/archived-minis/42/restore')
+      .set('Cookie', authCookie(ADMIN))
+      .send({ newOwnerId: 2 });
+
+    expect(res.status).toBe(200);
+    expect(execute).toHaveBeenCalledWith(expect.stringContaining('UPDATE minis'), [2, null, 42, COLLECTION_A]);
+    expect(execute).toHaveBeenCalledWith(expect.stringContaining('INSERT INTO audit_log'), expect.arrayContaining(['mini_restored']));
+  });
+
+  it('keeps its set when restored to the mini\'s ORIGINAL owner (re-invited during the grace period)', async () => {
+    execute
+      .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
+      .mockResolvedValueOnce([[{ owner_id: 5, set_id: 9, name: 'Dire Wolf' }]])
+      .mockResolvedValueOnce([[{ display_name: 'Original Owner' }]])
+      .mockResolvedValueOnce([{ affectedRows: 1 }])
+      .mockResolvedValueOnce([[{ display_name: 'Boss' }]])
+      .mockResolvedValueOnce([{ affectedRows: 1 }]);
+
+    const res = await request(app)
+      .post('/api/admin/archived-minis/42/restore')
+      .set('Cookie', authCookie(ADMIN))
+      .send({ newOwnerId: 5 }); // same as mini.owner_id
+
+    expect(res.status).toBe(200);
+    expect(execute).toHaveBeenCalledWith(expect.stringContaining('UPDATE minis'), [5, 9, 42, COLLECTION_A]);
+  });
+
+  it('returns 404 for a mini that is not archived (or does not exist)', async () => {
+    execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED).mockResolvedValueOnce([[]]);
+
+    const res = await request(app)
+      .post('/api/admin/archived-minis/42/restore')
+      .set('Cookie', authCookie(ADMIN))
+      .send({ newOwnerId: 2 });
+
+    expect(res.status).toBe(404);
+  });
+
+  it('rejects an invalid newOwnerId with 400', async () => {
+    execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED).mockResolvedValueOnce([[{ owner_id: 5, set_id: null, name: 'Dire Wolf' }]]);
+
+    const res = await request(app)
+      .post('/api/admin/archived-minis/42/restore')
+      .set('Cookie', authCookie(ADMIN))
+      .send({ newOwnerId: 'nope' });
+
+    expect(res.status).toBe(400);
+    expect(execute).not.toHaveBeenCalledWith(expect.stringContaining('UPDATE minis'), expect.anything());
+  });
+
+  it('rejects a newOwnerId who isn\'t a member of this collection', async () => {
+    execute
+      .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
+      .mockResolvedValueOnce([[{ owner_id: 5, set_id: null, name: 'Dire Wolf' }]])
+      .mockResolvedValueOnce([[]]); // not a member
+
+    const res = await request(app)
+      .post('/api/admin/archived-minis/42/restore')
+      .set('Cookie', authCookie(ADMIN))
+      .send({ newOwnerId: 99 });
+
+    expect(res.status).toBe(404);
+    expect(res.body.error).toMatch(/isn't a member/i);
+  });
+
+  it('rejects a non-admin with 403', async () => {
+    execute.mockResolvedValueOnce(MEMBERSHIP_AS_USER);
+
+    const res = await request(app)
+      .post('/api/admin/archived-minis/42/restore')
+      .set('Cookie', authCookie(USER))
+      .send({ newOwnerId: 2 });
+
+    expect(res.status).toBe(403);
+  });
+});
+
+describe('GET /api/admin/loan-incidents', () => {
+  it('scopes the tally to the admin\'s active collection', async () => {
+    execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED).mockResolvedValueOnce([[]]);
+
+    await request(app).get('/api/admin/loan-incidents').set('Cookie', authCookie(ADMIN));
+
+    expect(execute).toHaveBeenCalledWith(
+      expect.stringMatching(/l\.collection_id = \?[\s\S]*status IN \('lost', 'critically_wounded'\)/),
+      [COLLECTION_A]
+    );
+  });
+
+  it('returns each borrower\'s lost and critically-wounded counts, camelCased', async () => {
+    execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED).mockResolvedValueOnce([[
+      { borrower_id: 2, borrower_name: 'Grunt', lost_count: 2, wounded_count: 1 },
+    ]]);
+
+    const res = await request(app).get('/api/admin/loan-incidents').set('Cookie', authCookie(ADMIN));
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual([{ borrowerId: 2, borrowerName: 'Grunt', lostCount: 2, woundedCount: 1 }]);
+  });
+
+  it('rejects a non-admin with 403', async () => {
+    execute.mockResolvedValueOnce(MEMBERSHIP_AS_USER);
+
+    const res = await request(app).get('/api/admin/loan-incidents').set('Cookie', authCookie(USER));
+
+    expect(res.status).toBe(403);
+  });
+});
+
 describe('Requests with no login at all', () => {
   it('returns 401 before touching the database', async () => {
     const res = await request(app).get('/api/admin/users');
@@ -360,6 +534,10 @@ describe('database failures', () => {
     ['GET users', () => request(app).get('/api/admin/users').set('Cookie', authCookie(ADMIN))],
     ['PATCH users/:id/role', () => request(app).patch('/api/admin/users/2/role').set('Cookie', authCookie(ADMIN)).send({ role: 'admin' })],
     ['DELETE users/:id', () => request(app).delete('/api/admin/users/2').set('Cookie', authCookie(ADMIN))],
+    ['GET audit-log', () => request(app).get('/api/admin/audit-log').set('Cookie', authCookie(ADMIN))],
+    ['GET archived-minis', () => request(app).get('/api/admin/archived-minis').set('Cookie', authCookie(ADMIN))],
+    ['POST archived-minis/:id/restore', () => request(app).post('/api/admin/archived-minis/42/restore').set('Cookie', authCookie(ADMIN)).send({ newOwnerId: 2 })],
+    ['GET loan-incidents', () => request(app).get('/api/admin/loan-incidents').set('Cookie', authCookie(ADMIN))],
   ])('%s returns a generic 500', async (_route, send) => {
     execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED).mockRejectedValue(new Error('connection lost'));
     vi.mocked(removeMember).mockRejectedValue(new Error('connection lost'));

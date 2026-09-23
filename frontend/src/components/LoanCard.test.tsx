@@ -460,6 +460,42 @@ describe('LoanCard — handoff, adventuring, and return', () => {
     expect(screen.queryByRole('button', { name: /mark returned/i })).not.toBeInTheDocument();
   });
 
+  it.each([
+    ['Lost', 'lost'],
+    ['Critically Wounded', 'critically_wounded'],
+  ])('lets the owner mark it %s, sending the outcome', async (buttonName, outcome) => {
+    const dueAt = new Date(Date.now() + DAY).toISOString();
+    const { onUpdated } = renderCard(makeLoan({ ...agreed, role: 'owner', status: 'adventuring', stage: 'adventuring', dueAt }));
+
+    await userEvent.click(screen.getByRole('button', { name: buttonName }));
+
+    await waitFor(() => expect(onUpdated).toHaveBeenCalled());
+    expect(lastRequest()).toMatchObject({ url: '/api/loans/7/return', method: 'POST', body: { outcome } });
+  });
+
+  it('does not offer Lost/Critically Wounded buttons to the borrower', () => {
+    const dueAt = new Date(Date.now() + DAY).toISOString();
+    renderCard(makeLoan({ ...agreed, role: 'borrower', status: 'adventuring', stage: 'adventuring', dueAt }));
+
+    expect(screen.queryByRole('button', { name: 'Lost' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Critically Wounded' })).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ['lost', /reported lost/i],
+    ['critically_wounded', /reported critically wounded/i],
+  ])('shows the %s outcome once the loan is over', (status, expected) => {
+    renderCard(makeLoan({ status: status as Loan['status'], stage: status as Loan['stage'], returnedAt: '2026-10-05T00:00:00.000Z' }));
+
+    expect(screen.getByText(expected)).toBeInTheDocument();
+  });
+
+  it('tells the owner to clear a critically wounded mini once it\'s fine again', () => {
+    renderCard(makeLoan({ role: 'owner', status: 'critically_wounded', stage: 'critically_wounded', returnedAt: '2026-10-05T00:00:00.000Z' }));
+
+    expect(screen.getByText(/clear it from the mini's edit page/i)).toBeInTheDocument();
+  });
+
   it('lets the borrower confirm they got it', async () => {
     const dueAt = new Date(Date.now() + DAY).toISOString();
     const { onUpdated } = renderCard(makeLoan({ ...agreed, role: 'borrower', status: 'adventuring', stage: 'adventuring', dueAt }));
