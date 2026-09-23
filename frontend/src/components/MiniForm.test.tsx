@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, waitFor, fireEvent, act } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import MiniForm from './MiniForm';
+import { AuthContext } from '../App';
 
 const EMPTY_VALUES = { name: '', description: '', tags: '', price: '' };
 
@@ -35,6 +36,25 @@ describe('MiniForm', () => {
     await userEvent.click(screen.getByRole('button', { name: /save/i }));
 
     await waitFor(() => expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ price: '12.50' }), [], []));
+  });
+
+  // The server ignores a price in a group with them off; the form doesn't ask.
+  it('has no price field in a group with prices turned off, and sends no price', async () => {
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+    render(
+      <AuthContext.Provider value={{
+        user: { userId: 1, username: 'owner', role: 'user', collectionId: 5 },
+        loading: false, setUser: vi.fn(), selectCollection: vi.fn(), refreshSession: vi.fn(),
+        collections: [{ id: 5, name: 'Chicago', role: 'user', showPrices: false }],
+      }}>
+        <MiniForm initialValues={{ ...EMPTY_VALUES, name: 'Dire Wolf', price: '12.50' }} submitLabel="Save" submittingLabel="Saving…" onSubmit={onSubmit} onCancel={vi.fn()} />
+      </AuthContext.Provider>
+    );
+
+    expect(screen.queryByLabelText(/price/i)).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: /save/i }));
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ price: '' }), [], []));
   });
 
   it('asks for at most two decimal places', async () => {

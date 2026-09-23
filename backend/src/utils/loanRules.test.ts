@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   LoanSnapshot,
+  HANDOFF_HOURS_MESSAGE,
   roleOf,
   termsComplete,
   parseTermsPatch,
@@ -87,6 +88,37 @@ describe('parseTermsPatch', () => {
   it('accepts ordinary dates, including one that already passed', () => {
     expect(parseTermsPatch({ when: '2025-12-31T23:00:00.000Z' }, 'owner')).toMatchObject({ ok: true });
     expect(parseTermsPatch({ when: '2099-01-01T00:00:00.000Z' }, 'owner')).toMatchObject({ ok: true });
+  });
+
+  // A handoff is arranged for 6:00am to 10:00pm on the group's clock (Chicago
+  // by default), both ends included — whatever time zone the request came in.
+  describe('the hours a handoff may be arranged for', () => {
+    it.each([
+      ['6:00am, the first minute allowed', '2026-10-01T11:00:00.000Z'],
+      ['10:00pm, the last minute allowed', '2026-10-02T03:00:00.000Z'],
+      ['midday', '2026-10-01T17:00:00.000Z'],
+      ['6:00am in winter, an hour later in UTC', '2026-12-01T12:00:00.000Z'],
+    ])('accepts %s', (_why, when) => {
+      expect(parseTermsPatch({ when }, 'borrower')).toMatchObject({ ok: true });
+    });
+
+    it.each([
+      ['5:59am', '2026-10-01T10:59:00.000Z'],
+      ['10:01pm', '2026-10-02T03:01:00.000Z'],
+      ['3am', '2026-10-01T08:00:00.000Z'],
+      ['midnight', '2026-10-02T05:00:00.000Z'],
+      // Fine in summer (6:59am CDT), but 5:59am once the clocks go back.
+      ['5:59am in winter', '2026-12-01T11:59:00.000Z'],
+    ])('refuses %s, saying which hours are allowed', (_why, when) => {
+      expect(parseTermsPatch({ when }, 'borrower')).toEqual({ ok: false, status: 400, error: HANDOFF_HOURS_MESSAGE });
+    });
+
+    it('reads the time the same whatever offset it was sent with', () => {
+      // 7pm in Chicago, written three ways.
+      for (const when of ['2026-10-01T19:00:00-05:00', '2026-10-02T00:00:00Z', '2026-10-02T09:00:00+09:00']) {
+        expect(parseTermsPatch({ when }, 'borrower')).toMatchObject({ ok: true });
+      }
+    });
   });
 
   it('rejects a date that is not a string at all', () => {

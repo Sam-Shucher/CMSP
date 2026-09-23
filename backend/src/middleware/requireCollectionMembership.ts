@@ -8,6 +8,9 @@ export interface CollectionRequest extends AuthRequest {
   // middleware ran first — route handlers use req.collectionId! the same
   // way they already use req.user!.
   collectionId?: number;
+  // Whether this group shows prices at all (collections.show_prices) — some
+  // groups don't want a dollar figure on every mini. Set alongside collectionId.
+  showPrices?: boolean;
 }
 
 // Gates every collection-scoped route (minis, admin). The JWT's collectionId
@@ -42,8 +45,12 @@ export async function requireCollectionMembership(
   }
 
   try {
-    const membership = await firstRow<{ role: string | null }>(
-      'SELECT cm.role FROM collection_memberships cm WHERE cm.user_id = ? AND cm.collection_id = ?',
+    // The group's own settings come along with the membership, so the routes
+    // behind this never need a second query to learn them.
+    const membership = await firstRow<{ role: string | null; show_prices: number | null }>(
+      `SELECT cm.role, c.show_prices
+       FROM collection_memberships cm JOIN collections c ON c.id = cm.collection_id
+       WHERE cm.user_id = ? AND cm.collection_id = ?`,
       [req.user!.userId, collectionId]
     );
 
@@ -59,6 +66,8 @@ export async function requireCollectionMembership(
     req.user!.role = membership.role === 'admin' ? 'admin' : 'user';
 
     (req as CollectionRequest).collectionId = collectionId;
+    // Shown unless the group has turned them off — the column's default.
+    (req as CollectionRequest).showPrices = membership.show_prices !== 0;
     next();
   } catch (err: unknown) {
     console.error(err);

@@ -5,6 +5,7 @@ import { pool } from '../db/connection';
 import {
   assertDatabaseReachable, resetDatabase, createCollection, createUser, createMini, TestUser,
 } from '../test/dbHelpers';
+import { todayInApp, addDays } from '../utils/appTime';
 
 // "On a Quest": owners taking their own minis out, against the real database.
 // Requires: docker compose -f docker-compose.test.yml up -d
@@ -34,7 +35,7 @@ const view = (who: TestUser, miniId: number) =>
   request(app).get(`/api/minis/${miniId}`).set('Cookie', who.cookie);
 
 function daysFromNow(days: number): string {
-  return new Date(Date.now() + days * 86_400_000).toISOString().slice(0, 10);
+  return addDays(todayInApp(), days);
 }
 
 describe('taking your own mini on a quest', () => {

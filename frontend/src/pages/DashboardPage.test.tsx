@@ -562,3 +562,52 @@ describe('DashboardPage — status badges and the cart', () => {
     expect(await screen.findByText(/isn't available right now/i)).toBeInTheDocument();
   });
 });
+
+describe('DashboardPage — a group with prices turned off', () => {
+  beforeEach(() => {
+    vi.stubGlobal('fetch', vi.fn());
+  });
+
+  function renderInGroup(showPrices: boolean) {
+    return render(
+      <MemoryRouter>
+        <AuthContext.Provider value={{
+          user: { userId: 2, username: 'other', role: 'user', collectionId: 5 },
+          loading: false, setUser: vi.fn(), selectCollection: vi.fn(), refreshSession: vi.fn(),
+          collections: [{ id: 5, name: 'Chicago', role: 'user', showPrices }],
+        }}>
+          <DashboardPage />
+        </AuthContext.Provider>
+      </MemoryRouter>
+    );
+  }
+
+  it('doesn\'t offer to sort by price', async () => {
+    mockApi();
+    renderInGroup(false);
+    await screen.findByText('Dire Wolf');
+
+    const sort = screen.getByLabelText(/sort by/i);
+    expect(within(sort).queryByRole('option', { name: 'Price' })).not.toBeInTheDocument();
+    expect(within(sort).getByRole('option', { name: 'Name' })).toBeInTheDocument();
+  });
+
+  it('still offers it where prices are on', async () => {
+    mockApi();
+    renderInGroup(true);
+    await screen.findByText('Dire Wolf');
+
+    expect(within(screen.getByLabelText(/sort by/i)).getByRole('option', { name: 'Price' })).toBeInTheDocument();
+  });
+
+  // The server sends no price at all in a group with them off.
+  it('shows no price on the card or in the detail view', async () => {
+    mockApi({ minis: [{ ...MINI_OWNED_BY_1, price: null }] });
+    renderInGroup(false);
+
+    await userEvent.click(await screen.findByText('Dire Wolf'));
+
+    expect(screen.getByRole('button', { name: /close/i })).toBeInTheDocument();
+    expect(screen.queryByText(/\$/)).not.toBeInTheDocument();
+  });
+});

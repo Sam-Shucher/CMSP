@@ -27,13 +27,22 @@ describe('parseBackBy — the optional "back by" date when taking a mini on a qu
     expect(parseBackBy('2027-10-01', NOW)).toMatchObject({ ok: false, error: expect.stringMatching(/3 months/) });
   });
 
-  // Someone west of UTC can still be on "yesterday" by the server's clock.
-  it('allows yesterday, so a user a timezone behind isn\'t told today is in the past', () => {
-    expect(parseBackBy('2026-09-30', NOW)).toMatchObject({ ok: true });
+  // Everyone is in one city (APP_TIMEZONE, Chicago by default), so "today" is
+  // that city's today: no allowance for a day that has already gone there...
+  it('refuses yesterday', () => {
+    expect(parseBackBy('2026-09-30', NOW)).toMatchObject({ ok: false, error: expect.stringMatching(/past/i) });
   });
 
   it('rejects dates clearly in the past', () => {
     expect(parseBackBy('2026-09-29', NOW)).toMatchObject({ ok: false, error: expect.stringMatching(/past/i) });
+  });
+
+  // ...and at 10pm in Chicago it is still that day, though UTC has moved on.
+  it('counts days on the group\'s clock, not UTC\'s', () => {
+    const lateEvening = new Date('2026-10-02T03:00:00Z'); // Oct 1, 10pm in Chicago
+    expect(parseBackBy('2026-10-01', lateEvening)).toEqual({ ok: true, value: '2026-10-01' });
+    expect(parseBackBy('2026-12-30', lateEvening)).toMatchObject({ ok: true }); // 90 days from Oct 1, not Oct 2
+    expect(parseBackBy('2026-12-31', lateEvening)).toMatchObject({ ok: false });
   });
 
   it.each([

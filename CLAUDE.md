@@ -25,6 +25,14 @@ local dev setup, collections model, Pi deployment).
   `config.ts`, and `frontend/src/limits.ts` (which mirrors them).
 - **Frontend tests** share `src/test/apiMock.ts` (`jsonResponse`, `urlOf`,
   `jsonBodyOf`) instead of each file rolling its own fetch stub.
+- **Days and times of day** a person picks (bookings, back-by dates, handoff
+  hours) are the group's, via `backend/src/utils/appTime.ts` (`APP_TIMEZONE`,
+  Chicago by default) — never `CURDATE()`, `toISOString().slice(0, 10)` or
+  UTC hours. Pass "today" into SQL as a value. Times this process writes (a
+  due date) are compared with this process's clock, not the database's `NOW()`.
+- **Transactions** use `inTransaction` from `db/query.ts`; a rule checked by
+  "read, then write" in two steps gets a locked re-read inside one, and a test
+  in `concurrency.integration.test.ts`.
 
 ## Commands
 
@@ -95,6 +103,10 @@ SQL step for the person deploying this.
   what the mini already has. Any error response deletes that request's uploaded
   files; `maintenance/housekeeping.ts` sweeps unreferenced files hourly — if you
   add a new place that stores upload paths, add it to the sweep's in-use query.
+- **Phone notifications (Web Push):** every `notify()` also pushes, via
+  `services/push.ts`, which never throws — don't send pushes from anywhere else.
+  Subscription endpoints are accepted only on the browser push services
+  (`utils/pushSubscription.ts`), since the server makes requests to them.
 - **Secrets:** `JWT_SECRET` comes from `config.ts` (no fallback). Nothing secret
   goes in git; `backend/.env` is ignored.
 - **Passwords:** only `utils/passwords.ts` hashes or checks them (bcrypt, cost

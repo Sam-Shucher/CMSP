@@ -48,3 +48,20 @@ export async function insert(sql: string, params: QueryParam[] = [], db: Db = po
   const [result] = await db.execute<ResultSetHeader>(sql, params);
   return { id: result.insertId, inserted: result.affectedRows > 0 };
 }
+
+// Runs work inside one transaction on one connection: committed if it returns,
+// rolled back if it throws. Pass the connection it's given to the helpers above.
+export async function inTransaction<T>(work: (conn: PoolConnection) => Promise<T>): Promise<T> {
+  const conn = await pool.getConnection();
+  try {
+    await conn.beginTransaction();
+    const result = await work(conn);
+    await conn.commit();
+    return result;
+  } catch (err) {
+    await conn.rollback();
+    throw err;
+  } finally {
+    conn.release();
+  }
+}

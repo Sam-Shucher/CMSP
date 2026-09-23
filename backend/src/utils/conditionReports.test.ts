@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  CONDITION_PHASES, checkPhase, parsePhase, openPhases, MAX_CONDITION_PHOTOS,
+  CONDITION_PHASES, checkPhase, parsePhase, openPhases, MAX_CONDITION_PHOTOS, RETURN_NOTE_HOURS,
 } from './conditionReports';
 import { LoanStatus } from './loanRules';
 
@@ -9,9 +9,20 @@ import { LoanStatus } from './loanRules';
 // of the feature is that the note was made at the time, so a claim about the
 // handoff can't be invented after the mini is already back and disputed.
 
+const RETURNED_AT = new Date('2026-10-14T18:00:00.000Z');
+const HOUR_MS = 60 * 60 * 1000;
+
 function loan(status: LoanStatus, handedOff = true) {
-  return { status, handedOffAt: handedOff ? new Date('2026-10-01T18:00:00.000Z') : null };
+  const ended = status === 'returned' || status === 'lost' || status === 'critically_wounded';
+  return {
+    status,
+    handedOffAt: handedOff ? new Date('2026-10-01T18:00:00.000Z') : null,
+    returnedAt: ended ? RETURNED_AT : null,
+  };
 }
+
+// An hour after it came back — well inside the window for noting the return.
+const SOON_AFTER = new Date(RETURNED_AT.getTime() + HOUR_MS);
 
 describe('parsePhase', () => {
   it.each(CONDITION_PHASES)('accepts %s', (phase: string) => {
@@ -66,8 +77,26 @@ describe('checkPhase — once the loan is over', () => {
   const ENDED: LoanStatus[] = ['returned', 'lost', 'critically_wounded'];
 
   // The owner only gets it back in hand at that moment, so this has to stay open.
-  it.each(ENDED)('still accepts a return report on a %s loan', (status) => {
-    expect(checkPhase(loan(status), 'return').ok).toBe(true);
+  it.each(ENDED)('still accepts a return report on a %s loan, soon after', (status) => {
+    expect(checkPhase(loan(status), 'return', SOON_AFTER).ok).toBe(true);
+  });
+
+  // ...but not for ever: a "return" note days later is about the shelf, not
+  // the return.
+  it.each(ENDED)(`closes the return on a %s loan ${RETURN_NOTE_HOURS} hours after it ended`, (status) => {
+    const lastMoment = new Date(RETURNED_AT.getTime() + RETURN_NOTE_HOURS * HOUR_MS);
+    const justAfter = new Date(lastMoment.getTime() + 1000);
+
+    expect(checkPhase(loan(status), 'return', lastMoment).ok).toBe(true);
+    const late = checkPhase(loan(status), 'return', justAfter);
+    expect(late.ok).toBe(false);
+    expect(!late.ok && late.status).toBe(409);
+    expect(!late.ok && late.error).toMatch(/within 12 hours/);
+  });
+
+  it('keeps the return open however long the mini is still out', () => {
+    const muchLater = new Date(RETURNED_AT.getTime() + 60 * 24 * HOUR_MS);
+    expect(checkPhase(loan('adventuring'), 'return', muchLater).ok).toBe(true);
   });
 
   // The argument this feature exists to prevent is exactly a fresh claim about
@@ -91,7 +120,12 @@ describe('openPhases — what the page should offer', () => {
   });
 
   it('offers only the return once it is over', () => {
-    expect(openPhases(loan('returned'))).toEqual(['return']);
+    expect(openPhases(loan('returned'), SOON_AFTER)).toEqual(['return']);
+  });
+
+  it(`offers nothing once the ${RETURN_NOTE_HOURS} hours after the return are up`, () => {
+    const nextDay = new Date(RETURNED_AT.getTime() + 24 * HOUR_MS);
+    expect(openPhases(loan('returned'), nextDay)).toEqual([]);
   });
 });
 

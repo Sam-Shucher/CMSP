@@ -1,5 +1,26 @@
 import { describe, it, expect } from 'vitest';
-import { validateUsername, validatePassword, validateEmail } from './validation';
+import { validateUsername, validatePassword, validateEmail, tagsProblem } from './validation';
+
+// Shared by the single and bulk add forms; the server's rule is tagList in
+// backend/src/utils/inputs.ts.
+describe('tagsProblem', () => {
+  it('accepts no tags, and a normal list', () => {
+    expect(tagsProblem('')).toBeNull();
+    expect(tagsProblem('undead, boss, painted')).toBeNull();
+  });
+
+  it('counts a tag once however it is written, as the server saves it', () => {
+    expect(tagsProblem(Array.from({ length: 25 }, () => 'Wolf').join(', '))).toBeNull();
+  });
+
+  it('refuses more tags than a mini can have', () => {
+    expect(tagsProblem(Array.from({ length: 21 }, (_, i) => `t${i}`).join(','))).toBe('Use 20 tags or fewer.');
+  });
+
+  it('refuses a tag that is too long', () => {
+    expect(tagsProblem(`ok, ${'x'.repeat(51)}`)).toBe('Keep each tag to 50 characters or fewer.');
+  });
+});
 
 describe('validateUsername', () => {
   it('rejects usernames shorter than 4 characters', () => {

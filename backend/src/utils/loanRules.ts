@@ -2,6 +2,8 @@
 // every rule can be unit tested directly. Routes in routes/loans.ts load a
 // loan, ask these functions what should happen, then persist the result.
 
+import { minutesIntoDay } from './appTime';
+
 export type LoanStatus = 'negotiating' | 'adventuring' | 'returned' | 'cancelled' | 'lost' | 'critically_wounded';
 export type LoanStage = 'negotiating' | 'agreed' | 'adventuring' | 'overdue' | 'returned' | 'cancelled' | 'lost' | 'critically_wounded';
 export type LoanRole = 'borrower' | 'owner';
@@ -32,6 +34,11 @@ export type RuleFailure = { ok: false; status: 400 | 403 | 409; error: string };
 export const MAX_DURATION_DAYS = 90;
 export const DURATION_LIMIT_MESSAGE = `Loans can run from 1 to ${MAX_DURATION_DAYS} days (about 3 months)`;
 const MAX_TEXT_LENGTH = 255;
+// The hours a handoff may be arranged for, inclusive: 6:00am to 10:00pm.
+// Mirrored by frontend/src/limits.ts (handoffHours).
+export const HANDOFF_EARLIEST_MINUTES = 6 * 60;
+export const HANDOFF_LATEST_MINUTES = 22 * 60;
+export const HANDOFF_HOURS_MESSAGE = 'Pick a handoff time between 6am and 10pm';
 const MIN_YEAR = 2000;
 const MAX_YEAR = 2100;
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -88,6 +95,12 @@ export function parseTermsPatch(
     const year = when.getUTCFullYear();
     if (year < MIN_YEAR || year > MAX_YEAR) {
       return { ok: false, status: 400, error: 'That date doesn\'t look right — check the year' };
+    }
+    // Everyone is in one city: a handoff is a doorstep or a game store, not
+    // 3am. Judged on the group's clock (APP_TIMEZONE), 6:00am to 10:00pm.
+    const minutes = minutesIntoDay(when);
+    if (minutes < HANDOFF_EARLIEST_MINUTES || minutes > HANDOFF_LATEST_MINUTES) {
+      return { ok: false, status: 400, error: HANDOFF_HOURS_MESSAGE };
     }
     patch.handoffWhen = when;
   }

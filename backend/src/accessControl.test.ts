@@ -67,7 +67,7 @@ const PUBLIC = new Set([
 ]);
 const PROTECTED = ALL.filter(e => !PUBLIC.has(label(e)));
 const ADMIN_ONLY = ALL.filter(e => e.path.startsWith('/api/admin'));
-const COLLECTION_SCOPED = ALL.filter(e => /^\/api\/(minis|cart|loans|admin|holds|bookings|notifications)/.test(e.path));
+const COLLECTION_SCOPED = ALL.filter(e => /^\/api\/(minis|cart|loans|admin|holds|bookings|notifications|export)/.test(e.path));
 
 function send(e: Endpoint, cookie?: string) {
   let req = request(app)[e.method](e.path);
@@ -95,7 +95,10 @@ describe('the endpoint list itself', () => {
       'POST /api/holds/minis/1',
       'POST /api/bookings/minis/1',
       'POST /api/loans/1/condition',
+      'POST /api/loans/1/messages',
       'POST /api/notifications/read-all',
+      'POST /api/push/subscriptions',
+      'GET /api/export/',
     ]));
     expect(ADMIN_ONLY.length).toBeGreaterThanOrEqual(6);
   });

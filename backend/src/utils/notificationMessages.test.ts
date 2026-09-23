@@ -35,6 +35,14 @@ describe('notification wording', () => {
       .toBe('Bob recorded how Dire Wolf looked at the return');
   });
 
+  // The bell shows the message itself, so a glance says whether it's urgent.
+  it('quotes a loan message, on one line', () => {
+    expect(messages.loanMessage('Bob', 'Dire Wolf', 'Running 20 minutes late'))
+      .toBe('Bob about Dire Wolf: “Running 20 minutes late”');
+    expect(messages.loanMessage('Bob', 'Dire Wolf', 'Front door.\n\nRing  twice.'))
+      .toBe('Bob about Dire Wolf: “Front door. Ring twice.”');
+  });
+
   it('reads naturally for bookings', () => {
     expect(messages.bookingPlaced('Alice', 'Dire Wolf', '2026-10-14'))
       .toBe('Alice booked Dire Wolf for Oct 14, 2026');

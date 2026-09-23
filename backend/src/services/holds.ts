@@ -4,6 +4,7 @@ import { rows, firstRow, firstValue, change, insert } from '../db/query';
 import { notify } from '../db/notifications';
 import { messages } from '../utils/notificationMessages';
 import { miniStatusFrom, MiniStatus } from '../utils/miniStatus';
+import { todayInApp } from '../utils/appTime';
 
 // The hold line: up to MAX_HOLDS people waiting, in order, for a mini that
 // isn't available. Nobody in line negotiates while the mini is out; once it's
@@ -377,8 +378,8 @@ export async function announceMiniRemoved(miniId: number): Promise<void> {
   );
   if (!mini) return;
   const booked = await rows<{ user_id: number }>(
-    'SELECT DISTINCT user_id FROM bookings WHERE mini_id = ? AND ends_on >= CURDATE()',
-    [miniId]
+    'SELECT DISTINCT user_id FROM bookings WHERE mini_id = ? AND ends_on >= ?',
+    [miniId, todayInApp()]
   );
   const waiting = [...await currentLine(miniId), ...await watcherIds(miniId), ...booked.map(b => b.user_id)];
   await notify(waiting, {

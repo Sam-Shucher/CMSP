@@ -105,6 +105,18 @@ describe('GET /api/sets', () => {
     expect(res.status).toBe(200);
     expect(res.body).toEqual([]);
   });
+
+  it('leaves members\' prices out in a group with prices turned off', async () => {
+    execute
+      .mockResolvedValueOnce([[{ role: 'user', show_prices: 0 }]])
+      .mockResolvedValueOnce([[setRow()]])
+      .mockResolvedValueOnce([[memberRow({ price: '12.50' })]]);
+
+    const res = await request(app).get('/api/sets').set('Cookie', authCookie(OWNER));
+
+    expect(res.status).toBe(200);
+    expect(res.body[0].members[0].price).toBeNull();
+  });
 });
 
 describe('GET /api/sets/:id', () => {
@@ -289,6 +301,7 @@ describe('PATCH /api/sets/:id', () => {
     execute
       .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
       .mockResolvedValueOnce([[setRow()]])
+      .mockResolvedValueOnce([[{ id: 1 }]])         // it is in this set
       .mockResolvedValueOnce([{ affectedRows: 1 }]) // UPDATE minis SET set_id = NULL
       .mockResolvedValueOnce([[setRow()]])
       .mockResolvedValueOnce([[]]);
@@ -305,11 +318,50 @@ describe('PATCH /api/sets/:id', () => {
     execute
       .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
       .mockResolvedValueOnce([[setRow()]])
-      .mockResolvedValueOnce([{ affectedRows: 0 }]); // nothing matched set_id = this set
+      .mockResolvedValueOnce([[]]); // nothing in this set by that id
 
     const res = await request(app).patch('/api/sets/501').set('Cookie', authCookie(OWNER)).send({ removeMiniIds: [77] });
 
     expect(res.status).toBe(400);
+    expect(execute.mock.calls.some(([sql]) => String(sql).includes('UPDATE'))).toBe(false);
+  });
+
+  // A request is all or nothing: one bad part must not leave the others done.
+  it('keeps the old name when the same request\'s "add" is refused', async () => {
+    execute
+      .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
+      .mockResolvedValueOnce([[setRow()]])
+      .mockResolvedValueOnce([[]]); // ownership check finds nothing
+
+    const res = await request(app).patch('/api/sets/501').set('Cookie', authCookie(OWNER))
+      .send({ name: 'Renamed Host', addMiniIds: [99] });
+
+    expect(res.status).toBe(400);
+    expect(execute.mock.calls.some(([sql]) => String(sql).includes('UPDATE'))).toBe(false);
+  });
+
+  it('adds nothing when the same request\'s "remove" is refused', async () => {
+    execute
+      .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
+      .mockResolvedValueOnce([[setRow()]])
+      .mockResolvedValueOnce([[{ id: 5 }]]) // the add is fine
+      .mockResolvedValueOnce([[]]);         // the remove isn't
+
+    const res = await request(app).patch('/api/sets/501').set('Cookie', authCookie(OWNER))
+      .send({ addMiniIds: [5], removeMiniIds: [77] });
+
+    expect(res.status).toBe(400);
+    expect(execute.mock.calls.some(([sql]) => String(sql).includes('UPDATE'))).toBe(false);
+  });
+
+  it('refuses a bad list before renaming anything', async () => {
+    execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED).mockResolvedValueOnce([[setRow()]]);
+
+    const res = await request(app).patch('/api/sets/501').set('Cookie', authCookie(OWNER))
+      .send({ name: 'Renamed Host', removeMiniIds: 'all of them' });
+
+    expect(res.status).toBe(400);
+    expect(execute).toHaveBeenCalledTimes(2);
   });
 });
 

@@ -14,22 +14,22 @@ vi.mock('../db/connection', () => ({
 import { pool } from '../db/connection';
 import { placeBooking, cancelBooking, miniCalendar, listMyBookings } from '../services/bookings';
 import { createApp } from '../app';
+import { todayInApp, addDays } from '../utils/appTime';
 
 const app = createApp();
 const execute = pool.execute as unknown as ReturnType<typeof vi.fn>;
 const MEMBERSHIP_CONFIRMED = [[{ id: 1 }]];
 const MEMBER = { userId: 2, username: 'wendy', role: 'user', collectionId: 10 };
 
-const DAY_MS = 24 * 60 * 60 * 1000;
 function day(offsetDays: number): string {
-  return new Date(Date.now() + offsetDays * DAY_MS).toISOString().slice(0, 10);
+  return addDays(todayInApp(), offsetDays);
 }
 
 beforeEach(() => {
   execute.mockReset();
   vi.mocked(placeBooking).mockReset().mockResolvedValue({ ok: true, bookingId: 7 });
   vi.mocked(cancelBooking).mockReset().mockResolvedValue({ ok: true });
-  vi.mocked(miniCalendar).mockReset().mockResolvedValue({ max: 10, bookings: [] });
+  vi.mocked(miniCalendar).mockReset().mockResolvedValue({ max: 10, bookings: [], out: null, bookable: true, earliestStart: day(0) });
   vi.mocked(listMyBookings).mockReset().mockResolvedValue({ mine: [], onMyMinis: [] });
   vi.spyOn(console, 'error').mockImplementation(() => {});
 });
@@ -103,6 +103,9 @@ describe('GET /api/bookings/minis/:miniId', () => {
     vi.mocked(miniCalendar).mockResolvedValue({
       max: 10,
       bookings: [{ id: 1, startsOn: day(14), endsOn: day(15), holderName: null, note: null, mine: false, started: false }],
+      out: { until: day(3), reason: 'loan' },
+      bookable: true,
+      earliestStart: day(4),
     });
     execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED);
 
@@ -110,6 +113,8 @@ describe('GET /api/bookings/minis/:miniId', () => {
 
     expect(res.status).toBe(200);
     expect(res.body.bookings).toHaveLength(1);
+    // What the page needs to warn before anyone picks a day.
+    expect(res.body).toMatchObject({ out: { until: day(3), reason: 'loan' }, bookable: true, earliestStart: day(4) });
     expect(miniCalendar).toHaveBeenCalledWith(42, MEMBER.userId, 10);
   });
 

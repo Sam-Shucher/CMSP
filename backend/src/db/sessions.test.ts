@@ -11,7 +11,7 @@ vi.mock('./connection', () => ({
 }));
 
 import { pool } from './connection';
-import { createSession, touchSession, revokeSession, revokeAllSessions, purgeEndedSessions } from './sessions';
+import { createSession, touchSession, revokeSession, revokeAllSessions, revokeOtherSessions, purgeEndedSessions } from './sessions';
 import { SESSION_LIFETIME_DAYS, SESSION_IDLE_DAYS } from '../config';
 
 const execute = pool.execute as unknown as ReturnType<typeof vi.fn>;
@@ -85,9 +85,24 @@ describe('ending sessions', () => {
   });
 
   it('revokes every live session a user has', async () => {
-    execute.mockResolvedValueOnce([{}]);
+    execute.mockResolvedValue([{}]);
     await revokeAllSessions(7);
     expect(execute).toHaveBeenCalledWith(expect.stringMatching(/WHERE user_id = \? AND revoked_at IS NULL/), [7]);
+  });
+
+  // Signing out everywhere after losing a phone has to stop that phone
+  // showing their notifications too.
+  it('forgets every device they get phone notifications on', async () => {
+    execute.mockResolvedValue([{}]);
+    await revokeAllSessions(7);
+    expect(execute).toHaveBeenCalledWith('DELETE FROM push_subscriptions WHERE user_id = ?', [7]);
+  });
+
+  it('does the same when signing out everywhere else (a password change)', async () => {
+    execute.mockResolvedValue([{}]);
+    await revokeOtherSessions(7, 'keep-me');
+    expect(execute).toHaveBeenCalledWith(expect.stringMatching(/AND id <> \?/), [7, 'keep-me']);
+    expect(execute).toHaveBeenCalledWith('DELETE FROM push_subscriptions WHERE user_id = ?', [7]);
   });
 
   it('purges sessions that ended over a day ago and reports how many', async () => {

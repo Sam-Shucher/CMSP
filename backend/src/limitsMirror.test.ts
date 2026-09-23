@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import fs from 'fs';
 import path from 'path';
 import { LIMITS } from './utils/inputs';
-import { MAX_DURATION_DAYS } from './utils/loanRules';
+import { MAX_DURATION_DAYS, HANDOFF_EARLIEST_MINUTES, HANDOFF_LATEST_MINUTES } from './utils/loanRules';
 import { MAX_QUEST_DAYS } from './utils/quest';
 import { MAX_BOOKING_DAYS, MAX_BOOKING_AHEAD_DAYS } from './utils/bookingRules';
 import { MAX_CONDITION_PHOTOS } from './utils/conditionReports';
@@ -59,6 +59,7 @@ describe('frontend/src/limits.ts mirrors what the server actually enforces', () 
     ['setMembers', () => LIMITS.setMembers],
     ['conditionNote', () => LIMITS.conditionNote],
     ['bookingNote', () => LIMITS.bookingNote],
+    ['loanMessage', () => LIMITS.loanMessage],
   ])('mirrors the %s length limit', (name: string, server: () => number) => {
     expect(mirrored(name)).toBe(server());
   });
@@ -74,6 +75,12 @@ describe('frontend/src/limits.ts mirrors what the server actually enforces', () 
   it('mirrors how long a booking may run and how far ahead it may be made', () => {
     expect(mirrored('bookingDays')).toBe(MAX_BOOKING_DAYS);
     expect(mirrored('bookingAheadDays')).toBe(MAX_BOOKING_AHEAD_DAYS);
+  });
+
+  // A picker that lets someone propose 3am only for the server to refuse it.
+  it('mirrors the hours a handoff may be arranged for', () => {
+    expect(mirrored('handoffEarliestMinutes')).toBe(HANDOFF_EARLIEST_MINUTES);
+    expect(mirrored('handoffLatestMinutes')).toBe(HANDOFF_LATEST_MINUTES);
   });
 
   it('mirrors how many photos a condition report takes', () => {

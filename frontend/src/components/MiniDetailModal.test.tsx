@@ -46,6 +46,14 @@ describe('MiniDetailModal', () => {
     expect(screen.getByText('$12.50')).toBeInTheDocument();
   });
 
+  // Feature 17: with prices off for the group, the server sends null.
+  it('shows no price at all when the group has prices turned off', () => {
+    render(<MiniDetailModal mini={makeMini({ price: null })} onClose={vi.fn()} />);
+
+    expect(screen.getByText('Dire Wolf')).toBeInTheDocument();
+    expect(screen.queryByText(/\$/)).not.toBeInTheDocument();
+  });
+
   it('says which set a mini is part of', () => {
     render(<MiniDetailModal mini={makeMini({ set_id: 501, set_name: 'Blades of Khaine' })} onClose={vi.fn()} />);
 
@@ -329,6 +337,39 @@ describe('MiniDetailModal — hold line', () => {
     render(<MiniDetailModal mini={makeMini({ status: 'adventuring', available: false })} onClose={vi.fn()} onAddToCart={vi.fn()} />);
 
     expect(fetch).not.toHaveBeenCalled();
+  });
+});
+
+// Feature 13: the calendar sits under the hold line, and unlike the line it
+// matters whether or not the mini is free today.
+describe('MiniDetailModal — booking days', () => {
+  beforeEach(() => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      const body = url.startsWith('/api/bookings/minis/')
+        ? { max: 10, bookings: [{ id: 1, startsOn: '2026-10-14', endsOn: '2026-10-14', holderName: null, note: null, mine: false, started: false }] }
+        : { max: 3, count: 0, position: null, watching: false };
+      return { ok: true, status: 200, json: async () => body } as Response;
+    }));
+  });
+
+  it('shows the booked days for a mini that is free today', async () => {
+    render(<MiniDetailModal mini={makeMini()} onClose={vi.fn()} onAddToCart={vi.fn()} showHolds />);
+
+    expect(await screen.findByRole('list', { name: /booked days/i })).toBeInTheDocument();
+    expect(fetch).toHaveBeenCalledWith('/api/bookings/minis/1', expect.anything());
+  });
+
+  it('shows them for a mini that is out, too', async () => {
+    render(<MiniDetailModal mini={makeMini({ status: 'adventuring', available: false })} onClose={vi.fn()} onAddToCart={vi.fn()} showHolds />);
+
+    expect(await screen.findByRole('list', { name: /booked days/i })).toBeInTheDocument();
+  });
+
+  it('doesn\'t look up bookings unless enabled', () => {
+    render(<MiniDetailModal mini={makeMini()} onClose={vi.fn()} onAddToCart={vi.fn()} />);
+
+    expect(fetch).not.toHaveBeenCalledWith('/api/bookings/minis/1', expect.anything());
   });
 });
 

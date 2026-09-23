@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import { api, Mini, MiniOwner, CartItem, CART_CHANGED_EVENT } from '../api/client';
-import { useAuth } from '../App';
+import { useAuth, useShowPrices } from '../App';
 import MiniDetailModal from '../components/MiniDetailModal';
 import MiniStatusBadge from '../components/MiniStatusBadge';
 import { LIMITS } from '../limits';
@@ -14,6 +14,7 @@ type SortOption = 'newest' | 'name' | 'price';
 // The main browse page — shows a searchable, filterable grid of all minis.
 export default function DashboardPage(): React.ReactElement {
   const { user } = useAuth();
+  const showPrices = useShowPrices();
   const [cartMiniIds, setCartMiniIds] = useState<Set<number>>(new Set());
   const [minis, setMinis]         = useState<Mini[]>([]);
   const [tags, setTags]           = useState<string[]>([]);  // all tags for the filter bar
@@ -134,7 +135,7 @@ export default function DashboardPage(): React.ReactElement {
         >
           <option value="newest">Newest</option>
           <option value="name">Name</option>
-          <option value="price">Price</option>
+          {showPrices && <option value="price">Price</option>}
         </select>
 
         <select
@@ -328,7 +329,7 @@ function MiniCard({ mini, onOpenDetail }: { mini: Mini; onOpenDetail: () => void
           <p style={{ fontSize: '12px', color: '#8a7d6a', marginBottom: '4px' }}>Part of: {mini.set_name}</p>
         )}
 
-        {mini.price > 0 && (
+        {mini.price !== null && mini.price > 0 && (
           <p style={{ fontSize: '13px', color: '#c9a84c', fontWeight: 600, marginBottom: '10px' }}>
             ${mini.price.toFixed(2)}
           </p>

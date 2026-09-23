@@ -234,6 +234,39 @@ describe('photos', () => {
     expect(anonymous.status).toBe(401);
   });
 
+  // Feature 12: a condition photo belongs to a loan, and a loan is only ever
+  // visible to its two people — not the rest of the group, and not an admin
+  // who isn't on it.
+  it('from a loan\'s condition report are only served to that loan\'s two people', async () => {
+    const borrower = await createUser('borrower', chicago);
+    const miniId = await createMini(member, 'Dire Wolf');
+    const [loan] = await pool.execute<ResultSetHeader>(
+      `INSERT INTO loans (mini_id, collection_id, borrower_id, owner_id, status, handed_off_at)
+       VALUES (?, ?, ?, ?, 'adventuring', NOW())`,
+      [miniId, chicago, borrower.userId, member.userId]
+    );
+    const [report] = await pool.execute<ResultSetHeader>(
+      'INSERT INTO loan_condition_reports (loan_id, phase, author_id, note) VALUES (?, ?, ?, ?)',
+      [loan.insertId, 'handoff', borrower.userId, 'Spear already bent']
+    );
+    fs.writeFileSync(path.join(uploadsDir, '1700000003-bent.png'), 'PHOTO:bent');
+    const photo = '/uploads/1700000003-bent.png';
+    await pool.execute('INSERT INTO loan_condition_photos (report_id, image_path, position) VALUES (?, ?, 0)', [report.insertId, photo]);
+
+    const asBorrower = await request(app).get(photo).set('Cookie', borrower.cookie);
+    const asOwner = await request(app).get(photo).set('Cookie', member.cookie); // member owns the mini
+    const asAdminNotOnTheLoan = await request(app).get(photo).set('Cookie', admin.cookie);
+    const asOtherCollection = await request(app).get(photo).set('Cookie', dojoMember.cookie);
+    const anonymous = await request(app).get(photo);
+
+    expect(asBorrower.status).toBe(200);
+    expect(asBorrower.body.toString()).toContain('PHOTO:bent');
+    expect(asOwner.status).toBe(200);
+    expect(asAdminNotOnTheLoan.status).toBe(404);
+    expect(asOtherCollection.status).toBe(404);
+    expect(anonymous.status).toBe(401);
+  });
+
   it('are not served for files on disk that no mini uses', async () => {
     fs.writeFileSync(path.join(uploadsDir, '1700000002-orphan.png'), 'ORPHAN');
 
@@ -326,8 +359,8 @@ describe('roles belong to one collection at a time', () => {
 
     const collections = await request(app).get('/api/auth/collections').set('Cookie', admin.cookie);
     expect(collections.body).toEqual([
-      { id: chicago, name: 'Chicago', role: 'admin' },
-      { id: dojo, name: 'dojo', role: 'user' },
+      { id: chicago, name: 'Chicago', role: 'admin', showPrices: true },
+      { id: dojo, name: 'dojo', role: 'user', showPrices: true },
     ]);
 
     expect((await request(app).get('/api/auth/me').set('Cookie', admin.cookie)).body.role).toBe('admin');

@@ -5,7 +5,7 @@ export type NotificationType =
   | 'hold_placed' | 'your_turn' | 'hold_became_request' | 'moved_up' | 'spot_opened' | 'mini_removed'
   | 'request_created' | 'terms_proposed' | 'terms_approved' | 'request_cancelled'
   | 'handed_off' | 'received' | 'returned' | 'overdue' | 'extended' | 'ownership_transferred'
-  | 'lost' | 'critically_wounded' | 'condition_recorded'
+  | 'lost' | 'critically_wounded' | 'condition_recorded' | 'loan_message'
   | 'booking_placed' | 'booking_cancelled' | 'booking_started' | 'booking_became_request' | 'booking_missed';
 
 const MAX_LENGTH = 255; // notifications.message column
@@ -39,6 +39,10 @@ export const messages = {
   criticallyWounded: (owner: string, mini: string) => `${owner} marked ${mini} as critically wounded`,
   conditionRecorded: (name: string, mini: string, phase: 'handoff' | 'return') =>
     `${name} recorded how ${mini} looked at the ${phase}`,
+  // Line breaks and runs of spaces collapse — the bell is one line per entry.
+  // A long message is cut to fit the column by fitMessage, like any other.
+  loanMessage: (name: string, mini: string, body: string) =>
+    `${name} about ${mini}: “${body.replace(/\s+/g, ' ').trim()}”`,
 
   bookingPlaced: (booker: string, mini: string, startsOn: string) =>
     `${booker} booked ${mini} for ${readableDay(startsOn)}`,

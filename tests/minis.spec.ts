@@ -233,3 +233,70 @@ test('taking your own mini on a quest and bringing it back', async ({ as }) => {
   await bruno.getByText('Beholder').click();
   await expect(bruno.getByRole('button', { name: 'Add to cart' })).toBeEnabled();
 });
+
+// Feature 15: a whole shelf in one go — photos named as you go, and rows
+// copied out of a spreadsheet — instead of one form per mini.
+test('adding a shelf at once, from photos and from spreadsheet rows', async ({ as }) => {
+  const olivia = await as('olivia');
+  await olivia.goto('/upload');
+  await olivia.getByRole('link', { name: 'Add several at once' }).click();
+
+  // One mini per photo; a file already named for what's in it names the mini.
+  await olivia.getByTestId('image-input').setInputFiles([
+    { name: 'dire_wolf.png', mimeType: 'image/png', buffer: TINY_PNG },
+    { name: 'IMG_0001.png', mimeType: 'image/png', buffer: TINY_PNG },
+  ]);
+  await expect(olivia.getByRole('region', { name: 'Mini 1' }).getByLabel(/Name/)).toHaveValue('dire wolf');
+  await olivia.getByRole('region', { name: 'Mini 2' }).getByLabel(/Name/).fill('Owlbear');
+
+  await olivia.getByRole('button', { name: 'Paste from a spreadsheet' }).click();
+  await olivia.getByLabel('Spreadsheet rows').fill('name\ttags\tprice\nBeholder\tboss\t20');
+  await olivia.getByRole('button', { name: 'Add these rows' }).click();
+  await olivia.getByLabel('Tags for all of these').fill('shelf 3');
+
+  await olivia.getByRole('button', { name: 'Add 3 minis' }).click();
+  await expect(olivia.getByRole('status')).toContainText('Added 3 minis');
+
+  await olivia.getByRole('link', { name: 'See them on Browse' }).click();
+  for (const name of ['dire wolf', 'Owlbear', 'Beholder']) {
+    await expect(olivia.getByText(name, { exact: true })).toBeVisible();
+  }
+  await expect(olivia.getByRole('img', { name: 'dire wolf' })).toBeVisible();
+  await expect(olivia.getByText('$20.00')).toBeVisible();
+});
+
+// Backlog 17: some groups don't want a dollar figure on every mini at all.
+test('an admin turning prices off hides them from the whole group, and turning them on brings them back', async ({ as }) => {
+  const olivia = await as('olivia');
+  const ada = await as('ada');
+
+  await olivia.goto('/upload');
+  await olivia.getByLabel(/Name/).fill('Owlbear');
+  await olivia.getByLabel(/Price/).fill('30');
+  await olivia.getByRole('button', { name: 'Add to Collection' }).click();
+  await expect(olivia.getByText('$30.00')).toBeVisible();
+
+  await ada.goto('/');
+  await ada.getByRole('button', { name: /^Chicago/ }).click();
+  await ada.getByRole('link', { name: 'Admin' }).click();
+  const showPrices = ada.getByRole('checkbox', { name: 'Show prices' });
+  await expect(showPrices).toBeChecked();
+  await showPrices.click();
+  await expect(ada.getByText('Prices are now hidden in Chicago')).toBeVisible();
+  await expect(showPrices).not.toBeChecked();
+
+  // No price on the mini, nothing to sort by, and nothing to fill in.
+  await olivia.goto('/');
+  await expect(olivia.getByText('Owlbear')).toBeVisible();
+  await expect(olivia.getByText('$30.00')).toHaveCount(0);
+  await expect(olivia.getByLabel('Sort by').locator('option', { hasText: 'Price' })).toHaveCount(0);
+  await olivia.goto('/upload');
+  await expect(olivia.getByLabel(/Name/)).toBeVisible();
+  await expect(olivia.getByLabel(/Price/)).toHaveCount(0);
+
+  // The price was only hidden, never cleared.
+  await showPrices.click();
+  await expect(ada.getByText('Prices are now shown in Chicago')).toBeVisible();
+  await olivia.goto('/');
+  await expect(olivia.getByText('$30.00')).toBeVisible();
+});

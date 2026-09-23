@@ -1,9 +1,11 @@
 import { NotificationType, fitMessage } from '../utils/notificationMessages';
 import { NOTIFICATION_KEEP_READ_DAYS } from '../config';
 import { rows, firstValue, change } from './query';
+import { pushToUsers } from '../services/push';
 
 // The in-app bell. Notifications belong to a user within one collection, so
-// switching groups shows that group's notifications only.
+// switching groups shows that group's notifications only. Every notice also
+// goes to the recipients' phones (services/push.ts), if they've turned that on.
 
 export interface NotifyInput {
   collectionId: number;
@@ -25,6 +27,9 @@ export async function notify(userIds: number[], input: NotifyInput): Promise<voi
     `INSERT INTO notifications (user_id, collection_id, type, message, mini_id, loan_id) VALUES ${placeholders}`,
     params
   );
+  // Not awaited: the push services are on the internet and can be slow, and
+  // whatever triggered this shouldn't wait on them. pushToUsers never throws.
+  void pushToUsers(recipients, { ...input, message: fitMessage(input.message) });
 }
 
 export interface NotificationItem {

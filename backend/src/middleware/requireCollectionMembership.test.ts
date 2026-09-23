@@ -79,6 +79,27 @@ describe('requireCollectionMembership', () => {
     expect(req.user!.role).toBe('user');
   });
 
+  // Loaded alongside the role, so every collection-scoped route knows whether
+  // this group shows prices without a second query.
+  it('attaches whether the group shows prices', async () => {
+    execute.mockResolvedValueOnce([[{ role: 'user', show_prices: 0 }]]);
+
+    const req = { headers: {}, user: { userId: 1, username: 'owner', role: 'user', collectionId: 5 } } as unknown as CollectionRequest;
+    await requireCollectionMembership(req, mockRes(), vi.fn());
+
+    expect(req.showPrices).toBe(false);
+    expect(execute).toHaveBeenCalledWith(expect.stringContaining('show_prices'), [1, 5]);
+  });
+
+  it('shows prices when the group has them on', async () => {
+    execute.mockResolvedValueOnce([[{ role: 'user', show_prices: 1 }]]);
+
+    const req = { headers: {}, user: { userId: 1, username: 'owner', role: 'user', collectionId: 5 } } as unknown as CollectionRequest;
+    await requireCollectionMembership(req, mockRes(), vi.fn());
+
+    expect(req.showPrices).toBe(true);
+  });
+
   it('fails closed with a 500 (never next()) if the membership check itself errors', async () => {
     execute.mockRejectedValueOnce(new Error('connection lost'));
     vi.spyOn(console, 'error').mockImplementation(() => {});

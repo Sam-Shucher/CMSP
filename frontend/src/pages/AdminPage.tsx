@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { api } from '../api/client';
-import { useAuth } from '../App';
+import { useAuth, useShowPrices } from '../App';
 import ConfirmDeleteModal from '../components/ConfirmDeleteModal';
 import FieldError from '../components/FieldError';
 import { useValidatedForm } from '../hooks/useValidatedForm';
@@ -74,8 +74,11 @@ type IssuedPassword = {
 };
 
 export default function AdminPage(): React.ReactElement {
-  const { user: currentUser, collections } = useAuth();
+  const { user: currentUser, collections, refreshSession } = useAuth();
   const activeCollectionName = collections.find(c => c.id === currentUser?.collectionId)?.name ?? '';
+  const showPrices = useShowPrices();
+  const [savingSettings, setSavingSettings] = useState<boolean>(false);
+  const [settingsNote, setSettingsNote] = useState<{ ok: boolean; text: string } | null>(null);
   const [emails, setEmails]     = useState<ApprovedEmail[]>([]);
   const [users, setUsers]       = useState<UserRow[]>([]);
   const [archivedMinis, setArchivedMinis] = useState<ArchivedMini[]>([]);
@@ -138,6 +141,22 @@ export default function AdminPage(): React.ReactElement {
       setError(err instanceof Error ? err.message : 'Failed to add email');
     } finally {
       setLoading(false);
+    }
+  }
+
+  // Turns prices on or off for the whole group. The setting lives with the
+  // group list in the app's session, so that's reloaded for every page to follow.
+  async function changeShowPrices(show: boolean): Promise<void> {
+    setSettingsNote(null);
+    setSavingSettings(true);
+    try {
+      await api('/api/admin/settings', { method: 'PATCH', json: { showPrices: show } });
+      await refreshSession();
+      setSettingsNote({ ok: true, text: `Prices are now ${show ? 'shown' : 'hidden'} in ${activeCollectionName}` });
+    } catch (err: unknown) {
+      setSettingsNote({ ok: false, text: err instanceof Error ? err.message : 'Failed to change that setting' });
+    } finally {
+      setSavingSettings(false);
     }
   }
 
@@ -213,6 +232,29 @@ export default function AdminPage(): React.ReactElement {
       <p style={{ fontSize: '13px', color: '#8a7d6a', marginBottom: '24px' }}>
         Managing <strong style={{ color: '#e8e0d0' }}>{activeCollectionName}</strong> — switch groups to administer a different one.
       </p>
+
+      {/* ------------------------------------------------------------------ */}
+      {/* Group settings — how this group's pages behave for everyone in it  */}
+      {/* ------------------------------------------------------------------ */}
+      <section style={sectionStyle}>
+        <h3 style={sectionHeadStyle}>Group Settings</h3>
+        <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '14px', color: '#e8e0d0', cursor: 'pointer' }}>
+          <input
+            type="checkbox"
+            checked={showPrices}
+            disabled={savingSettings}
+            onChange={(e: React.ChangeEvent<HTMLInputElement>) => void changeShowPrices(e.target.checked)}
+          />
+          Show prices
+        </label>
+        <p style={{ fontSize: '13px', color: '#8a7d6a', marginTop: '6px' }}>
+          Off hides prices everywhere in {activeCollectionName} — on every mini, in the add and edit forms, and in
+          sorting. Prices already entered are kept, and come back if you turn this on again.
+        </p>
+        {settingsNote && (
+          <div className={settingsNote.ok ? 'success-msg' : 'error-msg'} style={{ marginTop: '12px' }}>{settingsNote.text}</div>
+        )}
+      </section>
 
       {/* ------------------------------------------------------------------ */}
       {/* Invite list — who is allowed to create an account                   */}

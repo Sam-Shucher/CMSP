@@ -155,7 +155,7 @@ export default function MiniDetailModal({ mini, onClose, isOwn = false, inCart =
             </p>
           )}
 
-          {mini.price > 0 && (
+          {mini.price !== null && mini.price > 0 && (
             <p style={{ fontSize: '15px', color: '#c9a84c', fontWeight: 600, marginBottom: '14px' }}>
               ${mini.price.toFixed(2)}
             </p>

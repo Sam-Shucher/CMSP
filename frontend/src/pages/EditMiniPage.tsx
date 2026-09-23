@@ -5,6 +5,7 @@ import MiniForm, { MiniFormValues } from '../components/MiniForm';
 import ConfirmDeleteModal from '../components/ConfirmDeleteModal';
 import MiniHistory from '../components/MiniHistory';
 import TransferMini from '../components/TransferMini';
+import { useShowPrices } from '../App';
 
 // Page for editing a mini you already own (or, if you're an admin, anyone's).
 // The server re-checks ownership on submit regardless of what's shown here.
@@ -17,6 +18,7 @@ export default function EditMiniPage(): React.ReactElement {
   const [deleteError, setDeleteError] = useState<string>('');
   const [clearingCondition, setClearingCondition] = useState<boolean>(false);
   const [clearError, setClearError] = useState<string>('');
+  const showPrices = useShowPrices();
 
   useEffect(() => {
     api<Mini>(`/api/minis/${id}`)
@@ -29,7 +31,10 @@ export default function EditMiniPage(): React.ReactElement {
     fd.append('name', values.name);
     if (values.description.trim()) fd.append('description', values.description.trim());
     if (values.tags.trim())        fd.append('tags', values.tags.trim());
-    if (values.price.trim())       fd.append('price', values.price.trim());
+    // Sent whenever the price box was on screen, even empty (a cleared price is
+    // 0). With no box — prices off when this page opened — nothing is sent, and
+    // the server leaves the stored price alone even if prices are back on now.
+    if (showPrices)                fd.append('price', values.price.trim());
     fd.append('existingImages', JSON.stringify(keptExistingImages));
     newImages.forEach((file: File) => fd.append('images', file));
 
@@ -104,7 +109,7 @@ export default function EditMiniPage(): React.ReactElement {
           name: mini.name,
           description: mini.description ?? '',
           tags: mini.tags.join(','),
-          price: Number(mini.price).toFixed(2),
+          price: mini.price === null ? '' : mini.price.toFixed(2), // null: prices are off in this group
         }}
         initialImages={mini.images}
         submitLabel="Save Changes"

@@ -3,6 +3,7 @@ import { api } from '../api/client';
 import FieldError from './FieldError';
 import { useValidatedForm } from '../hooks/useValidatedForm';
 import { validatePassword } from '../utils/validation';
+import { resyncPush } from '../push';
 
 const MAX_PASSWORD_BYTES = 72; // bcrypt ignores anything past this
 
@@ -38,6 +39,9 @@ export default function ChangePasswordForm({ onChanged }: ChangePasswordFormProp
       });
       form.reset(); // don't leave passwords sitting in the boxes
       setDone(true);
+      // The server just forgot every device's phone notifications (so one
+      // someone else signed up stops); this one signs straight back up.
+      void resyncPush();
       onChanged?.();
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Something went wrong');

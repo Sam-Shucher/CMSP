@@ -1,10 +1,14 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import request from 'supertest';
+import fs from 'fs';
 import { createApp } from '../app';
 import { pool } from '../db/connection';
+import { uploadsDir } from '../config';
+import { MAX_MESSAGES_PER_LOAN } from '../utils/loanMessages';
 import {
   assertDatabaseReachable, resetDatabase, createCollection, createUser, createMini, TestUser,
 } from '../test/dbHelpers';
+import { todayInApp, addDays } from '../utils/appTime';
 
 const app = createApp();
 
@@ -706,12 +710,261 @@ describe('condition reports', () => {
   });
 });
 
+// Condition photos go through the same upload pipeline as a mini's
+// (middleware/uploads.ts), so the same promises have to hold here: at most
+// three, only real images, and nothing left on disk when the report is refused.
+describe('condition report photos', () => {
+  // A real (1×1) PNG — uploads are checked to be actual images.
+  const PNG_BYTES = Buffer.from(
+    '89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000a49444154789c6300010000050001' +
+    '0d0a2db40000000049454e44ae426082',
+    'hex'
+  );
+  const onDisk = () => new Set(fs.existsSync(uploadsDir()) ? fs.readdirSync(uploadsDir()) : []);
+  const newFiles = (before: Set<string>) => [...onDisk()].filter(name => !before.has(name));
+
+  async function adventuring(): Promise<number> {
+    const loanId = await requestMini(borrower, await createMini(owner, 'Dire Wolf'));
+    await agreeOnTerms(loanId);
+    await act(owner, loanId, 'handoff');
+    return loanId;
+  }
+
+  function report(who: TestUser, loanId: number, phase: string, photos: { bytes: Buffer; name: string }[], note?: string) {
+    let req = request(app).post(`/api/loans/${loanId}/condition`).set('Cookie', who.cookie).field('phase', phase);
+    if (note !== undefined) req = req.field('note', note);
+    for (const photo of photos) req = req.attach('photos', photo.bytes, { filename: photo.name, contentType: 'image/png' });
+    return req;
+  }
+
+  async function reportCount(): Promise<number> {
+    const [rows] = await pool.query<import('mysql2').RowDataPacket[]>('SELECT COUNT(*) AS n FROM loan_condition_reports');
+    return Number(rows[0].n);
+  }
+
+  it('saves the photos with the report, under server-chosen names, and they are on disk', async () => {
+    const loanId = await adventuring();
+    const before = onDisk();
+
+    const res = await report(borrower, loanId, 'handoff', [
+      { bytes: PNG_BYTES, name: 'bent spear.png' },
+      { bytes: PNG_BYTES, name: 'base.png' },
+    ]);
+
+    expect(res.status).toBe(201);
+    const photos: string[] = res.body[0].photos;
+    expect(photos).toHaveLength(2);
+    for (const photo of photos) {
+      expect(photo).toMatch(/^\/uploads\/[A-Za-z0-9-]+\.png$/); // never the uploader's filename
+    }
+    expect(newFiles(before).sort()).toEqual(photos.map(p => p.replace('/uploads/', '')).sort());
+  });
+
+  it('takes a photo with no note — a photo alone is a record', async () => {
+    const loanId = await adventuring();
+
+    const res = await report(owner, loanId, 'handoff', [{ bytes: PNG_BYTES, name: 'a.png' }]);
+
+    expect(res.status).toBe(201);
+    expect(res.body[0]).toMatchObject({ note: null });
+    expect(res.body[0].photos).toHaveLength(1);
+  });
+
+  it('refuses a fourth photo, records nothing, and keeps none of the files', async () => {
+    const loanId = await adventuring();
+    const before = onDisk();
+
+    const res = await report(borrower, loanId, 'handoff', ['a', 'b', 'c', 'd'].map(n => ({ bytes: PNG_BYTES, name: `${n}.png` })), 'Four angles');
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/at most 3 photos/);
+    expect(await reportCount()).toBe(0);
+    expect(newFiles(before)).toEqual([]);
+  });
+
+  it('refuses a text file renamed .png, records nothing, and keeps none of the files', async () => {
+    const loanId = await adventuring();
+    const before = onDisk();
+
+    const res = await report(borrower, loanId, 'handoff', [
+      { bytes: PNG_BYTES, name: 'real.png' },
+      { bytes: Buffer.from('definitely a photo'), name: 'notes.png' },
+    ], 'Looked fine');
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/notes\.png/);
+    expect(await reportCount()).toBe(0);
+    expect(newFiles(before)).toEqual([]);
+  });
+
+  it('deletes the photos of a second report on the same end, since that report is refused', async () => {
+    const loanId = await adventuring();
+    await report(borrower, loanId, 'handoff', [], 'Looked fine');
+    const before = onDisk();
+
+    const res = await report(borrower, loanId, 'handoff', [{ bytes: PNG_BYTES, name: 'actually-broken.png' }]);
+
+    expect(res.status).toBe(409);
+    expect(newFiles(before)).toEqual([]);
+    const [photos] = await pool.query('SELECT id FROM loan_condition_photos');
+    expect(photos).toEqual([]);
+  });
+
+  it('deletes the photos sent by someone who is not on the loan', async () => {
+    const loanId = await adventuring();
+    const before = onDisk();
+
+    const res = await report(bystander, loanId, 'return', [{ bytes: PNG_BYTES, name: 'not-mine.png' }]);
+
+    expect(res.status).toBe(404);
+    expect(newFiles(before)).toEqual([]);
+  });
+});
+
+// Feature 16: a message thread per loan, so "running 20 minutes late" stays
+// next to what was agreed instead of in a text thread. Against a real
+// database, because what matters is who can see it and what "seen" means.
+describe('loan messages', () => {
+  function say(who: TestUser, loanId: number, body: string) {
+    return request(app).post(`/api/loans/${loanId}/messages`).set('Cookie', who.cookie).send({ body });
+  }
+  function thread(who: TestUser, loanId: number) {
+    return request(app).get(`/api/loans/${loanId}/messages`).set('Cookie', who.cookie);
+  }
+  function markRead(who: TestUser, loanId: number) {
+    return request(app).post(`/api/loans/${loanId}/messages/read`).set('Cookie', who.cookie);
+  }
+  async function loanAs(who: TestUser, loanId: number) {
+    const loans = await request(app).get('/api/loans').set('Cookie', who.cookie);
+    return (loans.body as { id: number; messageCount: number; unreadMessages: number; messagesOpen: boolean }[])
+      .find(loan => loan.id === loanId)!;
+  }
+
+  it('keeps both sides\' messages in the order they were sent, each seen from its reader\'s side', async () => {
+    const loanId = await requestMini(borrower, await createMini(owner, 'Dire Wolf'));
+
+    await say(borrower, loanId, 'Can we do Thursday?');
+    await say(owner, loanId, 'Thursday works — front door, ring twice');
+    const res = await say(borrower, loanId, 'Running 20 minutes late');
+
+    expect(res.status).toBe(201);
+    expect(res.body.map((m: { body: string; mine: boolean }) => [m.body, m.mine])).toEqual([
+      ['Can we do Thursday?', true],
+      ['Thursday works — front door, ring twice', false],
+      ['Running 20 minutes late', true],
+    ]);
+    const asOwner = await thread(owner, loanId);
+    expect(asOwner.body.map((m: { authorName: string; mine: boolean }) => [m.authorName, m.mine])).toEqual([
+      ['borrower display', false],
+      ['owner display', true],
+      ['borrower display', false],
+    ]);
+  });
+
+  it('is invisible to anyone else in the collection, and they can\'t post to it', async () => {
+    const loanId = await requestMini(borrower, await createMini(owner, 'Dire Wolf'));
+    await say(borrower, loanId, 'Front door?');
+
+    expect((await thread(bystander, loanId)).status).toBe(404);
+    expect((await say(bystander, loanId, 'Can I have it after?')).status).toBe(404);
+    expect((await markRead(bystander, loanId)).status).toBe(404);
+    expect((await thread(borrower, loanId)).body).toHaveLength(1);
+  });
+
+  it('counts unread messages for the reader only, until they open the thread', async () => {
+    const loanId = await requestMini(borrower, await createMini(owner, 'Dire Wolf'));
+    await say(borrower, loanId, 'Can we do Thursday?');
+    await say(borrower, loanId, 'Or Friday');
+
+    expect(await loanAs(owner, loanId)).toMatchObject({ messageCount: 2, unreadMessages: 2, messagesOpen: true });
+    expect(await loanAs(borrower, loanId)).toMatchObject({ messageCount: 2, unreadMessages: 0 });
+
+    // Reading the thread alone changes nothing; saying you've seen it does.
+    await thread(owner, loanId);
+    expect((await loanAs(owner, loanId)).unreadMessages).toBe(2);
+
+    expect((await markRead(owner, loanId)).body).toEqual({ read: 2 });
+    expect((await loanAs(owner, loanId)).unreadMessages).toBe(0);
+  });
+
+  it('shows the sender when the other side has seen their message', async () => {
+    const loanId = await requestMini(borrower, await createMini(owner, 'Dire Wolf'));
+    await say(borrower, loanId, 'Can we do Thursday?');
+    expect((await thread(borrower, loanId)).body[0].read).toBe(false);
+
+    // Marking your OWN messages read is not a thing — only the reader can.
+    await markRead(borrower, loanId);
+    expect((await thread(borrower, loanId)).body[0].read).toBe(false);
+
+    await markRead(owner, loanId);
+    expect((await thread(borrower, loanId)).body[0].read).toBe(true);
+  });
+
+  it('stays open through the handoff, then keeps the record but takes nothing new', async () => {
+    const loanId = await requestMini(borrower, await createMini(owner, 'Dire Wolf'));
+    await say(borrower, loanId, 'See you at the store');
+    await agreeOnTerms(loanId);
+    await act(owner, loanId, 'handoff');
+
+    expect((await say(borrower, loanId, 'Got it, thanks!')).status).toBe(201);
+
+    await act(owner, loanId, 'return');
+    const late = await say(borrower, loanId, 'One more thing');
+
+    expect(late.status).toBe(409);
+    expect((await thread(owner, loanId)).body.map((m: { body: string }) => m.body)).toEqual(['See you at the store', 'Got it, thanks!']);
+    expect(await loanAs(owner, loanId)).toMatchObject({ messageCount: 2, messagesOpen: false });
+  });
+
+  it('closes when a request is cancelled', async () => {
+    const loanId = await requestMini(borrower, await createMini(owner, 'Dire Wolf'));
+    await act(owner, loanId, 'cancel');
+
+    expect((await say(borrower, loanId, 'Why?')).status).toBe(409);
+  });
+
+  it('keeps each loan\'s thread to itself', async () => {
+    const first = await requestMini(borrower, await createMini(owner, 'Dire Wolf'));
+    const second = await requestMini(borrower, await createMini(owner, 'Owlbear'));
+    await say(borrower, first, 'About the wolf');
+
+    expect((await thread(borrower, second)).body).toEqual([]);
+    expect(await loanAs(owner, second)).toMatchObject({ messageCount: 0, unreadMessages: 0 });
+  });
+
+  // The ceiling that stops a stuck client growing one thread without bound —
+  // checked through the route, not just utils/loanMessages.ts.
+  it(`takes no more than ${MAX_MESSAGES_PER_LOAN} messages on one loan`, async () => {
+    const loanId = await requestMini(borrower, await createMini(owner, 'Dire Wolf'));
+    const values = Array.from({ length: MAX_MESSAGES_PER_LOAN - 1 }, () => '(?, ?, ?)').join(', ');
+    const params = Array.from({ length: MAX_MESSAGES_PER_LOAN - 1 }, (_, i) => [loanId, borrower.userId, `line ${i}`]).flat();
+    await pool.execute(`INSERT INTO loan_messages (loan_id, author_id, body) VALUES ${values}`, params);
+
+    expect((await say(owner, loanId, 'The last one there is room for')).status).toBe(201);
+    const over = await say(borrower, loanId, 'One too many');
+
+    expect(over.status).toBe(409);
+    expect(over.body.error).toMatch(new RegExp(String(MAX_MESSAGES_PER_LOAN)));
+    expect((await thread(owner, loanId)).body).toHaveLength(MAX_MESSAGES_PER_LOAN);
+  });
+
+  it('goes with the loan when the mini is deleted', async () => {
+    const miniId = await createMini(owner, 'Dire Wolf');
+    const loanId = await requestMini(borrower, miniId);
+    await say(borrower, loanId, 'Changed my mind');
+    await act(borrower, loanId, 'cancel');
+
+    expect((await request(app).delete(`/api/minis/${miniId}`).set('Cookie', owner.cookie)).status).toBe(200);
+    const [left] = await pool.query('SELECT id FROM loan_messages');
+    expect(left).toEqual([]);
+  });
+});
+
 // Feature 13, where it meets a loan: a booking constrains the calendar, so the
 // mini has to be home before someone else's booked window begins.
 describe('a booking blocking a loan', () => {
-  const DAY = 24 * 60 * 60 * 1000;
   function day(offset: number): string {
-    return new Date(Date.now() + offset * DAY).toISOString().slice(0, 10);
+    return addDays(todayInApp(), offset);
   }
 
   async function bookedBy(who: TestUser, miniId: number, from: number, to: number = from) {

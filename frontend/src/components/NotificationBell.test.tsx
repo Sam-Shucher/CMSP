@@ -3,7 +3,7 @@ import { render, screen, waitFor, act, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Routes, Route } from 'react-router-dom';
 import NotificationBell, { POLL_INTERVAL_MS } from './NotificationBell';
-import { NotificationItem, LOANS_CHANGED_EVENT } from '../api/client';
+import { NotificationItem, LOANS_CHANGED_EVENT, NOTIFICATIONS_CHANGED_EVENT } from '../api/client';
 import { jsonResponse, urlOf} from '../test/apiMock';
 
 function item(overrides: Partial<NotificationItem> = {}): NotificationItem {
@@ -186,6 +186,31 @@ describe('NotificationBell', () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS); });
 
     expect(await screen.findByRole('button', { name: /notifications \(1 unread\)/i })).toBeInTheDocument();
+  });
+
+  // A phone notification arriving while the site is open (src/push.ts).
+  it('checks straight away when a push arrives, not at the next minute', async () => {
+    const inbox = mockInbox({ unread: 0, items: [] });
+    renderBell();
+    await screen.findByRole('button', { name: /^notifications$/i });
+
+    inbox.set({ unread: 1, items: [item()] });
+    act(() => { window.dispatchEvent(new Event(NOTIFICATIONS_CHANGED_EVENT)); });
+
+    expect(await screen.findByRole('button', { name: /notifications \(1 unread\)/i })).toBeInTheDocument();
+  });
+
+  it('puts the unread count on the home-screen app\'s icon', async () => {
+    const setAppBadge = vi.fn(async () => {});
+    Object.defineProperty(navigator, 'setAppBadge', { value: setAppBadge, configurable: true });
+    try {
+      mockInbox({ unread: 3, items: [item()] });
+      renderBell();
+
+      await waitFor(() => expect(setAppBadge).toHaveBeenCalledWith(3));
+    } finally {
+      delete (navigator as { setAppBadge?: unknown }).setAppBadge;
+    }
   });
 
   it('reloads when you switch groups', async () => {

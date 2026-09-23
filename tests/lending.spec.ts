@@ -249,3 +249,39 @@ test('either side can cancel a request before the handoff, and the mini is avail
   await olivia.goto('/');
   await expect(olivia.locator('.badge-available')).toHaveText('Available');
 });
+
+// Feature 16: "running 20 minutes late" said on the loan instead of by text,
+// so what was agreed stays with it.
+test('the two people on a loan message each other on it, and each sees when the other has read it', async ({ as }) => {
+  const olivia = await as('olivia');
+  const bruno = await as('bruno');
+  const miniId = await createMini(olivia, 'Dire Wolf');
+  await requestMini(bruno, miniId);
+
+  await bruno.goto('/loans');
+  const brunoCard = loanWith(bruno, 'Olivia Owner');
+  await brunoCard.getByRole('button', { name: 'Message Olivia Owner' }).click();
+  await brunoCard.getByLabel('Message', { exact: true }).fill('Running 20 minutes late');
+  await brunoCard.getByRole('button', { name: 'Send' }).click();
+  await expect(brunoCard.getByRole('list', { name: 'Messages with Olivia Owner' })).toContainText('Running 20 minutes late');
+
+  // Olivia's bell quotes it; her card says it's new until she opens it.
+  await olivia.goto('/loans');
+  await openNotification(olivia, /Bruno Borrower about Dire Wolf: “Running 20 minutes late”/);
+  const oliviaCard = loanWith(olivia, 'Bruno Borrower');
+  await oliviaCard.getByRole('button', { name: 'Messages (1) · 1 new' }).click();
+  const oliviaThread = oliviaCard.getByRole('list', { name: 'Messages with Bruno Borrower' });
+  await expect(oliviaThread).toContainText('Running 20 minutes late');
+
+  // Enter sends.
+  await oliviaCard.getByLabel('Message', { exact: true }).fill('No rush — front door, ring twice');
+  await oliviaCard.getByLabel('Message', { exact: true }).press('Enter');
+  await expect(oliviaThread).toContainText('No rush — front door, ring twice');
+
+  // Back on Bruno's side: her reply is new, and his message says she saw it.
+  await bruno.reload();
+  await brunoCard.getByRole('button', { name: 'Messages (2) · 1 new' }).click();
+  const brunoThread = brunoCard.getByRole('list', { name: 'Messages with Olivia Owner' });
+  await expect(brunoThread.getByRole('listitem').first()).toContainText('Seen');
+  await expect(brunoThread.getByRole('listitem').last()).toContainText('No rush — front door, ring twice');
+});

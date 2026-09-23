@@ -21,6 +21,8 @@ export const LIMITS = {
   setMembers: 50, // most a single set-membership change can touch at once
   conditionNote: 1000, // "the spear was already bent" — a paragraph, not an essay
   bookingNote: 255,    // "game night at the shop"
+  loanMessage: 500,    // "running 20 minutes late" — a text message, not a letter
+  pushEndpoint: 1000,  // a push service's URL for one device; real ones are ~200
 } as const;
 
 // Whitespace plus invisible formatting characters (zero-width spaces, joiners,
@@ -107,6 +109,14 @@ export function optionalFlag(value: unknown, label: string): Check<boolean> {
   if (value === undefined || value === null || value === '') return { ok: true, value: false };
   if (value !== '1') return { ok: false, error: `${label} must be a valid flag` };
   return { ok: true, value: true };
+}
+
+// A JSON body's on/off setting (e.g. { showPrices: false }). Only a real
+// boolean — "false" as a string is truthy, and a setting flipped the wrong way
+// by a client bug is worse than a 400.
+export function requiredBoolean(value: unknown, label: string): Check<boolean> {
+  if (typeof value !== 'boolean') return { ok: false, error: `${label} must be true or false` };
+  return { ok: true, value };
 }
 
 export function positiveId(value: unknown): Check<number> {

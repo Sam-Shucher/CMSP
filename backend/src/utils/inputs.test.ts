@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { requiredText, optionalText, emailAddress, tagList, positiveId, idList, optionalEnum, optionalId, optionalFlag } from './inputs';
+import { requiredText, optionalText, emailAddress, tagList, positiveId, idList, optionalEnum, optionalId, optionalFlag, requiredBoolean } from './inputs';
 
 describe('requiredText', () => {
   it('trims and accepts text within the limit', () => {
@@ -202,5 +202,16 @@ describe('optionalFlag', () => {
 
   it.each(['true', 'false', '0', 'yes', ['1', '1'], { $ne: '1' }, 1])('rejects %s', (value) => {
     expect(optionalFlag(value, 'Available')).toMatchObject({ ok: false, error: expect.stringMatching(/available/i) });
+  });
+});
+
+describe('requiredBoolean', () => {
+  it('accepts a real JSON true or false', () => {
+    expect(requiredBoolean(true, 'showPrices')).toEqual({ ok: true, value: true });
+    expect(requiredBoolean(false, 'showPrices')).toEqual({ ok: true, value: false });
+  });
+
+  it.each([undefined, null, 'true', 'false', '1', 1, 0, [true], { value: true }])('rejects %s', (value) => {
+    expect(requiredBoolean(value, 'showPrices')).toMatchObject({ ok: false, error: expect.stringMatching(/showPrices/) });
   });
 });

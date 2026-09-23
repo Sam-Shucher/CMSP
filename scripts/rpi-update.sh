@@ -53,6 +53,20 @@ npm --prefix frontend run build
 echo "==> Building backend (backend/dist)"
 npm --prefix backend run build
 
+if [ -f "$ENV_FILE" ] && ! grep -q '^VAPID_PRIVATE_KEY=.' "$ENV_FILE"; then
+  # Phone notifications need a key pair that identifies this server to the
+  # push services. Made once and then kept: a new pair would silently stop
+  # every phone's notifications until that phone next opens the app.
+  echo "==> Generating a key pair for phone notifications (VAPID) in backend/.env"
+  sed -i '/^VAPID_P[A-Z]*_KEY=/d' "$ENV_FILE" # any empty or half-written pair
+  [ -n "$(tail -c1 "$ENV_FILE")" ] && echo >> "$ENV_FILE" # don't glue onto an unterminated last line
+  node backend/dist/maintenance/vapidKeys.js >> "$ENV_FILE"
+  chmod 600 "$ENV_FILE"
+fi
+if [ -f "$ENV_FILE" ] && ! grep -Eq '^(FRONTEND_URL=https://|VAPID_SUBJECT=)' "$ENV_FILE"; then
+  echo "==> NOTE: phone notifications stay off until FRONTEND_URL in backend/.env is the site's https:// address"
+fi
+
 echo "==> Applying database schema (safe to re-run — only creates missing tables)"
 sudo mariadb < backend/src/db/schema.sql
 

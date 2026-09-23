@@ -47,6 +47,54 @@ function rowFor(text: string): HTMLElement {
   return screen.getAllByRole('row').find(r => r.textContent?.includes(text))!;
 }
 
+describe('AdminPage — group settings', () => {
+  function renderWithGroup(showPrices: boolean, refreshSession = vi.fn(async () => {})) {
+    render(
+      <AuthContext.Provider value={{
+        user: { ...SELF_ADMIN, collectionId: 5 }, loading: false, setUser: vi.fn(), selectCollection: vi.fn(), refreshSession,
+        collections: [{ id: 5, name: 'Chicago', role: 'admin', showPrices }],
+      }}>
+        <AdminPage />
+      </AuthContext.Provider>
+    );
+    return refreshSession;
+  }
+
+  it('shows whether this group shows prices', async () => {
+    mockAdminApi();
+    renderWithGroup(false);
+
+    expect(await screen.findByRole('checkbox', { name: /show prices/i })).not.toBeChecked();
+  });
+
+  it('turns prices off for the group, then reloads the group so every page follows', async () => {
+    mockAdminApi((url, init) => url === '/api/admin/settings' && init?.method === 'PATCH'
+      ? jsonResponse({ showPrices: false }) : undefined);
+    const refreshSession = renderWithGroup(true);
+    const toggle = await screen.findByRole('checkbox', { name: /show prices/i });
+    expect(toggle).toBeChecked();
+
+    await userEvent.click(toggle);
+
+    expect(fetch).toHaveBeenCalledWith('/api/admin/settings', expect.objectContaining({
+      method: 'PATCH', body: JSON.stringify({ showPrices: false }),
+    }));
+    await waitFor(() => expect(refreshSession).toHaveBeenCalled());
+    expect(await screen.findByText(/prices are now hidden in chicago/i)).toBeInTheDocument();
+  });
+
+  it('shows the server\'s error if the change didn\'t take', async () => {
+    mockAdminApi((url, init) => url === '/api/admin/settings' && init?.method === 'PATCH'
+      ? errorResponse('Admin access required') : undefined);
+    const refreshSession = renderWithGroup(true);
+
+    await userEvent.click(await screen.findByRole('checkbox', { name: /show prices/i }));
+
+    expect(await screen.findByText(/admin access required/i)).toBeInTheDocument();
+    expect(refreshSession).not.toHaveBeenCalled();
+  });
+});
+
 describe('AdminPage — invite list', () => {
   it('adds an email, confirms it, clears the box, and refreshes the list', async () => {
     mockAdminApi();

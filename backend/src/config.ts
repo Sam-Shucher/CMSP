@@ -67,6 +67,60 @@ export const NOTIFICATION_KEEP_READ_DAYS = 2;
 // deletes it for good. See services/membership.ts.
 export const MINI_ARCHIVE_GRACE_DAYS = 30;
 
+// The group's own timezone. Everyone using this is in one city, so "today",
+// a booking's days, a quest's back-by date and the hours a handoff may happen
+// are all read on that city's clock — never the server's, the database's, or
+// UTC, which can each be a day off in the evening (utils/appTime.ts).
+export const DEFAULT_APP_TIMEZONE = 'America/Chicago';
+
+export function appTimezone(env: Env = process.env): string {
+  const zone = env.APP_TIMEZONE?.trim() || DEFAULT_APP_TIMEZONE;
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: zone });
+  } catch {
+    throw new Error(`APP_TIMEZONE "${zone}" isn't a timezone — use a name like America/Chicago.`);
+  }
+  return zone;
+}
+
+// Web Push (phone notifications). The VAPID key pair identifies this server to
+// the browsers' push services; scripts/rpi-update.sh generates one into
+// backend/.env the first time it runs without one. The subject is a contact
+// address the push services may use — Apple refuses localhost or plain http,
+// so it's the site's https address unless VAPID_SUBJECT says otherwise.
+//
+// Unlike JWT_SECRET, a problem here never stops the server: push is an extra,
+// and the site works without it. The reason is logged at startup instead.
+export type PushConfig =
+  | { enabled: true; publicKey: string; privateKey: string; subject: string }
+  | { enabled: false; reason: string };
+
+function base64UrlBytes(value: string): Buffer | null {
+  return /^[A-Za-z0-9_-]+$/.test(value) ? Buffer.from(value, 'base64url') : null;
+}
+
+export function pushConfig(env: Env = process.env): PushConfig {
+  const publicKey = env.VAPID_PUBLIC_KEY?.trim() ?? '';
+  const privateKey = env.VAPID_PRIVATE_KEY?.trim() ?? '';
+  if (!publicKey || !privateKey) {
+    return { enabled: false, reason: 'VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY are not both set in backend/.env (scripts/rpi-update.sh generates them)' };
+  }
+  // An uncompressed P-256 point is 65 bytes starting 0x04; the private key is 32.
+  const pub = base64UrlBytes(publicKey);
+  const priv = base64UrlBytes(privateKey);
+  if (!pub || pub.length !== 65 || pub[0] !== 4 || !priv || priv.length !== 32) {
+    return { enabled: false, reason: 'VAPID_PUBLIC_KEY or VAPID_PRIVATE_KEY in backend/.env is not a valid key' };
+  }
+
+  const explicit = env.VAPID_SUBJECT?.trim();
+  const site = env.FRONTEND_URL?.trim();
+  const subject = explicit || (site?.startsWith('https://') ? site : '');
+  if (!/^(mailto:|https:\/\/)/.test(subject)) {
+    return { enabled: false, reason: 'set FRONTEND_URL to the site\'s https:// address (or VAPID_SUBJECT to a mailto: or https:// contact) in backend/.env' };
+  }
+  return { enabled: true, publicKey, privateKey, subject };
+}
+
 // Which network interfaces to listen on (undefined = all). In production only
 // the Cloudflare tunnel on this same machine should reach the app — both
 // loopback addresses, since "localhost" can resolve to either one.

@@ -76,6 +76,10 @@ export function setActiveGroup(collectionId: number | undefined): void {
 // opened) — the Loans page reloads, even if you're already looking at it.
 export const LOANS_CHANGED_EVENT = 'mini-library:loans-changed';
 
+// A phone notification just arrived (src/push.ts) — the bell checks now,
+// rather than at its next minute-by-minute look.
+export const NOTIFICATIONS_CHANGED_EVENT = 'mini-library:notifications-changed';
+
 // A mini went into or out of the cart — the count in the nav re-checks, so it
 // doesn't sit stale until its next minute-by-minute look.
 export const CART_CHANGED_EVENT = 'mini-library:cart-changed';
@@ -106,6 +110,9 @@ export type Collection = {
   id: number;
   name: string;
   role?: CollectionRole;
+  // False when an admin has turned prices off for this group (Admin page) —
+  // no price field, no "sort by price". Treated as on when missing.
+  showPrices?: boolean;
 };
 
 // requested = checked out and being negotiated; adventuring = handed off to a
@@ -121,7 +128,7 @@ export type Mini = {
   name: string;
   description: string | null;
   images: string[];           // e.g. ["/uploads/1234-abc.jpg"], up to 3, already split by the backend
-  price: number;
+  price: number | null;       // null in a group with prices turned off — the server doesn't send it
   status: MiniStatus;
   available: boolean;         // status === 'available'
   on_quest_since?: string | null; // ISO timestamp while on a quest
@@ -240,6 +247,20 @@ export type Loan = {
   extendableDays: number; // days of the three months still available to extend into, 0 if none
   conditionReports: number;                 // how many condition notes have been filed on this loan
   openConditionPhases: ConditionPhase[];    // which ends can still be recorded, from where this loan stands
+  messageCount: number;   // how long this loan's message thread is
+  unreadMessages: number; // the other person's messages you haven't seen yet
+  messagesOpen: boolean;  // false once the loan is over — the thread is kept but takes nothing new
+};
+
+// One entry from GET /api/loans/:id/messages — only the loan's two people can read these.
+export type LoanMessage = {
+  id: number;
+  authorId: number;
+  authorName: string;
+  mine: boolean;
+  body: string;
+  read: boolean;     // the other person has seen it
+  createdAt: string; // ISO
 };
 
 // Which end of a loan a condition report is about.
@@ -272,6 +293,12 @@ export type CalendarEntry = {
 export type MiniBookings = {
   max: number;
   bookings: CalendarEntry[];
+  // Out on a loan or a quest right now, and until when (null: a quest with no
+  // back-by date). It can be booked only from the day after — earliestStart —
+  // and not at all when bookable is false. Missing from an older server: home.
+  out?: { until: string | null; reason: 'loan' | 'quest' } | null;
+  bookable?: boolean;
+  earliestStart?: string | null;
 };
 
 // One row from GET /api/bookings

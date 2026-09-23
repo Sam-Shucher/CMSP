@@ -3,6 +3,7 @@ import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Routes, Route } from 'react-router-dom';
 import EditMiniPage from './EditMiniPage';
+import { AuthContext } from '../App';
 
 function renderEditPage() {
   return render(
@@ -55,7 +56,7 @@ describe('EditMiniPage', () => {
     expect(screen.queryByRole('button', { name: /delete mini/i })).not.toBeInTheDocument();
   });
 
-  it('sends the kept photos and only the optional fields that are filled in', async () => {
+  it('sends the kept photos and only the optional text fields that are filled in', async () => {
     vi.mocked(fetch)
       .mockResolvedValueOnce({ ok: true, json: async () => ({ ...MINI, description: null, tags: [], price: 0 }) } as Response)
       .mockResolvedValueOnce({ ok: true, json: async () => MINI } as Response);
@@ -71,7 +72,23 @@ describe('EditMiniPage', () => {
     expect(body.get('existingImages')).toBe(JSON.stringify(['/uploads/wolf.png']));
     expect(body.has('description')).toBe(false);
     expect(body.has('tags')).toBe(false);
-    expect(body.has('price')).toBe(false);
+    // A cleared price box is sent as empty (0 on the server), so it can be told
+    // apart from a form that never had a price box at all.
+    expect(body.get('price')).toBe('');
+  });
+
+  it('sends the price as it stands even when it wasn\'t touched', async () => {
+    vi.mocked(fetch)
+      .mockResolvedValueOnce({ ok: true, json: async () => MINI } as Response)
+      .mockResolvedValueOnce({ ok: true, json: async () => MINI } as Response);
+
+    renderEditPage();
+    await screen.findByLabelText(/name/i);
+    await userEvent.click(screen.getByRole('button', { name: /save changes/i }));
+
+    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
+    const body = vi.mocked(fetch).mock.calls[1][1]?.body as FormData;
+    expect(body.get('price')).toBe('12.50');
   });
 
   it('goes back to the dashboard without saving when Cancel is clicked', async () => {
@@ -165,6 +182,43 @@ describe('EditMiniPage', () => {
     await waitFor(() => expect(fetch).toHaveBeenCalledTimes(3));
     expect(vi.mocked(fetch).mock.calls[2][0]).toBe('/api/minis/42/transfer');
     expect(await screen.findByText('Dashboard')).toBeInTheDocument();
+  });
+});
+
+// Opened while the group had prices off, saved after an admin turned them
+// back on: the form never showed a price, so it must not send one — the server
+// then leaves the stored price alone instead of saving it as 0.
+describe('EditMiniPage — a group with prices turned off', () => {
+  beforeEach(() => {
+    vi.stubGlobal('fetch', vi.fn());
+  });
+
+  it('has no price box and sends no price at all', async () => {
+    vi.mocked(fetch)
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ ...MINI, price: null }) } as Response)
+      .mockResolvedValueOnce({ ok: true, json: async () => MINI } as Response);
+
+    render(
+      <MemoryRouter initialEntries={['/minis/42/edit']}>
+        <AuthContext.Provider value={{
+          user: { userId: 1, username: 'owner', role: 'user', collectionId: 5 },
+          loading: false, setUser: vi.fn(), selectCollection: vi.fn(), refreshSession: vi.fn(),
+          collections: [{ id: 5, name: 'Chicago', role: 'user', showPrices: false }],
+        }}>
+          <Routes>
+            <Route path="/minis/:id/edit" element={<EditMiniPage />} />
+            <Route path="/" element={<div>Dashboard</div>} />
+          </Routes>
+        </AuthContext.Provider>
+      </MemoryRouter>
+    );
+    await screen.findByLabelText(/name/i);
+    expect(screen.queryByLabelText(/price/i)).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: /save changes/i }));
+
+    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
+    const body = vi.mocked(fetch).mock.calls[1][1]?.body as FormData;
+    expect(body.has('price')).toBe(false);
   });
 });
 

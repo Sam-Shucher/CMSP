@@ -14,6 +14,8 @@ import {
   uploadPath, deleteUpload, MAX_PHOTO_BYTES,
 } from '../middleware/uploads';
 import { promoteNextHold, announceMiniRemoved } from '../services/holds';
+import { bookingBlockingQuest } from '../services/bookings';
+import { bookingBlocksMessage, readableDay } from '../utils/bookingRules';
 import { notify } from '../db/notifications';
 import { messages } from '../utils/notificationMessages';
 
@@ -114,13 +116,14 @@ export const MINI_SELECT = `
 
 // Converts a raw joined row into the shape the frontend expects
 // (price as a number, tags/images as string arrays instead of CSV blobs,
-// availability derived from the mini's loans).
-export function serializeMini(row: MiniRow) {
+// availability derived from the mini's loans). Price is null in a group that
+// has prices turned off (req.showPrices) — not sent at all, not just hidden.
+export function serializeMini(row: MiniRow, showPrices: boolean) {
   const { active_loan_status, on_quest_since, on_quest_until, condition_flag, condition_since, ...rest } = row;
   const status = miniStatusFrom(active_loan_status, on_quest_since ?? null, condition_flag ?? null);
   return {
     ...rest,
-    price: Number(row.price),
+    price: showPrices ? Number(row.price) : null,
     tags: row.tags ? row.tags.split(',') : [],
     images: row.images ? row.images.split(',') : [],
     status,
@@ -140,17 +143,23 @@ interface MiniFields {
   name: string;
   description: string | null;
   tags: string[];
-  price: number;
+  price: number | null; // null: prices are off in this group, so leave it alone
 }
 
-// Validates the text fields shared by POST / and PATCH /:id.
-function parseMiniFields(body: Record<string, unknown>): Check<MiniFields> {
+// Validates the text fields shared by POST / and PATCH /:id. In a group with
+// prices turned off, a price is neither checked nor saved — a form opened
+// before the switch shouldn't be refused over a figure nobody can see.
+function parseMiniFields(body: Record<string, unknown>, showPrices: boolean): Check<MiniFields> {
   const name = requiredText(body.name, 'Name', LIMITS.miniName);
   if (!name.ok) return name;
   const description = optionalText(body.description, 'Description', LIMITS.description);
   if (!description.ok) return description;
   const tags = tagList(body.tags);
   if (!tags.ok) return tags;
+
+  if (!showPrices) {
+    return { ok: true, value: { name: name.value, description: description.value, tags: tags.value, price: null } };
+  }
 
   // price arrives as a string from multipart form-data — default to 0 when omitted.
   // Plain dollars-and-cents only: "0x10" or "1e3" are numbers to JavaScript but
@@ -262,7 +271,10 @@ router.get('/', browseLimit, route(async (req, res) => {
   const search = (q as { value: string | null }).value;
   // Saved tags are lowercase and compared exactly, so the filter is too.
   const tag = (tagFilter as { value: string | null }).value?.toLowerCase() ?? null;
-  const sort = (sortCheck as { value: keyof typeof ORDER_BY | null }).value ?? 'newest';
+  const requestedSort = (sortCheck as { value: keyof typeof ORDER_BY | null }).value ?? 'newest';
+  // With prices off, sorting by them would still give away which is dearest;
+  // a tab opened before the switch just gets the default order.
+  const sort = requestedSort === 'price' && !req.showPrices ? 'newest' : requestedSort;
   const owner = (ownerCheck as { value: number | null }).value;
   const availableOnly = (availableCheck as { value: boolean }).value;
 
@@ -296,7 +308,7 @@ router.get('/', browseLimit, route(async (req, res) => {
     params
   );
 
-  let minis = found.map(serializeMini);
+  let minis = found.map(row => serializeMini(row, req.showPrices!));
   if (search) {
     minis = minis.filter(m => matchesSearch([m.name, m.description, m.tags], search));
   }
@@ -367,7 +379,7 @@ router.get('/:id', route(async (req, res) => {
     return;
   }
 
-  res.json(serializeMini(mini));
+  res.json(serializeMini(mini, req.showPrices!));
 }));
 
 interface HistoryRow {
@@ -439,7 +451,7 @@ router.get('/:id/history', route(async (req, res) => {
 router.post('/', discardUploadsIfRejected, uploadImages, uploadErrors, verifyImageContents, route(async (req, res) => {
   const files = (req.files as Express.Multer.File[] | undefined) ?? [];
 
-  const fields = parseMiniFields((req.body ?? {}) as Record<string, unknown>);
+  const fields = parseMiniFields((req.body ?? {}) as Record<string, unknown>, req.showPrices!);
   if (!fields.ok) {
     res.status(400).json({ error: fields.error });
     return;
@@ -449,7 +461,7 @@ router.post('/', discardUploadsIfRejected, uploadImages, uploadErrors, verifyIma
   // Insert the mini itself — req.user! is safe here because requireAuth ran first
   const created = await insert(
     'INSERT INTO minis (name, description, owner_id, collection_id, price) VALUES (?, ?, ?, ?, ?)',
-    [name, description, req.user!.userId, req.collectionId!, price]
+    [name, description, req.user!.userId, req.collectionId!, price ?? 0]
   );
 
   await setTags(created.id, tags);
@@ -514,7 +526,12 @@ router.patch('/:id', discardUploadsIfRejected, uploadImages, uploadErrors, verif
     return;
   }
 
-  const fields = parseMiniFields((req.body ?? {}) as Record<string, unknown>);
+  // No price field at all means the form never showed one — it was opened
+  // while prices were off, and an admin may have turned them back on since.
+  // That's "leave it alone", not "set it to 0": the edit page sends an empty
+  // price when someone really does clear the box.
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const fields = parseMiniFields(body, req.showPrices! && body.price !== undefined);
   if (!fields.ok) {
     res.status(400).json({ error: fields.error });
     return;
@@ -525,10 +542,16 @@ router.patch('/:id', discardUploadsIfRejected, uploadImages, uploadErrors, verif
   // up their files from disk once the DB is updated.
   const droppedPaths = currentPaths.filter(p => !keptPaths.includes(p));
 
-  await change(
-    'UPDATE minis SET name = ?, description = ?, price = ? WHERE id = ?',
-    [name, description, price, miniId]
-  );
+  // With prices off the stored price is left exactly as it was, so turning
+  // them back on brings it back.
+  if (price === null) {
+    await change('UPDATE minis SET name = ?, description = ? WHERE id = ?', [name, description, miniId]);
+  } else {
+    await change(
+      'UPDATE minis SET name = ?, description = ?, price = ? WHERE id = ?',
+      [name, description, price, miniId]
+    );
+  }
 
   await setTags(miniId, tags);
   await setImages(miniId, keptPaths, newFiles);
@@ -537,7 +560,7 @@ router.patch('/:id', discardUploadsIfRejected, uploadImages, uploadErrors, verif
     deleteUpload(droppedPath); // best-effort cleanup; ignore errors
   }
 
-  await sendMini(res, miniId);
+  await sendMini(res, miniId, req.showPrices!);
 }));
 
 // POST /api/minis/:id/clear-condition
@@ -570,7 +593,7 @@ router.post('/:id/clear-condition', route(async (req, res) => {
   }
 
   await change('UPDATE minis SET condition_flag = NULL, condition_since = NULL WHERE id = ?', [miniId]);
-  await sendMini(res, miniId);
+  await sendMini(res, miniId, req.showPrices!);
 }));
 
 interface TransferLookupRow {
@@ -662,13 +685,17 @@ router.post('/:id/transfer', route(async (req, res) => {
   // spot opening up, and it did, but they never acted on it).
   await change('DELETE FROM cart_items WHERE user_id = ? AND mini_id = ?', [newOwnerId, miniId]);
   await change('DELETE FROM hold_watchers WHERE mini_id = ? AND user_id = ?', [miniId, newOwnerId]);
+  await change('DELETE FROM holds WHERE mini_id = ? AND user_id = ?', [miniId, newOwnerId]);
+  // Days they'd booked on it are theirs now anyway — left in place, the hourly
+  // sweep would turn the booking into a request to borrow their own mini.
+  await change('DELETE FROM bookings WHERE mini_id = ? AND user_id = ?', [miniId, newOwnerId]);
 
   await notify([newOwnerId], {
     collectionId: req.collectionId!, type: 'ownership_transferred',
     message: messages.ownershipTransferred(mini.owner_name, mini.name), miniId,
   });
 
-  await sendMini(res, miniId);
+  await sendMini(res, miniId, req.showPrices!);
 }));
 
 // ---------------------------------------------------------------------------
@@ -696,9 +723,9 @@ async function findOwnMini(req: CollectionRequest, res: Response): Promise<Owner
 }
 
 // The mini as the browser expects it, freshly read back after a change.
-async function sendMini(res: Response, miniId: number): Promise<void> {
+async function sendMini(res: Response, miniId: number, showPrices: boolean): Promise<void> {
   const mini = await firstRow<MiniRow>(`${MINI_SELECT} WHERE m.id = ? AND m.archived_at IS NULL GROUP BY m.id`, [miniId]);
-  res.json(mini === null ? null : serializeMini(mini));
+  res.json(mini === null ? null : serializeMini(mini, showPrices));
 }
 
 // POST /api/minis/:id/take-out  { backBy?: 'YYYY-MM-DD' }
@@ -726,6 +753,19 @@ router.post('/:id/take-out', route(async (req, res) => {
     return;
   }
 
+  // A quest counts as a loan to yourself: it has to be back before anyone's
+  // booked days, the same as a handoff (routes/loans.ts) — and with no back-by
+  // date at all, it would run straight through them.
+  const booked = await bookingBlockingQuest(miniId, backBy.value);
+  if (booked) {
+    res.status(409).json({
+      error: backBy.value === null
+        ? `${booked.holderName} has this booked from ${readableDay(booked.startsOn)} — set a back-by date before then`
+        : bookingBlocksMessage(booked.holderName, booked.startsOn),
+    });
+    return;
+  }
+
   // The same checks again, inside the update: someone could check it out
   // in the instant between the lookup above and this write.
   const takenOut = await change(
@@ -741,7 +781,7 @@ router.post('/:id/take-out', route(async (req, res) => {
     res.status(409).json({ error: 'This mini just became unavailable — try again' });
     return;
   }
-  await sendMini(res, miniId);
+  await sendMini(res, miniId, req.showPrices!);
 }));
 
 // POST /api/minis/:id/bring-back
@@ -766,7 +806,7 @@ router.post('/:id/bring-back', route(async (req, res) => {
   }
   // Back and free — the first person in line (if any) is checked out now.
   await promoteNextHold(miniId);
-  await sendMini(res, miniId);
+  await sendMini(res, miniId, req.showPrices!);
 }));
 
 // DELETE /api/minis/:id

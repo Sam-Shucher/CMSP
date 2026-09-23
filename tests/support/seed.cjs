@@ -96,15 +96,17 @@ async function resetData() {
   try {
     for (const table of [
       'notifications', 'holds', 'hold_watchers', 'bookings',
-      'loan_condition_photos', 'loan_condition_reports',
+      'loan_condition_photos', 'loan_condition_reports', 'loan_messages',
       'cart_items', 'loans',
-      'mini_tags', 'mini_images', 'minis', 'sets', 'tags', 'approved_emails',
+      'mini_tags', 'mini_images', 'minis', 'sets', 'tags', 'approved_emails', 'push_subscriptions',
     ]) {
       await conn.query(`DELETE FROM ${table}`);
     }
     const seeded = Object.keys(USERS);
     await conn.query(`DELETE FROM users WHERE username NOT IN (${seeded.map(() => '?').join(', ')})`, seeded);
     await seedMemberships(conn);
+    // Group settings an admin may have changed (Admin page) go back to the defaults.
+    await conn.query('UPDATE collections SET show_prices = TRUE');
   } finally {
     await conn.end();
   }

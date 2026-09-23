@@ -67,14 +67,28 @@ first. Status is marked where work has started.
    one, the account and its minis are still deleted immediately, same as
    before — deferring that too would leave a zero-collection account
    dangling for no real benefit here, so the grace period only covers the
-   case where they survive the removal.
-9. **Export my collection** — a member takes their own data out; doubles as a
-   second backup path.
-10. **QR labels** — print a sheet, one per case, scan to open that mini. Very
-    library, and genuinely good at a handoff.
-11. **Wishlist** — "looking for a Beholder", and owners see the matches.
+   case where they survive the removal. Their **sets** are archived with
+   their minis (`sets.archived_at`, migration 021): hidden from the Sets
+   page, back if a mini is restored to its original owner, purged with the
+   minis when the grace period ends.
+9. **Export my collection** — *done*. "Export my minis" on the Profile page
+   (`GET /api/export`) downloads a `.zip` of the caller's own minis in the
+   group they're in: `minis.csv` in Bulk Add's columns (15) so it goes straight
+   back in, here or in another group; `minis.json` with the full record
+   (condition, set, lending history — the owner already sees that history, 3);
+   and every photo. **No new dependency:** a small stored-only ZIP writer
+   (`utils/zip.ts`) streams it one photo at a time, since photos don't
+   compress and the Pi's core shouldn't try. It's a link, not a fetch, so a
+   big export goes to disk rather than a phone's memory; the link carries
+   `?group=` so a switch in another tab is refused (409) instead of handing
+   over the other group's minis. Six an hour per person. Not a restore path
+   for the whole site — that's "Back up the Pi" below — but one person's
+   minis survive the SD card.
 
-**Larger, would change how the app is used** (12 and 13 are done; the rest stand):
+10 and 11 were taken off the list on 2026-09-23 — see "Removed from the list"
+below. Their numbers stay retired so older conversations still make sense.
+
+**Larger, would change how the app is used** (12, 13, 15, and 16 are done; the rest stand):
 
 12. **Condition record at handoff and return** — *done*. A note (up to 1000
     chars) and up to three photos at each end of a loan
@@ -89,10 +103,18 @@ first. Status is marked where work has started.
     pipeline as a mini's (extracted to `middleware/uploads.ts`) but are served
     only to the loan's two people, not the whole collection
     (`requireImageAccess`), and are in the housekeeping sweep's in-use query.
+    The return stays open for **12 hours** after the loan ends
+    (`RETURN_NOTE_HOURS`) — long enough to look it over at home, short enough
+    that it's about the return and not the shelf afterwards.
 13. **Booking for a date** — *done*. A claim on a range of days
     (`bookings`, `POST /api/bookings/minis/:id`) — "I need it for game night on
-    the 14th" — bookable whether or not the mini is free today, which is what a
-    hold can't express. **No two bookings on one mini may overlap**, enforced
+    the 14th" — which is what a hold can't express. **A mini that's out** —
+    lent, or on a quest with its owner, which counts the same — can be booked
+    only from the **day after** it's due back (an overdue one: from tomorrow),
+    and the booking panel says so before anyone picks a day; a quest with no
+    back-by date can't be booked at all, only held. Taking a mini on a quest
+    has to bring it back before anyone's booked day, like a loan.
+    **No two bookings on one mini may overlap**, enforced
     in a transaction that locks the mini row, same as the hold line; one
     booking per person per mini, ten per mini, three months long, six months
     ahead. *How it meets the hold line:* it doesn't compete with it. A hold
@@ -103,27 +125,74 @@ first. Status is marked where work has started.
     so it never conflicts on its own. *No-shows:* housekeeping turns a booking
     into a request on its first day (`startDueBookings`), retrying hourly if
     the mini is still out, and sweeps a window that passed without that,
-    telling the person it never came free (`sweepPastBookings`).
-    **Known gap:** a hold promoted the day before a booking starts can leave
-    the booker waiting behind a negotiation they can't jump. Revisit if it
-    bites — the fix is a priority check inside `promoteNextHold`, which would
-    mean widening its lock.
-14. **Web Push and a PWA install** — notifications only exist if someone opens
-    the site, and there is no email by design. Web Push works on Android Chrome
-    and on iOS 16.4+ for installed PWAs, and the tunnel already gives HTTPS. A
-    manifest and icons also make "Add to Home Screen" produce a real app.
-15. **Bulk add** — adding a real shelf one mini at a time, three photos each, is
-    what will stop someone finishing. CSV import, or dropping twenty photos and
-    naming them as you go. Unglamorous; the biggest adoption win here.
-16. **A message thread per loan** — negotiation is structured fields, with no
-    room for "running 20 minutes late". So people drop to texting and the app
-    loses the record of what was agreed.
-17. **Toggle price visibility per collection** — some groups don't want a
-    dollar figure on every mini at all. Needs a persisted per-collection
-    setting (a new column or a `collection_settings` table) gating price on
-    cards, the detail view, and the "sort by price" option — per `CLAUDE.md`'s
-    schema-change rule, that's a `schema.sql` change paired with a migration
-    file, not designed further here.
+    telling the person it never came free (`sweepPastBookings`) — unless they
+    had it all along, in which case their own loan fulfils the booking quietly.
+    **The hold line always goes first** when a mini comes home, by design: the
+    queue is the queue, and a booking only limits how long that next loan can
+    run. All of a booking's days are the group's days (`APP_TIMEZONE`, see
+    `utils/appTime.ts`), never the database's `CURDATE()` or UTC.
+14. **Web Push and a PWA install** — *done*. A manifest, icons and a service
+    worker (`frontend/public/sw.js`, which shows notifications and caches
+    nothing) make "Add to Home Screen" a real app. `push_subscriptions`
+    (migration 020) holds one row per device; `notify()` sends every bell
+    notice to the recipients' devices (`services/push.ts`, `web-push`),
+    titled with the group, never awaited and never throwing. Turned on per
+    device on the Profile page (`POST`/`DELETE /api/push/subscriptions`,
+    `POST /api/push/test`). **Endpoints are only accepted on the four browser
+    push services** — the Pi POSTs to whatever is stored. The browser's
+    subscription belongs to the device and survives sign-out; the server row
+    says whose notices go there and **which sign-in** turned them on
+    (migration 021's `session_id`): nothing is sent once that session has
+    expired, gone idle or been signed out, and the row goes when the session
+    is purged. `resyncPush` re-attaches it on the next sign-in. A
+    loan's messages share one tag/topic, so they replace each other like the
+    bell's entry. The VAPID pair is generated by `rpi-update.sh`; push stays
+    off (logged at startup) until `FRONTEND_URL` is https. The app icon shows
+    the unread count where `setAppBadge` exists. **Known gap:** tapping a
+    notice from a group other than the one the session is in opens the Loans
+    page for the current group — the title names the right one, but the app
+    doesn't switch. Revisit if people in two groups find it confusing.
+15. **Bulk add** — *done*. `/upload/bulk` (linked from Add Mini) takes both:
+    drop a pile of photos, one mini each, named as you go (a meaningful
+    filename pre-fills it; `IMG_4412` doesn't), with "put the photos with the
+    mini above" for a mini shot from several sides; or a CSV file / cells
+    pasted from a spreadsheet, by a header row (`name` required;
+    `description`, `tags`, `price` optional). **No new endpoint:** every row is
+    checked in the browser, then sent one at a time through the existing
+    `POST /api/minis` — the Pi has one core, every server-side rule and the
+    upload pipeline apply unchanged, and a refused row stays on the page with
+    its reason while the rest still go in. Capped at 100 rows per batch
+    (frontend only; it's a page limit, not a server one).
+16. **A message thread per loan** — *done*. `loan_messages`
+    (`GET`/`POST /api/loans/:id/messages`, `POST .../messages/read`), visible
+    only to the loan's two people. **Open while the loan is active; read-only
+    once it ends** — the thread is a record of what was agreed, like a
+    condition report, so messages are never edited or deleted. Each message
+    has exactly one reader, so `read_at` on the message is the whole "Seen" /
+    unread story. The bell gets one entry per conversation: a new message
+    replaces the other person's *unread* `loan_message` notice for that loan
+    (`services/loanEvents.ts`'s `messagePosted`), and marking the thread read
+    marks that notice read. 500 messages per loan, so a stuck client can't
+    grow one without bound. An open thread reloads when the Loans page's
+    30-second poll shows the count grew — or at once, when a push arrives
+    while the site is open (14).
+17. **Toggle price visibility per collection** — *done*. Some groups don't want
+    a dollar figure on every mini at all. `collections.show_prices` (migration
+    019), switched by an admin under Group Settings on the Admin page
+    (`PATCH /api/admin/settings { showPrices }`). `requireCollectionMembership`
+    loads it with the role, so with it off the server sends `price: null`
+    everywhere (browse, a mini, sets, archived minis), treats `sort=price` as
+    newest, and neither checks nor saves a submitted price — an edit leaves the
+    stored price alone, so turning it back on brings every price back. The
+    frontend reads it from `GET /api/auth/collections` (`showPrices`) to drop
+    the price field (single and bulk add, edit) and the "Price" sort option.
+
+**Removed from the list** (2026-09-23 — not rejected on principle like the
+ones below, just no longer planned; recorded here so the numbers aren't reused):
+
+- ~~10. **QR labels**~~ — print a sheet, one per case, scan to open that mini.
+  Very library, and genuinely good at a handoff.
+- ~~11. **Wishlist**~~ — "looking for a Beholder", and owners see the matches.
 
 **Decided against, with reasons:**
 

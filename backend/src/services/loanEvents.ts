@@ -170,6 +170,25 @@ export function conditionRecorded(loanId: number, actorId: number, phase: 'hando
   });
 }
 
+// A message on the loan's thread. A back-and-forth would otherwise put one bell
+// entry per line in front of the other person, so their UNREAD entry about
+// this loan's messages is replaced by one quoting the newest — the thread
+// itself has the rest. A read entry is left to count down as usual.
+export function messagePosted(loanId: number, actorId: number, body: string): Promise<void> {
+  return safely('message posted', async () => {
+    const loan = await loadLoan(loanId);
+    if (!loan) return;
+    const { otherId, actorName } = sides(loan, actorId);
+    await change(
+      "DELETE FROM notifications WHERE user_id = ? AND loan_id = ? AND type = 'loan_message' AND read_at IS NULL",
+      [otherId, loan.id]
+    );
+    await notify([otherId], {
+      ...base(loan), type: 'loan_message', message: messages.loanMessage(actorName, loan.mini_name, body),
+    });
+  });
+}
+
 export function criticallyWounded(loanId: number): Promise<void> {
   return safely('critically wounded', async () => {
     const loan = await loadLoan(loanId);
@@ -179,9 +198,13 @@ export function criticallyWounded(loanId: number): Promise<void> {
 }
 
 // Housekeeping: announce each newly overdue loan to both sides, exactly once.
-export async function notifyOverdueLoans(): Promise<number> {
+// due_at is written by this process (routes/loans.ts), so it's compared with
+// this process's clock too — not the database's NOW(), which is a different
+// clock whenever the database runs in another timezone.
+export async function notifyOverdueLoans(now: Date = new Date()): Promise<number> {
   const overdueLoans = await rows<{ id: number }>(
-    "SELECT id FROM loans WHERE status = 'adventuring' AND due_at < NOW() AND overdue_notified_at IS NULL"
+    "SELECT id FROM loans WHERE status = 'adventuring' AND due_at < ? AND overdue_notified_at IS NULL",
+    [now]
   );
   let announced = 0;
   for (const row of overdueLoans) {

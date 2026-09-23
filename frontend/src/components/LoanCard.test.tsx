@@ -33,6 +33,9 @@ function makeLoan(overrides: Partial<Loan> = {}): Loan {
     extendableDays: 0,
     conditionReports: 0,
     openConditionPhases: [],
+    messageCount: 0,
+    unreadMessages: 0,
+    messagesOpen: true,
     ...overrides,
   };
 }
@@ -81,6 +84,36 @@ describe('LoanCard — negotiating terms', () => {
       method: 'PATCH',
       body: { when: fromDateTimeLocalValue('2026-10-01T18:30'), where: 'Game night', how: 'In person' },
     });
+  });
+
+  // A handoff is arranged for 6am to 10pm; the page says so before the server has to.
+  it.each([
+    ['too early', '2026-10-01T05:59'],
+    ['too late', '2026-10-01T22:01'],
+    ['the small hours', '2026-10-01T03:00'],
+  ])('refuses a handoff time that is %s, without sending anything', async (_why, time) => {
+    renderCard(makeLoan({ handoffWhen: null }));
+
+    await userEvent.type(screen.getByLabelText(/when/i), time);
+    await userEvent.click(screen.getByRole('button', { name: /propose terms/i }));
+
+    expect(await screen.findByText('Pick a handoff time between 6am and 10pm')).toBeInTheDocument();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it.each([['6:00am', '2026-10-01T06:00'], ['10:00pm', '2026-10-01T22:00']])('accepts %s, right on the edge', async (_why, time) => {
+    const { onUpdated } = renderCard(makeLoan({ handoffWhen: null }));
+
+    await userEvent.type(screen.getByLabelText(/when/i), time);
+    await userEvent.click(screen.getByRole('button', { name: /propose terms/i }));
+
+    await waitFor(() => expect(onUpdated).toHaveBeenCalled());
+    expect(lastRequest().body).toEqual({ when: fromDateTimeLocalValue(time) });
+  });
+
+  it('says which hours are allowed next to the time box', () => {
+    renderCard(makeLoan());
+    expect(screen.getByLabelText(/when/i)).toHaveAccessibleDescription('Between 6am and 10pm');
   });
 
   it('lets the owner propose and adjust the duration', async () => {
@@ -532,9 +565,35 @@ describe('LoanCard — handoff, adventuring, and return', () => {
   });
 
   it('shows a finished loan without any actions', () => {
-    renderCard(makeLoan({ ...agreed, status: 'returned', stage: 'returned', returnedAt: '2026-09-10T00:00:00.000Z' }));
+    renderCard(makeLoan({ ...agreed, status: 'returned', stage: 'returned', returnedAt: '2026-09-10T00:00:00.000Z', messagesOpen: false }));
 
     expect(screen.getByText('Returned')).toBeInTheDocument();
     expect(screen.queryAllByRole('button')).toHaveLength(0);
+  });
+});
+
+// The thread itself is tested in LoanMessages.test.tsx; here, only that the
+// card offers it and passes along what the loan says about it.
+describe('LoanCard — messages', () => {
+  beforeEach(() => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse([])));
+  });
+
+  it('offers to message the other person while negotiating', () => {
+    renderCard(makeLoan());
+
+    expect(screen.getByRole('button', { name: /message alice/i })).toBeInTheDocument();
+  });
+
+  it('says how many of their messages are new', () => {
+    renderCard(makeLoan({ messageCount: 5, unreadMessages: 2 }));
+
+    expect(screen.getByRole('button', { name: /messages \(5\) · 2 new/i })).toBeInTheDocument();
+  });
+
+  it('keeps a finished loan\'s thread readable', () => {
+    renderCard(makeLoan({ status: 'returned', stage: 'returned', returnedAt: '2026-09-10T00:00:00.000Z', messagesOpen: false, messageCount: 3 }));
+
+    expect(screen.getByRole('button', { name: /messages \(3\)/i })).toBeInTheDocument();
   });
 });

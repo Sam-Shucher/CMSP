@@ -1,5 +1,5 @@
 import { Router, Response } from 'express';
-import { rows, firstRow, firstValue, change, insert } from '../db/query';
+import { rows, firstRow, firstValue, change, insert, inTransaction } from '../db/query';
 import { requireAuth } from '../middleware/requireAuth';
 import { route, idFrom } from '../utils/route';
 import { requireCollectionMembership, CollectionRequest } from '../middleware/requireCollectionMembership';
@@ -9,6 +9,7 @@ import {
   parseExtension, HOLD_BLOCKS_EXTENSION, MAX_DURATION_DAYS,
 } from '../utils/loanRules';
 import { MAX_CONDITION_PHOTOS, checkPhase, parsePhase, openPhases } from '../utils/conditionReports';
+import { messagesOpen, parseMessage, checkCanPost } from '../utils/loanMessages';
 import * as events from '../services/loanEvents';
 import { promoteNextHold, announceMiniRemoved } from '../services/holds';
 import { bookingBlocking } from '../services/bookings';
@@ -50,16 +51,24 @@ interface LoanRow {
   owner_name: string;
   holds_waiting: number;     // people in line for this mini — they block an extension
   condition_reports: number; // how many condition notes have been filed on this loan
+  messages: number;             // the length of this loan's message thread
+  unread_from_owner: number;    // owner's messages the borrower hasn't seen yet
+  unread_from_borrower: number; // and the other way round
 }
 
 // Params: collectionId, userId, userId — callers append further conditions.
+// Unread messages are counted per author rather than "not by me", so the
+// caller's id needn't be another parameter; serializeLoan picks the reader's side.
 const LOAN_SELECT = `
   SELECT l.*, m.name AS mini_name,
          (SELECT mi.image_path FROM mini_images mi WHERE mi.mini_id = m.id ORDER BY mi.position LIMIT 1) AS mini_image,
          b.username AS borrower_username, b.display_name AS borrower_name,
          o.username AS owner_username, o.display_name AS owner_name,
          (SELECT COUNT(*) FROM holds h WHERE h.mini_id = m.id) AS holds_waiting,
-         (SELECT COUNT(*) FROM loan_condition_reports r WHERE r.loan_id = l.id) AS condition_reports
+         (SELECT COUNT(*) FROM loan_condition_reports r WHERE r.loan_id = l.id) AS condition_reports,
+         (SELECT COUNT(*) FROM loan_messages lm WHERE lm.loan_id = l.id) AS messages,
+         (SELECT COUNT(*) FROM loan_messages lm WHERE lm.loan_id = l.id AND lm.author_id = l.owner_id AND lm.read_at IS NULL) AS unread_from_owner,
+         (SELECT COUNT(*) FROM loan_messages lm WHERE lm.loan_id = l.id AND lm.author_id = l.borrower_id AND lm.read_at IS NULL) AS unread_from_borrower
   FROM loans l
   JOIN minis m ON m.id = l.mini_id
   JOIN users b ON b.id = l.borrower_id
@@ -121,7 +130,12 @@ function serializeLoan(row: LoanRow, userId: number) {
     // right thing without a second request; the notes and photos themselves
     // come from GET /api/loans/:id/condition when someone opens them.
     conditionReports: Number(row.condition_reports),
-    openConditionPhases: openPhases({ status: row.status, handedOffAt: row.handed_off_at }),
+    openConditionPhases: openPhases({ status: row.status, handedOffAt: row.handed_off_at, returnedAt: row.returned_at }),
+    // The same for the message thread: enough for the card to say "2 new"
+    // without fetching it; GET /api/loans/:id/messages has the messages.
+    messageCount: Number(row.messages),
+    unreadMessages: Number(role === 'borrower' ? row.unread_from_owner : row.unread_from_borrower),
+    messagesOpen: messagesOpen(row.status),
   };
 }
 
@@ -458,7 +472,7 @@ router.post(
     const phase = parsePhase(body.phase);
     if (!phase.ok) return fail(res, { ok: false, status: 400, error: phase.error });
 
-    const allowed = checkPhase({ status: row.status, handedOffAt: row.handed_off_at }, phase.value);
+    const allowed = checkPhase({ status: row.status, handedOffAt: row.handed_off_at, returnedAt: row.returned_at }, phase.value);
     if (!allowed.ok) return fail(res, allowed);
 
     const note = optionalText(body.note, 'Note', LIMITS.conditionNote);
@@ -490,6 +504,108 @@ router.post(
     await sendReports(res, row.id, 201);
   })
 );
+
+// ---------------------------------------------------------------------------
+// Messages — "running 20 minutes late", next to the terms rather than in a
+// text thread the app never sees. Only the loan's two people can reach any of
+// this (withLoan 404s everyone else). Open while the loan is active; once it
+// ends the thread is kept as a record and takes nothing new. See
+// utils/loanMessages.ts.
+// ---------------------------------------------------------------------------
+
+interface MessageRow {
+  id: number;
+  author_id: number;
+  author_name: string;
+  body: string;
+  created_at: Date;
+  read_at: Date | null;
+}
+
+async function sendMessages(req: CollectionRequest, res: Response, loanId: number, status: 200 | 201): Promise<void> {
+  const thread = await rows<MessageRow>(
+    `SELECT m.id, m.author_id, u.display_name AS author_name, m.body, m.created_at, m.read_at
+     FROM loan_messages m
+     JOIN users u ON u.id = m.author_id
+     WHERE m.loan_id = ?
+     ORDER BY m.id`,
+    [loanId]
+  );
+  const userId = req.user!.userId;
+  res.status(status).json(thread.map(message => ({
+    id: message.id,
+    authorId: message.author_id,
+    authorName: message.author_name,
+    mine: message.author_id === userId,
+    body: message.body,
+    // Whether the other person has seen it — the only reader a message has.
+    read: message.read_at !== null,
+    createdAt: iso(message.created_at),
+  })));
+}
+
+// GET /api/loans/:id/messages
+// The whole thread, oldest first. Reading it marks nothing — the page says
+// when you've actually seen it (POST .../messages/read), so a background
+// refresh can't clear someone's "new" before they've looked.
+router.get('/:id/messages', withLoan(async (req, res, row) => {
+  await sendMessages(req, res, row.id, 200);
+}));
+
+const JUST_ENDED: RuleFailure = { ok: false, status: 409, error: 'This loan just ended — refresh to see where it stands' };
+
+// POST /api/loans/:id/messages  { body }
+router.post('/:id/messages', withLoan(async (req, res, row) => {
+  const body = parseMessage((req.body as { body?: unknown } | undefined)?.body);
+  if (!body.ok) return fail(res, { ok: false, status: 400, error: body.error });
+
+  const allowed = checkCanPost(row.status, Number(row.messages));
+  if (!allowed.ok) return fail(res, allowed);
+
+  // Checked again with the loan row locked, so two messages sent at the same
+  // instant are counted one after the other (the thread can't overshoot its
+  // ceiling), and a request cancelled — or a mini marked returned — in the
+  // instant before this lands takes no message.
+  const refused = await inTransaction<RuleFailure | null>(async conn => {
+    const locked = await firstRow<{ status: LoanStatus; messages: number }>(
+      `SELECT l.status, (SELECT COUNT(*) FROM loan_messages m WHERE m.loan_id = l.id) AS messages
+       FROM loans l WHERE l.id = ? FOR UPDATE`,
+      [row.id],
+      conn
+    );
+    if (!locked || !messagesOpen(locked.status)) return JUST_ENDED;
+    const stillAllowed = checkCanPost(locked.status, Number(locked.messages));
+    if (!stillAllowed.ok) return stillAllowed;
+    await insert(
+      'INSERT INTO loan_messages (loan_id, author_id, body) VALUES (?, ?, ?)',
+      [row.id, req.user!.userId, body.value],
+      conn
+    );
+    return null;
+  });
+  if (refused) return fail(res, refused);
+
+  await events.messagePosted(row.id, req.user!.userId, body.value);
+  await sendMessages(req, res, row.id, 201);
+}));
+
+// POST /api/loans/:id/messages/read
+// You've seen the other side's messages: they learn so ("Seen"), your count
+// goes to zero, and the bell entry about this thread is marked read with it.
+router.post('/:id/messages/read', withLoan(async (req, res, row) => {
+  const userId = req.user!.userId;
+  const read = await change(
+    `UPDATE loan_messages SET read_at = NOW()
+     WHERE loan_id = ? AND author_id <> ? AND read_at IS NULL`,
+    [row.id, userId]
+  );
+  await change(
+    `UPDATE notifications SET read_at = NOW()
+     WHERE user_id = ? AND loan_id = ? AND type = 'loan_message' AND read_at IS NULL`,
+    [userId, row.id]
+  );
+  res.json({ read });
+}));
 
 // POST /api/loans/:id/cancel
 // Either side can back out before the handoff.

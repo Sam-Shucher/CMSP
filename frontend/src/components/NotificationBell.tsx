@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { api, NotificationItem, LOANS_CHANGED_EVENT } from '../api/client';
+import { api, NotificationItem, LOANS_CHANGED_EVENT, NOTIFICATIONS_CHANGED_EVENT } from '../api/client';
 import { timeAgo, timeUntil } from '../utils/timeAgo';
 import { POLL_MS } from '../limits';
 
@@ -31,7 +31,10 @@ export default function NotificationBell({ collectionId }: { collectionId?: numb
   const load = useCallback(async (): Promise<void> => {
     try {
       const data = await api<Partial<Inbox>>('/api/notifications');
-      setInbox({ unread: Number(data.unread) || 0, items: Array.isArray(data.items) ? data.items : [] });
+      const unread = Number(data.unread) || 0;
+      setInbox({ unread, items: Array.isArray(data.items) ? data.items : [] });
+      // The count on the home-screen app's icon, where the phone supports it.
+      if ('setAppBadge' in navigator) void navigator.setAppBadge(unread).catch(() => {});
     } catch {
       // Keep showing what we had; the next check will try again.
     }
@@ -40,7 +43,13 @@ export default function NotificationBell({ collectionId }: { collectionId?: numb
   useEffect(() => {
     void load();
     const timer = setInterval(() => void load(), POLL_INTERVAL_MS);
-    return () => clearInterval(timer);
+    // A phone notification just arrived (src/push.ts): no need to wait for the minute.
+    const onPush = (): void => void load();
+    window.addEventListener(NOTIFICATIONS_CHANGED_EVENT, onPush);
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener(NOTIFICATIONS_CHANGED_EVENT, onPush);
+    };
   }, [load, collectionId]);
 
   useEffect(() => {

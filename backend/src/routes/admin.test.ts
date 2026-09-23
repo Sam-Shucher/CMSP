@@ -395,6 +395,52 @@ describe('GET /api/admin/archived-minis', () => {
       id: 42, name: 'Dire Wolf', price: 5, formerOwnerId: 2, formerOwnerName: 'Grunt', daysLeft: 25,
     });
   });
+
+  it('leaves the price out in a group with prices turned off', async () => {
+    execute.mockResolvedValueOnce([[{ role: 'admin', show_prices: 0 }]]).mockResolvedValueOnce([[{
+      id: 42, name: 'Dire Wolf', price: '5.00', owner_id: 2, owner_name: 'Grunt', archived_at: new Date(),
+    }]]);
+
+    const res = await request(app).get('/api/admin/archived-minis').set('Cookie', authCookie(ADMIN));
+
+    expect(res.status).toBe(200);
+    expect(res.body[0].price).toBeNull();
+  });
+});
+
+describe('PATCH /api/admin/settings', () => {
+  it.each([false, true])('sets showPrices to %s for the admin\'s active collection only', async (showPrices) => {
+    execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED).mockResolvedValueOnce([{ affectedRows: 1 }]);
+
+    const res = await request(app).patch('/api/admin/settings').set('Cookie', authCookie(ADMIN)).send({ showPrices });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ showPrices });
+    expect(execute).toHaveBeenCalledWith('UPDATE collections SET show_prices = ? WHERE id = ?', [showPrices, COLLECTION_A]);
+  });
+
+  it.each([
+    ['missing', {}],
+    ['a string', { showPrices: 'false' }],
+    ['a number', { showPrices: 0 }],
+    ['null', { showPrices: null }],
+  ])('rejects a showPrices that is %s with 400 and changes nothing', async (_why, body) => {
+    execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED);
+
+    const res = await request(app).patch('/api/admin/settings').set('Cookie', authCookie(ADMIN)).send(body);
+
+    expect(res.status).toBe(400);
+    expect(execute).toHaveBeenCalledTimes(1); // membership only
+  });
+
+  it('refuses a member who is not an admin', async () => {
+    execute.mockResolvedValueOnce(MEMBERSHIP_AS_USER);
+
+    const res = await request(app).patch('/api/admin/settings').set('Cookie', authCookie(USER)).send({ showPrices: false });
+
+    expect(res.status).toBe(403);
+    expect(execute).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('POST /api/admin/archived-minis/:id/restore', () => {
@@ -423,6 +469,7 @@ describe('POST /api/admin/archived-minis/:id/restore', () => {
       .mockResolvedValueOnce([[{ owner_id: 5, set_id: 9, name: 'Dire Wolf' }]])
       .mockResolvedValueOnce([[{ display_name: 'Original Owner' }]])
       .mockResolvedValueOnce([{ affectedRows: 1 }])
+      .mockResolvedValueOnce([{ affectedRows: 1 }]) // the set comes back out of the archive too
       .mockResolvedValueOnce([[{ display_name: 'Boss' }]])
       .mockResolvedValueOnce([{ affectedRows: 1 }]);
 
@@ -433,6 +480,7 @@ describe('POST /api/admin/archived-minis/:id/restore', () => {
 
     expect(res.status).toBe(200);
     expect(execute).toHaveBeenCalledWith(expect.stringContaining('UPDATE minis'), [5, 9, 42, COLLECTION_A]);
+    expect(execute).toHaveBeenCalledWith('UPDATE sets SET archived_at = NULL WHERE id = ?', [9]);
   });
 
   it('returns 404 for a mini that is not archived (or does not exist)', async () => {

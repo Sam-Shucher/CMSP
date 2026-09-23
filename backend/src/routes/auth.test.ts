@@ -540,15 +540,21 @@ describe('GET /api/auth/me', () => {
 });
 
 describe('GET /api/auth/collections', () => {
-  it('returns the collections the current user belongs to, with their role in each', async () => {
-    execute.mockResolvedValueOnce([[{ id: 5, name: 'Chicago', role: 'admin' }, { id: 6, name: 'dojo', role: 'user' }]]);
+  it('returns the collections the current user belongs to, with their role in each and whether it shows prices', async () => {
+    execute.mockResolvedValueOnce([[
+      { id: 5, name: 'Chicago', role: 'admin', show_prices: 1 },
+      { id: 6, name: 'dojo', role: 'user', show_prices: 0 },
+    ]]);
 
     const res = await request(app)
       .get('/api/auth/collections')
       .set('Cookie', authCookie(USER));
 
     expect(res.status).toBe(200);
-    expect(res.body).toEqual([{ id: 5, name: 'Chicago', role: 'admin' }, { id: 6, name: 'dojo', role: 'user' }]);
+    expect(res.body).toEqual([
+      { id: 5, name: 'Chicago', role: 'admin', showPrices: true },
+      { id: 6, name: 'dojo', role: 'user', showPrices: false },
+    ]);
   });
 
   it('returns 401 with no auth cookie', async () => {

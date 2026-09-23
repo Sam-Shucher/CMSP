@@ -14,6 +14,8 @@ import { pool } from '../db/connection';
 import { createApp } from '../app';
 import { BROWSE_MAX_PER_MINUTE } from './minis';
 import { notify } from '../db/notifications'; // stubbed by unitSetup.ts — asserted directly, not via execute
+import { bookingBlockingQuest } from '../services/bookings'; // stubbed by unitSetup.ts: no bookings unless a test says so
+import { todayInApp, addDays } from '../utils/appTime';
 
 const app = createApp();
 const execute = pool.execute as unknown as ReturnType<typeof vi.fn>;
@@ -418,6 +420,31 @@ describe('taking your own mini on a quest', () => {
     expect((update[1] as unknown[])[0]).toBe(backBy);
   });
 
+  // A quest counts as a loan to yourself: it has to be home before anyone's
+  // booked days, the same rule a handoff follows.
+  it('refuses a quest that would still be out on someone\'s booked day', async () => {
+    vi.mocked(bookingBlockingQuest).mockResolvedValueOnce({ startsOn: '2026-10-14', holderName: 'Wendy Waiting' });
+    execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED).mockResolvedValueOnce(lookup());
+
+    const backBy = addDays(todayInApp(), 20);
+    const res = await request(app).post('/api/minis/42/take-out').set('Cookie', authCookie(OWNER)).send({ backBy });
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe('Wendy Waiting has this booked from Oct 14, 2026, so it needs to be back before then');
+    expect(bookingBlockingQuest).toHaveBeenCalledWith(42, backBy);
+    expect(execute).not.toHaveBeenCalledWith(expect.stringContaining('SET on_quest_since = NOW()'), expect.anything());
+  });
+
+  it('asks for a back-by date, rather than refusing outright, when days are booked and none was given', async () => {
+    vi.mocked(bookingBlockingQuest).mockResolvedValueOnce({ startsOn: '2026-10-14', holderName: 'Wendy Waiting' });
+    execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED).mockResolvedValueOnce(lookup());
+
+    const res = await request(app).post('/api/minis/42/take-out').set('Cookie', authCookie(OWNER)).send({});
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe('Wendy Waiting has this booked from Oct 14, 2026 — set a back-by date before then');
+  });
+
   it('refuses an invalid back-by date', async () => {
     execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED);
 
@@ -645,6 +672,96 @@ describe('GET /api/minis — sort', () => {
 
     expect(res.status).toBe(400);
     expect(execute).toHaveBeenCalledTimes(1); // membership only
+  });
+});
+
+describe('a group with prices turned off', () => {
+  // requireCollectionMembership loads the group's setting alongside the role.
+  const PRICES_OFF = [[{ role: 'user', show_prices: 0 }]];
+
+  it('leaves price out of the browse list', async () => {
+    execute.mockResolvedValueOnce(PRICES_OFF).mockResolvedValueOnce([[miniRow({ price: '12.50' })]]);
+
+    const res = await request(app).get('/api/minis').set('Cookie', authCookie(OWNER));
+
+    expect(res.status).toBe(200);
+    expect(res.body[0].price).toBeNull();
+  });
+
+  it('leaves price out of a single mini', async () => {
+    execute.mockResolvedValueOnce(PRICES_OFF).mockResolvedValueOnce([[miniRow({ price: '12.50' })]]);
+
+    const res = await request(app).get('/api/minis/42').set('Cookie', authCookie(OWNER));
+
+    expect(res.status).toBe(200);
+    expect(res.body.price).toBeNull();
+  });
+
+  // A tab opened before an admin switched prices off can still ask — it gets
+  // the default order rather than an error, or an order that gives prices away.
+  it('sorts newest first when asked to sort by price', async () => {
+    execute.mockResolvedValueOnce(PRICES_OFF).mockResolvedValueOnce([[]]);
+
+    const res = await request(app).get('/api/minis?sort=price').set('Cookie', authCookie(OWNER));
+
+    expect(res.status).toBe(200);
+    expect(execute).toHaveBeenCalledWith(expect.stringContaining('ORDER BY m.created_at DESC'), [COLLECTION_A]);
+    expect(execute).not.toHaveBeenCalledWith(expect.stringContaining('ORDER BY m.price'), expect.anything());
+  });
+
+  it('adds a new mini at the default price, whatever price was sent', async () => {
+    execute
+      .mockResolvedValueOnce(PRICES_OFF)
+      .mockResolvedValueOnce([{ insertId: 42 }])
+      .mockResolvedValue([{}]);
+
+    const res = await request(app)
+      .post('/api/minis')
+      .set('Cookie', authCookie(OWNER))
+      .field('name', 'Dire Wolf')
+      .field('price', '12.50');
+
+    expect(res.status).toBe(201);
+    expect(execute).toHaveBeenCalledWith(expect.stringContaining('INSERT INTO minis'), ['Dire Wolf', null, 1, COLLECTION_A, 0]);
+  });
+
+  it('does not refuse a mini over a price nobody can see', async () => {
+    execute
+      .mockResolvedValueOnce(PRICES_OFF)
+      .mockResolvedValueOnce([{ insertId: 42 }])
+      .mockResolvedValue([{}]);
+
+    const res = await request(app)
+      .post('/api/minis')
+      .set('Cookie', authCookie(OWNER))
+      .field('name', 'Dire Wolf')
+      .field('price', 'twelve');
+
+    expect(res.status).toBe(201);
+  });
+
+  // Turning prices back on should bring back what was there, so an edit made
+  // while they're off must not wipe the stored price to 0.
+  it('leaves the stored price alone when a mini is edited', async () => {
+    execute
+      .mockResolvedValueOnce(PRICES_OFF)
+      .mockResolvedValueOnce([[{ owner_id: 1 }]]) // ownership lookup
+      .mockResolvedValueOnce([[]])                // current images
+      .mockResolvedValueOnce([{}])                // UPDATE minis
+      .mockResolvedValueOnce([{}])                // DELETE mini_tags (setTags)
+      .mockResolvedValueOnce([{}])                // DELETE mini_images
+      .mockResolvedValueOnce([[miniRow({ price: '12.50' })]]); // re-fetch
+
+    const res = await request(app)
+      .patch('/api/minis/42')
+      .set('Cookie', authCookie(OWNER))
+      .field('name', 'Dire Wolf')
+      .field('price', '3.00');
+
+    expect(res.status).toBe(200);
+    expect(execute).toHaveBeenCalledWith(expect.stringMatching(/^UPDATE minis SET name = \?, description = \? WHERE id = \?$/), ['Dire Wolf', null, 42]);
+    expect(execute).not.toHaveBeenCalledWith(expect.stringContaining('price = ?'), expect.anything());
+    expect(res.body.price).toBeNull();
   });
 });
 
@@ -1575,6 +1692,8 @@ describe('POST /api/minis/:id/transfer', () => {
       .mockResolvedValueOnce([{ affectedRows: 1 }])          // UPDATE minis
       .mockResolvedValueOnce([{ affectedRows: 0 }])          // DELETE FROM cart_items
       .mockResolvedValueOnce([{ affectedRows: 0 }])          // DELETE FROM hold_watchers
+      .mockResolvedValueOnce([{ affectedRows: 0 }])          // DELETE FROM holds
+      .mockResolvedValueOnce([{ affectedRows: 0 }])          // DELETE FROM bookings
       .mockResolvedValueOnce([[miniRow({ owner_id: 2 })]]);  // sendMini's re-fetch
 
     const res = await request(app)
@@ -1590,6 +1709,9 @@ describe('POST /api/minis/:id/transfer', () => {
     );
     expect(execute).toHaveBeenCalledWith(expect.stringContaining('DELETE FROM cart_items'), [2, 42]);
     expect(execute).toHaveBeenCalledWith(expect.stringContaining('DELETE FROM hold_watchers'), [42, 2]);
+    // Nor can they wait in line for, or have booked, what is now their own mini.
+    expect(execute).toHaveBeenCalledWith('DELETE FROM holds WHERE mini_id = ? AND user_id = ?', [42, 2]);
+    expect(execute).toHaveBeenCalledWith('DELETE FROM bookings WHERE mini_id = ? AND user_id = ?', [42, 2]);
     // notify() itself is stubbed by unitSetup.ts (see notifications.integration.test.ts
     // for its real DB behavior) — asserted directly rather than via execute.
     expect(notify).toHaveBeenCalledWith(
@@ -1604,6 +1726,8 @@ describe('POST /api/minis/:id/transfer', () => {
       .mockResolvedValueOnce([[transferLookupRow()]])
       .mockResolvedValueOnce([[{ exists: 1 }]])
       .mockResolvedValueOnce([{ affectedRows: 1 }])
+      .mockResolvedValueOnce([{ affectedRows: 0 }])
+      .mockResolvedValueOnce([{ affectedRows: 0 }])
       .mockResolvedValueOnce([{ affectedRows: 0 }])
       .mockResolvedValueOnce([{ affectedRows: 0 }])
       .mockResolvedValueOnce([[miniRow({ owner_id: 2 })]]);

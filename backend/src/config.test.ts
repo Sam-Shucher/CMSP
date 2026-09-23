@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import path from 'path';
-import { jwtSecret, listenHosts, uploadsDir, TEST_JWT_SECRET } from './config';
+import webpush from 'web-push';
+import { jwtSecret, listenHosts, uploadsDir, pushConfig, TEST_JWT_SECRET } from './config';
 
 describe('uploadsDir', () => {
   it('is backend/uploads by default', () => {
@@ -61,5 +62,48 @@ describe('listenHosts', () => {
 
   it('listens normally in development', () => {
     expect(listenHosts({ NODE_ENV: 'development' })).toBeUndefined();
+  });
+});
+
+describe('pushConfig', () => {
+  const keys = webpush.generateVAPIDKeys();
+  const KEYS = { VAPID_PUBLIC_KEY: keys.publicKey, VAPID_PRIVATE_KEY: keys.privateKey };
+
+  it('is on with both keys and the site\'s https address as the contact', () => {
+    expect(pushConfig({ ...KEYS, FRONTEND_URL: 'https://minis.example.com' })).toEqual({
+      enabled: true, publicKey: keys.publicKey, privateKey: keys.privateKey, subject: 'https://minis.example.com',
+    });
+  });
+
+  it('prefers VAPID_SUBJECT when one is given', () => {
+    const config = pushConfig({ ...KEYS, FRONTEND_URL: 'https://minis.example.com', VAPID_SUBJECT: 'mailto:admin@example.com' });
+    expect(config).toMatchObject({ enabled: true, subject: 'mailto:admin@example.com' });
+  });
+
+  // Push is optional: a Pi whose .env predates it must keep serving the site.
+  it('is off, with a reason, when the keys were never generated', () => {
+    const config = pushConfig({ FRONTEND_URL: 'https://minis.example.com' });
+    expect(config.enabled).toBe(false);
+    expect(config).toMatchObject({ reason: expect.stringMatching(/VAPID_PUBLIC_KEY/) });
+  });
+
+  it.each([
+    ['only one key', { VAPID_PUBLIC_KEY: keys.publicKey }],
+    ['a public key that is not a P-256 point', { ...KEYS, VAPID_PUBLIC_KEY: 'bm90LWEta2V5' }],
+    ['a private key of the wrong length', { ...KEYS, VAPID_PRIVATE_KEY: 'c2hvcnQ' }],
+  ])('is off with %s', (_why, env) => {
+    expect(pushConfig({ ...env, FRONTEND_URL: 'https://minis.example.com' }).enabled).toBe(false);
+  });
+
+  // Apple refuses pushes whose contact is localhost or plain http, so this
+  // says so plainly instead of sending pushes that will all bounce.
+  it.each([
+    ['the localhost default', { FRONTEND_URL: 'http://localhost:5173' }],
+    ['nothing at all', {}],
+    ['a subject that is neither mailto: nor https:', { VAPID_SUBJECT: 'admin@example.com' }],
+  ])('is off when the contact address is %s', (_why, env) => {
+    const config = pushConfig({ ...KEYS, ...env });
+    expect(config.enabled).toBe(false);
+    expect(config).toMatchObject({ reason: expect.stringMatching(/FRONTEND_URL|VAPID_SUBJECT/) });
   });
 });

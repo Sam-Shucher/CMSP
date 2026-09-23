@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { RowDataPacket } from 'mysql2';
 import { pool } from '../db/connection';
-import { removeMember } from './membership';
+import { removeMember, purgeArchivedMinis } from './membership';
 import {
   assertDatabaseReachable, resetDatabase, createCollection, createUser, createMini, joinCollection, TestUser,
 } from '../test/dbHelpers';
@@ -53,6 +53,19 @@ const watcherRowsFor = (userId: number, collectionId: number): Promise<number> =
    WHERE hw.user_id = ? AND m.collection_id = ?`,
   [userId, collectionId]
 );
+
+const bookingRowsFor = (userId: number, collectionId: number): Promise<number> => countRows(
+  'SELECT COUNT(*) AS n FROM bookings WHERE user_id = ? AND collection_id = ?',
+  [userId, collectionId]
+);
+
+async function book(miniId: number, who: TestUser, collectionId: number): Promise<void> {
+  await pool.execute(
+    `INSERT INTO bookings (mini_id, collection_id, user_id, starts_on, ends_on)
+     VALUES (?, ?, ?, CURDATE() + INTERVAL 7 DAY, CURDATE() + INTERVAL 8 DAY)`,
+    [miniId, collectionId, who.userId]
+  );
+}
 
 const miniExists = (id: number): Promise<number> =>
   countRows('SELECT COUNT(*) AS n FROM minis WHERE id = ?', [id]);
@@ -147,6 +160,66 @@ describe('removeMember — a member of two groups, removed from one', () => {
     expect(await cartRowsFor(olivia.userId, chicago)).toBe(0);
     expect(await holdRowsFor(olivia.userId, chicago)).toBe(0);
     expect(await watcherRowsFor(olivia.userId, chicago)).toBe(0);
+  });
+
+  // Feature 13: a booking by someone no longer in the group would come due
+  // and find nobody to hand the mini to.
+  it('drops her bookings in that group only', async () => {
+    await book(chicagoMini, ada, chicago);
+    await book(dojoMini, adaInDojo, dojo);
+
+    await removeMember(ada.userId, chicago, admin.userId);
+
+    expect(await bookingRowsFor(ada.userId, chicago)).toBe(0);
+    expect(await bookingRowsFor(ada.userId, dojo), 'her dojo booking was dropped too').toBe(1);
+  });
+
+  it('clears anyone\'s bookings on the mini it archives, and leaves bookings on other minis alone', async () => {
+    await book(adaChicagoMini, olivia, chicago);
+    await book(chicagoMini, admin, chicago);
+
+    await removeMember(ada.userId, chicago, admin.userId);
+
+    expect(await countRows('SELECT COUNT(*) AS n FROM bookings WHERE mini_id = ?', [adaChicagoMini])).toBe(0);
+    expect(await bookingRowsFor(admin.userId, chicago), 'a booking on someone else\'s mini went too').toBe(1);
+  });
+
+  // Her sets go the same way her minis do: archived, not left behind empty
+  // on the Sets page under the name of someone who isn't in the group.
+  it('archives her sets in that group, and leaves her sets in the other group alone', async () => {
+    const [chicagoSet] = await pool.execute<import('mysql2').ResultSetHeader>(
+      'INSERT INTO sets (name, owner_id, collection_id) VALUES (?, ?, ?)', ['Owlbear pack', ada.userId, chicago]
+    );
+    const [dojoSet] = await pool.execute<import('mysql2').ResultSetHeader>(
+      'INSERT INTO sets (name, owner_id, collection_id) VALUES (?, ?, ?)', ['Beholder court', ada.userId, dojo]
+    );
+    await pool.execute('UPDATE minis SET set_id = ? WHERE id = ?', [chicagoSet.insertId, adaChicagoMini]);
+
+    await removeMember(ada.userId, chicago, admin.userId);
+
+    // null means "not archived", so a missing row has to be told apart from it.
+    const archivedAt = async (id: number): Promise<Date | null | 'gone'> => {
+      const [found] = await pool.execute<RowDataPacket[]>('SELECT archived_at FROM sets WHERE id = ?', [id]);
+      return found.length === 0 ? 'gone' : (found[0].archived_at as Date | null);
+    };
+    expect(await archivedAt(chicagoSet.insertId)).toBeInstanceOf(Date);
+    expect(await archivedAt(dojoSet.insertId), 'her dojo set was archived too').toBeNull();
+    // The mini keeps pointing at it, so a restore to her can bring both back.
+    expect(await countRows('SELECT COUNT(*) AS n FROM minis WHERE id = ? AND set_id = ?', [adaChicagoMini, chicagoSet.insertId])).toBe(1);
+  });
+
+  it('purges her archived sets along with her archived minis once the grace period is over', async () => {
+    const [set] = await pool.execute<import('mysql2').ResultSetHeader>(
+      'INSERT INTO sets (name, owner_id, collection_id) VALUES (?, ?, ?)', ['Owlbear pack', ada.userId, chicago]
+    );
+    await removeMember(ada.userId, chicago, admin.userId);
+    await pool.execute('UPDATE sets SET archived_at = NOW() - INTERVAL 31 DAY WHERE id = ?', [set.insertId]);
+    await pool.execute('UPDATE minis SET archived_at = NOW() - INTERVAL 31 DAY WHERE id = ?', [adaChicagoMini]);
+
+    await purgeArchivedMinis();
+
+    expect(await countRows('SELECT COUNT(*) AS n FROM sets WHERE id = ?', [set.insertId])).toBe(0);
+    expect(await miniExists(adaChicagoMini)).toBe(0);
   });
 
   it('leaves her a member of the other group, with her account intact', async () => {

@@ -50,6 +50,12 @@ describe('cart routes — input', () => {
     ['negative', -4],
     ['a fraction', 1.5],
     ['text', 'abc'],
+    // Each of these is a number to Number(), and would have reached a real mini.
+    ['a numeric string', '42'],
+    ['true', true],
+    ['a one-item list', [42]],
+    ['an object', { id: 42 }],
+    ['missing', undefined],
   ])('rejects a miniId that is %s with 400', async (_why, miniId) => {
     execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED);
 

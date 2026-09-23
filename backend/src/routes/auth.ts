@@ -58,6 +58,7 @@ interface CollectionRow {
   id: number;
   name: string;
   role: string;
+  show_prices?: number | null; // only selected by GET /collections
 }
 
 function roleName(role: unknown): 'admin' | 'user' {
@@ -326,17 +327,18 @@ router.get('/me', requireAuth, async (req: AuthRequest, res: Response): Promise<
 
 // GET /api/auth/collections
 // The collections the current user belongs to, with their role in each —
-// used to render the group picker.
+// used to render the group picker — and whether each shows prices, so the
+// app knows whether to offer a price field and a "sort by price".
 router.get('/collections', requireAuth, async (req: AuthRequest, res: Response): Promise<void> => {
   try {
     const mine = await rows<CollectionRow>(
-      `SELECT c.id, c.name, cm.role FROM collections c
+      `SELECT c.id, c.name, cm.role, c.show_prices FROM collections c
        JOIN collection_memberships cm ON cm.collection_id = c.id
        WHERE cm.user_id = ?
        ORDER BY c.name`,
       [req.user!.userId]
     );
-    res.json(mine.map(c => ({ id: c.id, name: c.name, role: roleName(c.role) })));
+    res.json(mine.map(c => ({ id: c.id, name: c.name, role: roleName(c.role), showPrices: c.show_prices !== 0 })));
   } catch (err: unknown) {
     console.error(err);
     res.status(500).json({ error: 'Server error' });

@@ -3,8 +3,9 @@ import { api, CalendarEntry, MiniBookings } from '../api/client';
 import { LIMITS } from '../limits';
 
 // "I need this for game night on the 14th." The hold line (HoldPanel) answers
-// "tell me when it's free" — this claims particular days, whether or not the
-// mini is free today.
+// "tell me when it's free" — this claims particular days. While the mini is out
+// (lent, or on a quest with its owner) that's only from the day after it's due
+// back, and the panel says so before anyone picks a date.
 //
 // Which days are claimed is shown to everyone, because that's what makes a
 // calendar usable; who claimed them is shown only to the owner and the person
@@ -12,8 +13,12 @@ import { LIMITS } from '../limits';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
+// A day on this device's calendar, which is the group's (everyone is in one
+// city) — not UTC's, which is already tomorrow on a Chicago evening.
 function isoDay(offsetDays: number): string {
-  return new Date(Date.now() + offsetDays * DAY_MS).toISOString().slice(0, 10);
+  const day = new Date(Date.now() + offsetDays * DAY_MS);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${day.getFullYear()}-${pad(day.getMonth() + 1)}-${pad(day.getDate())}`;
 }
 
 function readable(day: string): string {
@@ -44,7 +49,13 @@ export default function BookingPanel({ miniId, isOwn }: BookingPanelProps): Reac
   const load = useCallback(async (): Promise<void> => {
     try {
       const data = await api<Partial<MiniBookings>>(`/api/bookings/minis/${miniId}`);
-      setCalendar({ max: data.max ?? 0, bookings: Array.isArray(data.bookings) ? data.bookings : [] });
+      setCalendar({
+        max: data.max ?? 0,
+        bookings: Array.isArray(data.bookings) ? data.bookings : [],
+        out: data.out ?? null,
+        bookable: data.bookable ?? true,
+        earliestStart: data.earliestStart ?? null,
+      });
     } catch {
       // The calendar is extra here; the rest of the mini still shows.
     }
@@ -55,6 +66,12 @@ export default function BookingPanel({ miniId, isOwn }: BookingPanelProps): Reac
   async function book(e: React.FormEvent): Promise<void> {
     e.preventDefault();
     setError('');
+    // A typed date gets past the picker's min; say so here rather than send it.
+    const earliestStart = calendar?.earliestStart;
+    if (earliestStart && from < earliestStart) {
+      setError(`The earliest you can book it is ${readable(earliestStart)} — the day after it's due back.`);
+      return;
+    }
     setBusy(true);
     try {
       // A single day is booked as itself — the "to" box is for a weekend.
@@ -85,8 +102,21 @@ export default function BookingPanel({ miniId, isOwn }: BookingPanelProps): Reac
 
   if (!calendar) return null;
 
+  // Out on a loan or a quest: bookable from the day after it's due back, or not
+  // at all when nobody knows when that is — the hold line above is the way in.
+  const earliest = calendar.earliestStart ?? isoDay(0);
+  const what = calendar.out?.reason === 'quest' ? 'on a quest with its owner' : 'out on loan';
+  const outNotice = calendar.out && !isOwn
+    ? (calendar.bookable === false
+      ? `It's ${what} with no date it's due back, so it can't be booked yet — place a hold to be next in line.`
+      : `It's ${what} until ${readable(calendar.out.until ?? earliest)}. The earliest you can book is ${readable(earliest)}.`)
+    : null;
+
   return (
     <div style={{ marginTop: '12px' }}>
+      {outNotice && (
+        <p role="note" style={{ fontSize: '12px', color: '#e0a84c', marginBottom: '8px' }}>⚠ {outNotice}</p>
+      )}
       {calendar.bookings.length > 0 && (
         <ul aria-label="Booked days" style={{ listStyle: 'none', display: 'grid', gap: '6px', marginBottom: '10px' }}>
           {calendar.bookings.map(booking => (
@@ -116,7 +146,7 @@ export default function BookingPanel({ miniId, isOwn }: BookingPanelProps): Reac
         </ul>
       )}
 
-      {!isOwn && (
+      {!isOwn && calendar.bookable !== false && (
         <form noValidate onSubmit={(e: React.FormEvent) => void book(e)} style={{ display: 'grid', gap: '6px' }}>
           <p style={{ fontSize: '12px', color: '#8a7d6a' }}>
             Need it for a particular day? Book it — it becomes a request that morning.
@@ -126,7 +156,7 @@ export default function BookingPanel({ miniId, isOwn }: BookingPanelProps): Reac
             <input
               id={`book-${miniId}-from`}
               type="date"
-              min={isoDay(0)}
+              min={earliest}
               max={isoDay(LIMITS.bookingAheadDays)}
               value={from}
               onChange={(e: React.ChangeEvent<HTMLInputElement>) => setFrom(e.target.value)}
@@ -135,7 +165,7 @@ export default function BookingPanel({ miniId, isOwn }: BookingPanelProps): Reac
             <input
               id={`book-${miniId}-to`}
               type="date"
-              min={from || isoDay(0)}
+              min={from || earliest}
               max={isoDay(LIMITS.bookingAheadDays)}
               value={to}
               onChange={(e: React.ChangeEvent<HTMLInputElement>) => setTo(e.target.value)}

@@ -68,12 +68,20 @@ describe('parseBookingWindow — when the days have to be', () => {
     expect(!parsed.ok && parsed.error).toMatch(/in the past/i);
   });
 
-  // Same one-day tolerance parseBackBy gives a quest: someone a timezone behind
-  // the server picking "today" must not be told today is in the past.
-  it('still allows yesterday, for someone a timezone behind the server', () => {
+  // Everyone is in one city, so "today" is the group's today (APP_TIMEZONE,
+  // Chicago by default) and there's no one a timezone behind to allow for. The
+  // old one-day allowance let a single-day "yesterday" booking in, which then
+  // never started and was swept with a "never came free" notice.
+  it('refuses yesterday, even as the start of a range that runs into today', () => {
     const parsed = parseBookingWindow({ startsOn: '2026-09-22', endsOn: '2026-09-24' }, NOW);
 
-    expect(parsed.ok).toBe(true);
+    expect(parsed.ok).toBe(false);
+    expect(!parsed.ok && parsed.error).toMatch(/in the past/i);
+  });
+
+  it('knows it is still yesterday\'s date late in the evening in Chicago, when UTC has moved on', () => {
+    const tenPmChicago = new Date('2026-09-24T03:00:00.000Z'); // Sep 23, 10pm CDT
+    expect(parseBookingWindow({ startsOn: '2026-09-23', endsOn: '2026-09-23' }, tenPmChicago).ok).toBe(true);
   });
 
   it(`refuses a window longer than the ${MAX_BOOKING_DAYS} days a loan can run`, () => {
@@ -111,6 +119,49 @@ describe('bookingDays — how long a window is', () => {
   });
 });
 
+// The exact edges of each limit: the last day that's allowed, and the first
+// that isn't — where an off-by-one would hide.
+describe('parseBookingWindow — right on the limits', () => {
+  it(`allows exactly ${MAX_BOOKING_DAYS} days, counting both ends, and refuses one more`, () => {
+    // 2026-10-01 + 89 days = 2026-12-29: ninety days inclusive.
+    expect(parseBookingWindow({ startsOn: '2026-10-01', endsOn: '2026-12-29' }, NOW).ok).toBe(true);
+    expect(parseBookingWindow({ startsOn: '2026-10-01', endsOn: '2026-12-30' }, NOW).ok).toBe(false);
+  });
+
+  it(`allows a start exactly ${MAX_BOOKING_AHEAD_DAYS} days out, and refuses the day after`, () => {
+    // NOW is 2026-09-23; 180 days later is 2027-03-22.
+    expect(parseBookingWindow({ startsOn: '2027-03-22', endsOn: '2027-03-22' }, NOW).ok).toBe(true);
+    expect(parseBookingWindow({ startsOn: '2027-03-23', endsOn: '2027-03-23' }, NOW).ok).toBe(false);
+  });
+
+  it('allows today but not yesterday', () => {
+    expect(parseBookingWindow({ startsOn: '2026-09-23', endsOn: '2026-09-23' }, NOW).ok).toBe(true);
+    expect(parseBookingWindow({ startsOn: '2026-09-22', endsOn: '2026-09-22' }, NOW).ok).toBe(false);
+  });
+
+  it('lets a window end far out as long as it starts in range and is short enough', () => {
+    // Starts on the last allowed day, runs a full month past the planning horizon.
+    expect(parseBookingWindow({ startsOn: '2027-03-22', endsOn: '2027-04-22' }, NOW).ok).toBe(true);
+  });
+
+  it('knows a leap day from one that never happened', () => {
+    const leapNow = new Date('2027-12-01T12:00:00.000Z');
+    expect(parseBookingWindow({ startsOn: '2028-02-29', endsOn: '2028-02-29' }, leapNow).ok).toBe(true);
+    const plainNow = new Date('2026-12-01T12:00:00.000Z');
+    const notLeap = parseBookingWindow({ startsOn: '2027-02-29', endsOn: '2027-02-29' }, plainNow);
+    expect(!notLeap.ok && notLeap.error).toMatch(/not a real date/i);
+  });
+
+  it.each(['2026-1-05', '26-10-14', '2026/10/14', ' 2026-10-14', '2026-10-14 '])('refuses "%s", which isn\'t written the one way dates are', (value) => {
+    expect(parseBookingWindow({ startsOn: value, endsOn: '2026-10-20' }, NOW).ok).toBe(false);
+  });
+
+  it('counts a window over a month end and a leap day correctly', () => {
+    expect(bookingDays({ startsOn: '2028-02-28', endsOn: '2028-03-01' })).toBe(3);
+    expect(bookingDays({ startsOn: '2026-12-31', endsOn: '2027-01-01' })).toBe(2);
+  });
+});
+
 describe('overlaps — two people cannot claim the same day', () => {
   it.each([
     ['the same single day', window('2026-10-14', '2026-10-14'), window('2026-10-14', '2026-10-14')],
@@ -144,5 +195,13 @@ describe('bookingBlocksLoan — a loan has to be back before the booked window',
 
   it('allows a loan due the day before', () => {
     expect(bookingBlocksLoan(new Date('2026-10-13T23:00:00.000Z'), '2026-10-14')).toBe(false);
+  });
+
+  // The group's midnight (Chicago: 05:00 UTC in October), not UTC's — a loan
+  // due at 8pm the night before game night is back in time.
+  it('draws the line at the group\'s midnight, to the millisecond', () => {
+    expect(bookingBlocksLoan(new Date('2026-10-14T01:00:00.000Z'), '2026-10-14')).toBe(false); // Oct 13, 8pm CDT
+    expect(bookingBlocksLoan(new Date('2026-10-14T04:59:59.999Z'), '2026-10-14')).toBe(false); // 11:59:59pm CDT
+    expect(bookingBlocksLoan(new Date('2026-10-14T05:00:00.000Z'), '2026-10-14')).toBe(true);  // midnight CDT
   });
 });

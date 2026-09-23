@@ -5,6 +5,7 @@ import { requireCollectionMembership } from '../middleware/requireCollectionMemb
 import { route, idFrom } from '../utils/route';
 import { activeLoanStatusSql, miniStatusFrom } from '../utils/miniStatus';
 import * as events from '../services/loanEvents';
+import { positiveId } from '../utils/inputs';
 
 const router = Router();
 
@@ -58,11 +59,13 @@ router.get('/', route(async (req, res) => {
 // POST /api/cart  { miniId }
 // Puts a mini in your basket. Reserves nothing — only checkout does.
 router.post('/', route(async (req, res) => {
-  const miniId = Number((req.body as { miniId?: unknown } | undefined)?.miniId);
-  if (!Number.isInteger(miniId) || miniId <= 0) {
+  // A real number only: Number() would read true as 1 and [5] as 5.
+  const miniIdCheck = positiveId((req.body as { miniId?: unknown } | undefined)?.miniId);
+  if (!miniIdCheck.ok) {
     res.status(400).json({ error: 'miniId is required' });
     return;
   }
+  const miniId = miniIdCheck.value;
 
   const mini = await firstRow<{ owner_id: number; active_loan_status: string | null; on_quest_since: Date | null; condition_flag: string | null }>(
     `SELECT m.owner_id, ${activeLoanStatusSql('m')} AS active_loan_status, m.on_quest_since, m.condition_flag

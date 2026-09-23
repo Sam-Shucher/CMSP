@@ -66,6 +66,8 @@ vi.mock('../services/bookings', () => ({
   // Nobody has days claimed unless a test says so — otherwise every handoff
   // in every other file would need a booking lookup threading through it.
   bookingBlocking: vi.fn(async () => null),
+  bookingBlockingQuest: vi.fn(async () => null),
+  outState: vi.fn(async () => ({ out: false })),
   startDueBookings: vi.fn(async () => 0),
   sweepPastBookings: vi.fn(async () => 0),
   dropBookingsInCollection: vi.fn(async () => {}),
@@ -87,6 +89,7 @@ vi.mock('../services/loanEvents', () => ({
   received: vi.fn(async () => {}),
   extended: vi.fn(async () => {}),
   conditionRecorded: vi.fn(async () => {}),
+  messagePosted: vi.fn(async () => {}),
   returned: vi.fn(async () => {}),
   lost: vi.fn(async () => {}),
   criticallyWounded: vi.fn(async () => {}),

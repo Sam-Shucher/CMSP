@@ -71,6 +71,12 @@ describe('UploadMiniPage', () => {
     expect(body.has('price')).toBe(false);
   });
 
+  it('points to adding several at once, for a whole shelf', () => {
+    render(<MemoryRouter><UploadMiniPage /></MemoryRouter>);
+
+    expect(screen.getByRole('link', { name: /add several at once/i })).toHaveAttribute('href', '/upload/bulk');
+  });
+
   it('shows the server\'s error and stays on the page', async () => {
     vi.mocked(fetch).mockResolvedValueOnce({ ok: false, json: async () => ({ error: 'Only image files are allowed (jpg, png, gif, webp)' }) } as Response);
     render(<MemoryRouter><UploadMiniPage /></MemoryRouter>);

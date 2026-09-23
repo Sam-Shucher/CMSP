@@ -12,6 +12,10 @@ USE mini_library;
 CREATE TABLE IF NOT EXISTS collections (
   id         INT PRIMARY KEY AUTO_INCREMENT,
   name       VARCHAR(100) UNIQUE NOT NULL,
+  -- Some groups don't want a dollar figure on every mini. Off hides price
+  -- everywhere in this group (routes/minis.ts) without touching the stored
+  -- prices, so turning it back on brings them back as they were.
+  show_prices BOOLEAN NOT NULL DEFAULT TRUE,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -72,17 +76,46 @@ CREATE TABLE IF NOT EXISTS sessions (
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
+-- Phones and browsers that said yes to notifications (Web Push). One row per
+-- device, keyed by the push service's URL for it — the same device signing in
+-- as someone else takes the row over, rather than notifying both people.
+-- Removed when the person turns it off, signs out there, signs out
+-- everywhere, or the push service says the device is gone (404/410).
+-- session_id is the sign-in that turned it on: notices only go to a device
+-- while that session is live, so one that expired or went idle stops getting
+-- them, and the row goes with the session when it's purged.
+-- ASCII, since these are URLs and base64url keys, which also keeps the unique
+-- index on a 1000-character endpoint well inside InnoDB's key size.
+CREATE TABLE IF NOT EXISTS push_subscriptions (
+  id         INT PRIMARY KEY AUTO_INCREMENT,
+  user_id    INT NOT NULL,
+  endpoint   VARCHAR(1000) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  p256dh     VARCHAR(100) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  auth       VARCHAR(50) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  session_id CHAR(64) NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_push_subscriptions_endpoint (endpoint),
+  INDEX idx_push_subscriptions_user (user_id),
+  INDEX idx_push_subscriptions_session (session_id),
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+  FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+);
+
 -- A named group of one owner's own minis, borrowed together as a unit (a
 -- boxed army, a Kill Team) instead of one at a time. Membership lives on
 -- minis.set_id below, not here — deleting a set (ON DELETE SET NULL there)
 -- just ungroups its minis, it never touches the minis themselves.
+-- archived_at: its owner was removed from the group — hidden with their minis,
+-- back if they're restored to that owner, purged with them after the grace period.
 CREATE TABLE IF NOT EXISTS sets (
   id            INT PRIMARY KEY AUTO_INCREMENT,
   name          VARCHAR(100) NOT NULL,
   owner_id      INT NOT NULL,
   collection_id INT NOT NULL,
   created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  archived_at   DATETIME NULL,
   INDEX idx_sets_collection (collection_id),
+  INDEX idx_sets_archived (archived_at),
   FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE,
   FOREIGN KEY (collection_id) REFERENCES collections(id) ON DELETE CASCADE
 );
@@ -222,6 +255,24 @@ CREATE TABLE IF NOT EXISTS loan_condition_photos (
   position   TINYINT NOT NULL DEFAULT 0,
   INDEX idx_loan_condition_photos_report (report_id, position),
   FOREIGN KEY (report_id) REFERENCES loan_condition_reports(id) ON DELETE CASCADE
+);
+
+-- A loan's message thread — "running 20 minutes late", "front door, ring
+-- twice" — so what was agreed stays in the app instead of in a text thread.
+-- Only the loan's two people can see it, so each message has exactly one
+-- reader: read_at is when the OTHER person saw it. Never edited or deleted;
+-- it goes with the loan (CASCADE), like a condition report.
+CREATE TABLE IF NOT EXISTS loan_messages (
+  id         INT PRIMARY KEY AUTO_INCREMENT,
+  loan_id    INT NOT NULL,
+  author_id  INT NOT NULL,
+  body       VARCHAR(500) NOT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  read_at    DATETIME NULL,
+  -- The thread in order, and the counts on every loan row: WHERE loan_id = ?.
+  INDEX idx_loan_messages_loan (loan_id, id),
+  FOREIGN KEY (loan_id) REFERENCES loans(id) ON DELETE CASCADE,
+  FOREIGN KEY (author_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
 -- "I need this for game night on the 14th" — a claim on a date range, where a

@@ -162,3 +162,45 @@ describe('ProfilePage', () => {
     expect(fetch).toHaveBeenCalledTimes(1); // only the initial GET, no PATCH
   });
 });
+
+describe('ProfilePage — export', () => {
+  beforeEach(() => {
+    vi.stubGlobal('fetch', vi.fn());
+  });
+
+  function renderIn(collectionId: number | undefined) {
+    vi.mocked(fetch).mockResolvedValue({ ok: true, json: async () => PROFILE } as Response);
+    render(
+      <MemoryRouter>
+        <AuthContext.Provider value={{
+          user: { userId: 1, username: 'owner', role: 'user', collectionId },
+          loading: false,
+          setUser: vi.fn(),
+          collections: [{ id: 5, name: 'Chicago', role: 'user', showPrices: true }],
+          selectCollection: vi.fn(),
+          refreshSession: vi.fn(),
+        }}>
+          <ProfilePage />
+        </AuthContext.Provider>
+      </MemoryRouter>
+    );
+  }
+
+  it('offers the group\'s minis as a download, with the group in the link', async () => {
+    renderIn(5);
+    await screen.findByDisplayValue('Owner Name');
+
+    expect(screen.getByRole('heading', { name: 'Export my minis' })).toBeInTheDocument();
+    expect(screen.getByText(/everything you've added to Chicago/i)).toBeInTheDocument();
+    const link = screen.getByRole('link', { name: 'Download my minis' });
+    expect(link).toHaveAttribute('href', '/api/export?group=5');
+    expect(link).toHaveAttribute('download');
+  });
+
+  it('isn\'t offered before a group is chosen', async () => {
+    renderIn(undefined);
+    await screen.findByDisplayValue('Owner Name');
+
+    expect(screen.queryByRole('link', { name: 'Download my minis' })).not.toBeInTheDocument();
+  });
+});

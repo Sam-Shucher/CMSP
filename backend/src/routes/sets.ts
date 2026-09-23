@@ -20,12 +20,12 @@ interface SetRow {
   owner_username: string;
 }
 
-async function membersOf(setId: number): Promise<ReturnType<typeof serializeMini>[]> {
+async function membersOf(setId: number, showPrices: boolean): Promise<ReturnType<typeof serializeMini>[]> {
   const memberRows = await rows<MiniRow>(
     `${MINI_SELECT} WHERE m.set_id = ? AND m.archived_at IS NULL AND m.condition_flag IS NULL GROUP BY m.id ORDER BY m.name`,
     [setId]
   );
-  return memberRows.map(serializeMini);
+  return memberRows.map(row => serializeMini(row, showPrices));
 }
 
 function serializeSet(row: SetRow, members: ReturnType<typeof serializeMini>[]) {
@@ -44,7 +44,7 @@ async function findSet(collectionId: number, setId: number | null): Promise<SetR
   return firstRow<SetRow>(
     `SELECT st.id, st.name, st.owner_id, u.display_name AS owner_name, u.username AS owner_username
      FROM sets st JOIN users u ON u.id = st.owner_id
-     WHERE st.id = ? AND st.collection_id = ?`,
+     WHERE st.id = ? AND st.collection_id = ? AND st.archived_at IS NULL`,
     [setId, collectionId]
   );
 }
@@ -56,14 +56,14 @@ router.get('/', route(async (req, res) => {
   const setRows = await rows<SetRow>(
     `SELECT st.id, st.name, st.owner_id, u.display_name AS owner_name, u.username AS owner_username
      FROM sets st JOIN users u ON u.id = st.owner_id
-     WHERE st.collection_id = ?
+     WHERE st.collection_id = ? AND st.archived_at IS NULL -- a removed member's sets wait, hidden, with their minis
      ORDER BY st.created_at DESC`,
     [req.collectionId!]
   );
 
   const sets = [];
   for (const setRow of setRows) {
-    sets.push(serializeSet(setRow, await membersOf(setRow.id)));
+    sets.push(serializeSet(setRow, await membersOf(setRow.id, req.showPrices!)));
   }
   res.json(sets);
 }));
@@ -75,7 +75,7 @@ router.get('/:id', route(async (req, res) => {
     res.status(404).json({ error: 'Set not found' });
     return;
   }
-  res.json(serializeSet(set, await membersOf(set.id)));
+  res.json(serializeSet(set, await membersOf(set.id, req.showPrices!)));
 }));
 
 // POST /api/sets  { name, miniIds? }
@@ -121,7 +121,7 @@ router.post('/', route(async (req, res) => {
   }
 
   const set = await findSet(req.collectionId!, created.id);
-  res.status(201).json(serializeSet(set!, await membersOf(created.id)));
+  res.status(201).json(serializeSet(set!, await membersOf(created.id, req.showPrices!)));
 }));
 
 // PATCH /api/sets/:id  { name?, addMiniIds?, removeMiniIds? }
@@ -143,13 +143,16 @@ router.patch('/:id', route(async (req, res) => {
 
   const body = (req.body ?? {}) as { name?: unknown; addMiniIds?: unknown; removeMiniIds?: unknown };
 
+  // Everything is checked before anything is written, so a refused request
+  // changes nothing — not a rename that sticks while its bad "add" is refused.
+  let newName: string | null = null;
   if (body.name !== undefined) {
     const name = requiredText(body.name, 'Name', LIMITS.setName);
     if (!name.ok) {
       res.status(400).json({ error: name.error });
       return;
     }
-    await change('UPDATE sets SET name = ? WHERE id = ?', [name.value, set.id]);
+    newName = name.value;
   }
 
   const addMiniIds = idList(body.addMiniIds, 'addMiniIds', LIMITS.setMembers);
@@ -157,41 +160,54 @@ router.patch('/:id', route(async (req, res) => {
     res.status(400).json({ error: addMiniIds.error });
     return;
   }
+  const removeMiniIds = idList(body.removeMiniIds, 'removeMiniIds', LIMITS.setMembers);
+  if (!removeMiniIds.ok) {
+    res.status(400).json({ error: removeMiniIds.error });
+    return;
+  }
+
+  const addPlaceholders = addMiniIds.value.map(() => '?').join(', ');
   if (addMiniIds.value.length > 0) {
-    const placeholders = addMiniIds.value.map(() => '?').join(', ');
     const owned = await rows<{ id: number }>(
-      `SELECT id FROM minis WHERE id IN (${placeholders}) AND owner_id = ? AND collection_id = ? AND set_id IS NULL`,
+      `SELECT id FROM minis WHERE id IN (${addPlaceholders}) AND owner_id = ? AND collection_id = ? AND set_id IS NULL`,
       [...addMiniIds.value, set.owner_id, req.collectionId!]
     );
     if (owned.length !== addMiniIds.value.length) {
       res.status(400).json({ error: 'Every mini to add must be the set owner\'s, in this collection, and not already in another set' });
       return;
     }
-    await change(
-      `UPDATE minis SET set_id = ? WHERE id IN (${placeholders}) AND owner_id = ? AND collection_id = ? AND set_id IS NULL`,
-      [set.id, ...addMiniIds.value, set.owner_id, req.collectionId!]
-    );
   }
 
-  const removeMiniIds = idList(body.removeMiniIds, 'removeMiniIds', LIMITS.setMembers);
-  if (!removeMiniIds.ok) {
-    res.status(400).json({ error: removeMiniIds.error });
-    return;
-  }
+  const removePlaceholders = removeMiniIds.value.map(() => '?').join(', ');
   if (removeMiniIds.value.length > 0) {
-    const placeholders = removeMiniIds.value.map(() => '?').join(', ');
-    const removed = await change(
-      `UPDATE minis SET set_id = NULL WHERE id IN (${placeholders}) AND set_id = ?`,
+    const inSet = await rows<{ id: number }>(
+      `SELECT id FROM minis WHERE id IN (${removePlaceholders}) AND set_id = ?`,
       [...removeMiniIds.value, set.id]
     );
-    if (removed !== removeMiniIds.value.length) {
+    if (inSet.length !== removeMiniIds.value.length) {
       res.status(400).json({ error: 'Every mini to remove must currently be in this set' });
       return;
     }
   }
 
+  if (newName !== null) {
+    await change('UPDATE sets SET name = ? WHERE id = ?', [newName, set.id]);
+  }
+  if (addMiniIds.value.length > 0) {
+    await change(
+      `UPDATE minis SET set_id = ? WHERE id IN (${addPlaceholders}) AND owner_id = ? AND collection_id = ? AND set_id IS NULL`,
+      [set.id, ...addMiniIds.value, set.owner_id, req.collectionId!]
+    );
+  }
+  if (removeMiniIds.value.length > 0) {
+    await change(
+      `UPDATE minis SET set_id = NULL WHERE id IN (${removePlaceholders}) AND set_id = ?`,
+      [...removeMiniIds.value, set.id]
+    );
+  }
+
   const updated = await findSet(req.collectionId!, set.id);
-  res.json(serializeSet(updated!, await membersOf(set.id)));
+  res.json(serializeSet(updated!, await membersOf(set.id, req.showPrices!)));
 }));
 
 // DELETE /api/sets/:id

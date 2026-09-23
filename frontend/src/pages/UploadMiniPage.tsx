@@ -1,5 +1,5 @@
 import React from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { api } from '../api/client';
 import MiniForm, { MiniFormValues } from '../components/MiniForm';
 
@@ -28,7 +28,10 @@ export default function UploadMiniPage(): React.ReactElement {
 
   return (
     <div style={{ padding: '28px 32px', maxWidth: '640px', margin: '0 auto' }}>
-      <h2 style={{ fontSize: '22px', color: '#c9a84c', marginBottom: '24px' }}>Add a Mini</h2>
+      <h2 style={{ fontSize: '22px', color: '#c9a84c', marginBottom: '8px' }}>Add a Mini</h2>
+      <p style={{ color: '#8a7d6a', fontSize: '14px', marginBottom: '24px' }}>
+        Adding a whole shelf? <Link to="/upload/bulk">Add several at once</Link> — from a pile of photos or a spreadsheet.
+      </p>
       <MiniForm
         initialValues={{ name: '', description: DESCRIPTION_TEMPLATE, tags: '', price: '' }}
         submitLabel="Add to Collection"

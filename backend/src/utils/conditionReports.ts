@@ -17,9 +17,15 @@ export type ConditionPhase = (typeof CONDITION_PHASES)[number];
 // three angles is already more than anyone fills in at a doorstep.
 export const MAX_CONDITION_PHOTOS = 3;
 
+// How long after a loan ends its return can still be noted: long enough to get
+// it home and look it over, short enough that the note is clearly about the
+// return and not something that happened on the shelf afterwards.
+export const RETURN_NOTE_HOURS = 12;
+
 export interface ConditionLoanSnapshot {
   status: LoanStatus;
   handedOffAt: Date | null;
+  returnedAt?: Date | null; // when it was marked returned (or lost, or critically wounded)
 }
 
 export function parsePhase(value: unknown): Check<ConditionPhase> {
@@ -29,7 +35,9 @@ export function parsePhase(value: unknown): Check<ConditionPhase> {
   return { ok: true, value: value as ConditionPhase };
 }
 
-export function checkPhase(loan: ConditionLoanSnapshot, phase: ConditionPhase): { ok: true } | RuleFailure {
+export function checkPhase(
+  loan: ConditionLoanSnapshot, phase: ConditionPhase, now: Date = new Date()
+): { ok: true } | RuleFailure {
   if (loan.handedOffAt === null) {
     return {
       ok: false,
@@ -50,10 +58,20 @@ export function checkPhase(loan: ConditionLoanSnapshot, phase: ConditionPhase): 
     };
   }
 
+  // ...and the return only for a while after it ends.
+  if (phase === 'return' && loan.status !== 'adventuring' && loan.returnedAt
+      && now.getTime() - loan.returnedAt.getTime() > RETURN_NOTE_HOURS * 60 * 60 * 1000) {
+    return {
+      ok: false,
+      status: 409,
+      error: `How it looked at the return can only be noted within ${RETURN_NOTE_HOURS} hours of the loan ending`,
+    };
+  }
+
   return { ok: true };
 }
 
 // The ends still open to this loan, for the page to offer.
-export function openPhases(loan: ConditionLoanSnapshot): ConditionPhase[] {
-  return CONDITION_PHASES.filter(phase => checkPhase(loan, phase).ok);
+export function openPhases(loan: ConditionLoanSnapshot, now: Date = new Date()): ConditionPhase[] {
+  return CONDITION_PHASES.filter(phase => checkPhase(loan, phase, now).ok);
 }

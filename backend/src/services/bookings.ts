@@ -1,25 +1,31 @@
 import { PoolConnection } from 'mysql2/promise';
 import { pool } from '../db/connection';
-import { rows, firstRow, change, insert } from '../db/query';
+import { rows, firstRow, change, insert, Db } from '../db/query';
 import { notify } from '../db/notifications';
 import { messages } from '../utils/notificationMessages';
-import { BookingWindow, bookingBlocksLoan, overlaps } from '../utils/bookingRules';
+import {
+  BookingWindow, OutState, bookingBlocksLoan, overlaps, earliestBookingStart, outUntilMessage,
+} from '../utils/bookingRules';
+import { todayInApp, dayIn } from '../utils/appTime';
 
 // "I need this for game night on the 14th". A hold is a place in a queue for
-// whenever a mini next comes free; a booking claims a range of days up front,
-// whether or not the mini is free today.
+// whenever a mini next comes free; a booking claims a range of days up front.
 //
 // The invariant: no two bookings on the same mini may overlap. Every change to
 // a mini's calendar runs in a transaction that locks that mini's row first, so
 // two people clicking the same day at the same instant are serialised and only
 // one of them gets it — the same approach services/holds.ts takes to the line.
 //
-// How this meets the hold line: it doesn't compete with it. A hold decides WHO
-// is next; a booking constrains the CALENDAR — routes/loans.ts refuses a
-// handoff or extension whose due date would still have the mini out when
-// someone's booked window begins. A hold promotion creates a request with no
-// duration yet, so it never conflicts on its own; the owner simply can't then
-// agree a duration that runs into the booking.
+// While a mini is out — lent, or on a quest with its owner, which counts the
+// same — it can be booked only from the day AFTER it's due back (see
+// utils/bookingRules.ts's earliestBookingStart). The hold line always gets it
+// first when it comes home; a booking constrains the CALENDAR instead:
+// routes/loans.ts refuses a handoff or extension (and routes/minis.ts a quest)
+// whose due date would still have the mini out when someone's booked window
+// begins.
+//
+// "Today" is always the group's today (APP_TIMEZONE), passed into the SQL as a
+// value — never CURDATE(), which is the database's today and can be a day off.
 
 // One person's calendar shouldn't be fillable by one other person, and a mini
 // with more than this many claims on it is a mini that needs a second copy.
@@ -76,6 +82,22 @@ async function lockMini(conn: PoolConnection, miniId: number, collectionId: numb
   );
 }
 
+// Whether the mini is out right now, and until when (a calendar day in the
+// group's city). An adventuring loan is out until its due date; a quest until
+// its back-by date, or with no end at all when it has none.
+export async function outState(miniId: number, db: Db = pool): Promise<OutState> {
+  const state = await firstRow<{ on_quest_since: Date | null; on_quest_until: string | null; due_at: Date | null }>(
+    `SELECT m.on_quest_since, DATE_FORMAT(m.on_quest_until, '%Y-%m-%d') AS on_quest_until,
+            (SELECT l.due_at FROM loans l WHERE l.mini_id = m.id AND l.status = 'adventuring' LIMIT 1) AS due_at
+     FROM minis m WHERE m.id = ?`,
+    [miniId],
+    db
+  );
+  if (state?.due_at) return { out: true, until: dayIn(new Date(state.due_at)), reason: 'loan' };
+  if (state?.on_quest_since) return { out: true, until: state.on_quest_until, reason: 'quest' };
+  return { out: false };
+}
+
 // Every booking on this mini that still has days to come, soonest first.
 const BOOKING_COLUMNS = `
   b.id, b.user_id, b.note, b.started_at, b.loan_id,
@@ -89,14 +111,14 @@ const BOOKING_COLUMNS = `
 // booking different minis contend with each other. The clashing booker's name
 // is looked up afterwards, for the message only — same reasoning as
 // services/holds.ts's lockLine.
-async function lockCalendar(conn: PoolConnection, miniId: number): Promise<LockedBooking[]> {
+async function lockCalendar(conn: PoolConnection, miniId: number, today: string): Promise<LockedBooking[]> {
   return rows<LockedBooking>(
     `SELECT b.id, b.user_id,
             DATE_FORMAT(b.starts_on, '%Y-%m-%d') AS starts_on,
             DATE_FORMAT(b.ends_on, '%Y-%m-%d') AS ends_on
      FROM bookings b
-     WHERE b.mini_id = ? AND b.ends_on >= CURDATE() ORDER BY b.starts_on FOR UPDATE`,
-    [miniId],
+     WHERE b.mini_id = ? AND b.ends_on >= ? ORDER BY b.starts_on FOR UPDATE`,
+    [miniId, today],
     conn
   );
 }
@@ -113,8 +135,10 @@ export async function placeBooking(
   userId: number,
   collectionId: number,
   window: BookingWindow,
-  note: string | null
+  note: string | null,
+  now: Date = new Date()
 ): Promise<{ ok: true; bookingId: number } | BookingFailure> {
+  const today = todayInApp(now);
   const outcome = await inTransaction<PlaceOutcome>(async conn => {
     const mini = await lockMini(conn, miniId, collectionId);
     if (!mini || mini.archived_at) return { failure: NOT_FOUND };
@@ -123,7 +147,18 @@ export async function placeBooking(
       return { failure: { ok: false, status: 409, error: 'This mini isn\'t available to book right now' } };
     }
 
-    const calendar = await lockCalendar(conn, miniId);
+    // Out on a loan or a quest: only from the day after it's due back, and not
+    // at all if nobody knows when that is.
+    const state = await outState(miniId, conn);
+    const start = earliestBookingStart(state, today);
+    if (state.out && !start.bookable) {
+      return { failure: { ok: false, status: 409, error: outUntilMessage(state, null) } };
+    }
+    if (state.out && start.bookable && window.startsOn < start.earliest) {
+      return { failure: { ok: false, status: 409, error: outUntilMessage(state, start.earliest) } };
+    }
+
+    const calendar = await lockCalendar(conn, miniId, today);
     if (calendar.some(booking => booking.user_id === userId)) {
       return { failure: { ok: false, status: 409, error: 'You already have this mini booked — cancel that booking first' } };
     }
@@ -222,6 +257,12 @@ export interface CalendarEntry {
 export interface MiniCalendar {
   max: number;
   bookings: CalendarEntry[];
+  // Whether it's out now and until when, so the page can warn before anyone
+  // picks a day: the earliest day that can be booked (today, or the day after
+  // it's due back), or bookable: false for a quest with no back-by date.
+  out: { until: string | null; reason: 'loan' | 'quest' } | null;
+  bookable: boolean;
+  earliestStart: string | null;
 }
 
 interface CalendarRow extends ExistingBooking {
@@ -233,18 +274,23 @@ interface CalendarRow extends ExistingBooking {
 // usable — but who booked them, and why, is between that person and the owner.
 // Same reasoning as the hold line, where everyone sees the count and only the
 // owner sees the names.
-export async function miniCalendar(miniId: number, userId: number, collectionId: number): Promise<MiniCalendar | null> {
+export async function miniCalendar(
+  miniId: number, userId: number, collectionId: number, now: Date = new Date()
+): Promise<MiniCalendar | null> {
   const mini = await firstRow<{ owner_id: number }>(
     'SELECT owner_id FROM minis WHERE id = ? AND collection_id = ? AND archived_at IS NULL',
     [miniId, collectionId]
   );
   if (!mini) return null;
 
+  const today = todayInApp(now);
   const booked = await rows<CalendarRow>(
     `SELECT ${BOOKING_COLUMNS} FROM bookings b JOIN users u ON u.id = b.user_id
-     WHERE b.mini_id = ? AND b.ends_on >= CURDATE() ORDER BY b.starts_on, b.id`,
-    [miniId]
+     WHERE b.mini_id = ? AND b.ends_on >= ? ORDER BY b.starts_on, b.id`,
+    [miniId, today]
   );
+  const state = await outState(miniId);
+  const start = earliestBookingStart(state, today);
 
   const isOwner = mini.owner_id === userId;
   return {
@@ -262,6 +308,9 @@ export async function miniCalendar(miniId: number, userId: number, collectionId:
         started: row.started_at !== null,
       };
     }),
+    out: state.out ? { until: state.until, reason: state.reason } : null,
+    bookable: start.bookable,
+    earliestStart: start.bookable ? start.earliest : null,
   };
 }
 
@@ -294,7 +343,7 @@ const MY_BOOKING_SELECT = `
   JOIN minis m ON m.id = b.mini_id
   JOIN users u ON u.id = b.user_id
   JOIN users o ON o.id = m.owner_id
-  WHERE b.collection_id = ? AND b.ends_on >= CURDATE()
+  WHERE b.collection_id = ? AND b.ends_on >= ?
 `;
 
 function serializeMyBooking(row: MyBookingRow): MyBooking {
@@ -315,17 +364,19 @@ function serializeMyBooking(row: MyBookingRow): MyBooking {
 
 export async function listMyBookings(
   userId: number,
-  collectionId: number
+  collectionId: number,
+  now: Date = new Date()
 ): Promise<{ mine: MyBooking[]; onMyMinis: MyBooking[] }> {
+  const today = todayInApp(now);
   const mine = await rows<MyBookingRow>(
     `${MY_BOOKING_SELECT} AND b.user_id = ? ORDER BY b.starts_on, b.id`,
-    [collectionId, userId]
+    [collectionId, today, userId]
   );
   // The owner needs to see what has been claimed on their shelf, and by whom —
   // they're the one who has to hand it over on the day.
   const onMyMinis = await rows<MyBookingRow>(
     `${MY_BOOKING_SELECT} AND m.owner_id = ? AND b.user_id <> ? ORDER BY b.starts_on, b.id`,
-    [collectionId, userId, userId]
+    [collectionId, today, userId, userId]
   );
   return { mine: mine.map(serializeMyBooking), onMyMinis: onMyMinis.map(serializeMyBooking) };
 }
@@ -336,34 +387,66 @@ export async function listMyBookings(
 export async function bookingBlocking(
   miniId: number,
   dueAt: Date,
-  borrowerId: number
+  borrowerId: number,
+  now: Date = new Date()
 ): Promise<{ startsOn: string; holderName: string } | null> {
   const upcoming = await rows<ExistingBooking>(
     `SELECT ${BOOKING_COLUMNS} FROM bookings b JOIN users u ON u.id = b.user_id
-     WHERE b.mini_id = ? AND b.user_id <> ? AND b.started_at IS NULL AND b.ends_on >= CURDATE()
+     WHERE b.mini_id = ? AND b.user_id <> ? AND b.started_at IS NULL AND b.ends_on >= ?
      ORDER BY b.starts_on`,
-    [miniId, borrowerId]
+    [miniId, borrowerId, todayInApp(now)]
   );
 
   const clash = upcoming.find(booking => bookingBlocksLoan(dueAt, booking.starts_on));
   return clash ? { startsOn: clash.starts_on, holderName: clash.holder_name } : null;
 }
 
+// The same rule for the owner's own quest: it counts like a loan, so it has to
+// be back before the next booked day — and with no back-by date at all, it
+// would run into any booking there is. Returns the first booking in the way.
+export async function bookingBlockingQuest(
+  miniId: number,
+  backBy: string | null,
+  now: Date = new Date()
+): Promise<{ startsOn: string; holderName: string } | null> {
+  const upcoming = await rows<ExistingBooking>(
+    `SELECT ${BOOKING_COLUMNS} FROM bookings b JOIN users u ON u.id = b.user_id
+     WHERE b.mini_id = ? AND b.started_at IS NULL AND b.ends_on >= ?
+     ORDER BY b.starts_on`,
+    [miniId, todayInApp(now)]
+  );
+  const clash = upcoming.find(booking => backBy === null || backBy >= booking.starts_on);
+  return clash ? { startsOn: clash.starts_on, holderName: clash.holder_name } : null;
+}
+
 // Housekeeping: a booking whose first day has arrived becomes a request, so
 // the person who planned around it doesn't have to be watching at midnight.
 // If the mini isn't free yet it is simply left for the next sweep — never
-// forced, because someone else is holding it right now.
-export async function startDueBookings(): Promise<number> {
+// forced, because someone else is holding it right now. If the person who
+// booked it already has it (borrowed or requested), the booking is simply
+// fulfilled by that loan: no second request, and no "never came free" later.
+export async function startDueBookings(now: Date = new Date()): Promise<number> {
+  const today = todayInApp(now);
   const due = await rows<{ id: number; mini_id: number; user_id: number; collection_id: number; mini_name: string; owner_id: number }>(
     `SELECT b.id, b.mini_id, b.user_id, b.collection_id, m.name AS mini_name, m.owner_id
      FROM bookings b JOIN minis m ON m.id = b.mini_id
-     WHERE b.started_at IS NULL AND b.starts_on <= CURDATE() AND b.ends_on >= CURDATE()
+     WHERE b.started_at IS NULL AND b.starts_on <= ? AND b.ends_on >= ?
        AND m.archived_at IS NULL AND m.condition_flag IS NULL
-     ORDER BY b.starts_on, b.id`
+     ORDER BY b.starts_on, b.id`,
+    [today, today]
   );
 
   let started = 0;
   for (const booking of due) {
+    const theirs = await firstRow<{ id: number }>(
+      `SELECT id FROM loans WHERE mini_id = ? AND borrower_id = ? AND status IN ('negotiating', 'adventuring') LIMIT 1`,
+      [booking.mini_id, booking.user_id]
+    );
+    if (theirs) {
+      await change('UPDATE bookings SET started_at = NOW(), loan_id = ? WHERE id = ? AND started_at IS NULL', [theirs.id, booking.id]);
+      continue;
+    }
+
     // One statement that only succeeds if the mini is still free and the
     // person is still a member of its group — the same shape promoteNextHold
     // uses, and for the same reason.
@@ -372,9 +455,9 @@ export async function startDueBookings(): Promise<number> {
        SELECT m.id, m.collection_id, ?, m.owner_id, 'negotiating'
        FROM minis m
        JOIN collection_memberships cm ON cm.user_id = ? AND cm.collection_id = m.collection_id
-       WHERE m.id = ? AND m.on_quest_since IS NULL
+       WHERE m.id = ? AND m.on_quest_since IS NULL AND m.owner_id <> ?
          AND NOT EXISTS (SELECT 1 FROM loans l WHERE l.mini_id = m.id AND l.status IN ('negotiating', 'adventuring'))`,
-      [booking.user_id, booking.user_id, booking.mini_id]
+      [booking.user_id, booking.user_id, booking.mini_id, booking.user_id]
     );
     if (!request.inserted) continue;
 
@@ -397,12 +480,13 @@ export async function startDueBookings(): Promise<number> {
 // Housekeeping: clear out bookings whose days have gone. One that never became
 // a request is a no-show — the mini never came free — and the person who
 // planned around it is told, because nothing else would tell them.
-export async function sweepPastBookings(): Promise<number> {
+export async function sweepPastBookings(now: Date = new Date()): Promise<number> {
   const past = await rows<{ id: number; user_id: number; collection_id: number; mini_id: number; mini_name: string; starts_on: string; started_at: Date | null }>(
     `SELECT b.id, b.user_id, b.collection_id, b.mini_id, b.started_at, m.name AS mini_name,
             DATE_FORMAT(b.starts_on, '%Y-%m-%d') AS starts_on
      FROM bookings b JOIN minis m ON m.id = b.mini_id
-     WHERE b.ends_on < CURDATE()`
+     WHERE b.ends_on < ?`,
+    [todayInApp(now)]
   );
 
   for (const booking of past) {

@@ -2,7 +2,12 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import ChangePasswordForm from './ChangePasswordForm';
+import { resyncPush } from '../push';
 import { jsonResponse, jsonBodyOf } from '../test/apiMock';
+
+// A password change makes the server forget every device's phone
+// notifications; this device has to sign straight back up.
+vi.mock('../push', () => ({ resyncPush: vi.fn(async () => {}) }));
 
 function renderForm(props: { onChanged?: () => void } = {}) {
   const onChanged = props.onChanged ?? vi.fn();
@@ -19,6 +24,7 @@ async function fill(options: { current?: string; next?: string; confirm?: string
 
 describe('ChangePasswordForm', () => {
   beforeEach(() => {
+    vi.mocked(resyncPush).mockClear();
     vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({ message: 'Password changed' })));
   });
 
@@ -76,6 +82,27 @@ describe('ChangePasswordForm', () => {
 
     expect(await screen.findByText('That current password isn\'t right')).toBeInTheDocument();
     expect(onChanged).not.toHaveBeenCalled();
+  });
+
+  it('signs this device back up for phone notifications once the password has changed', async () => {
+    const { onChanged } = renderForm();
+
+    await fill();
+    await userEvent.click(screen.getByRole('button', { name: 'Change password' }));
+
+    await waitFor(() => expect(onChanged).toHaveBeenCalled());
+    expect(resyncPush).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves phone notifications alone when the change is refused', async () => {
+    vi.mocked(fetch).mockResolvedValue(jsonResponse({ error: 'That current password isn\'t right' }, { ok: false, status: 401 }));
+    renderForm();
+
+    await fill();
+    await userEvent.click(screen.getByRole('button', { name: 'Change password' }));
+
+    await screen.findByText('That current password isn\'t right');
+    expect(resyncPush).not.toHaveBeenCalled();
   });
 
   it('uses password fields a password manager can fill', () => {

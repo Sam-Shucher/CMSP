@@ -5,6 +5,7 @@ import { useAuth } from '../App';
 import { useValidatedForm } from '../hooks/useValidatedForm';
 import FieldError from '../components/FieldError';
 import ChangePasswordForm from '../components/ChangePasswordForm';
+import PushSettings from '../components/PushSettings';
 
 type Profile = {
   id: number;
@@ -18,7 +19,8 @@ type Profile = {
 // Lets a user view their account info and edit their own display name,
 // phone, and neighborhood. Reached by clicking your username in the nav bar.
 export default function ProfilePage(): React.ReactElement {
-  const { setUser } = useAuth();
+  const { user, setUser, collections } = useAuth();
+  const groupName = collections.find(c => c.id === user?.collectionId)?.name;
   const navigate = useNavigate();
   const [profile, setProfile] = useState<Profile | null>(null);
   const [confirmingLogoutAll, setConfirmingLogoutAll] = useState<boolean>(false);
@@ -139,6 +141,29 @@ export default function ProfilePage(): React.ReactElement {
         </p>
         <ChangePasswordForm />
       </div>
+
+      <PushSettings />
+
+      {user?.collectionId !== undefined && (
+        <div style={{ marginTop: '32px', paddingTop: '20px', borderTop: '1px solid #3d3629' }}>
+          <h3 style={{ fontSize: '15px', color: '#c9a84c', marginBottom: '6px' }}>Export my minis</h3>
+          <p style={{ fontSize: '13px', color: '#8a7d6a', marginBottom: '12px' }}>
+            Everything you've added{groupName ? ` to ${groupName}` : ''}, as one .zip: a spreadsheet (which
+            Bulk Add can read back in, here or in another group), the full record with who has borrowed
+            what, and every photo. Worth keeping as your own backup.
+          </p>
+          {/* A plain link, not a fetch, so a big download goes straight to disk.
+              The group rides along so a switch in another tab can't swap it. */}
+          <a
+            className="btn-secondary"
+            href={`/api/export?group=${user.collectionId}`}
+            download
+            style={{ display: 'inline-block', textDecoration: 'none' }}
+          >
+            Download my minis
+          </a>
+        </div>
+      )}
 
       <div style={{ marginTop: '32px', paddingTop: '20px', borderTop: '1px solid #3d3629' }}>
         <h3 style={{ fontSize: '15px', color: '#c9a84c', marginBottom: '6px' }}>Sessions</h3>

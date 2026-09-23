@@ -94,4 +94,11 @@ export default tseslint.config(
       '@typescript-eslint/no-require-imports': 'off',
     },
   },
+
+  // The service worker runs in its own scope (self, clients, registration),
+  // not a page and not Node.
+  {
+    files: ['frontend/public/sw.js'],
+    languageOptions: { globals: globals.serviceworker, sourceType: 'script' },
+  },
 );

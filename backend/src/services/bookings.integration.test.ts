@@ -5,6 +5,7 @@ import {
   placeBooking, cancelBooking, miniCalendar, listMyBookings, bookingBlocking,
   startDueBookings, sweepPastBookings, MAX_BOOKINGS_PER_MINI,
 } from './bookings';
+import { todayInApp, addDays } from '../utils/appTime';
 import {
   assertDatabaseReachable, resetDatabase, createCollection, createUser, createMini, TestUser,
 } from '../test/dbHelpers';
@@ -14,10 +15,17 @@ import {
 // ones a mocked database can't check: two people can't claim the same day, and
 // a booking that comes due really does turn into a request.
 
-const DAY_MS = 24 * 60 * 60 * 1000;
-
+// Days are the group's days (APP_TIMEZONE, Chicago by default) — the same
+// "today" the app uses — so these don't turn flaky in the evening, when UTC
+// has already moved on to tomorrow.
 function day(offsetDays: number): string {
-  return new Date(Date.now() + offsetDays * DAY_MS).toISOString().slice(0, 10);
+  return addDays(todayInApp(), offsetDays);
+}
+
+// Midday on that day in Chicago (18:00 UTC is noon CST, 1pm CDT): a moment
+// that can't slip into the day before or after, whatever the clocks do.
+function middayOn(offsetDays: number): Date {
+  return new Date(`${day(offsetDays)}T18:00:00Z`);
 }
 
 let collectionId: number;
@@ -100,6 +108,86 @@ describe('placing a booking', () => {
 
     expect(result.ok).toBe(false);
     expect(!result.ok && result.status).toBe(409);
+  });
+});
+
+// A mini that's out — lent, or on a quest with its owner, which counts the
+// same — can be booked only from the day after it's due back: the owner may
+// not want to lend it again the very day it comes home.
+describe('booking a mini that is out', () => {
+  async function lentUntil(dueInDays: number): Promise<void> {
+    await pool.execute(
+      `INSERT INTO loans (mini_id, collection_id, borrower_id, owner_id, status, handed_off_at, due_at)
+       VALUES (?, ?, ?, ?, 'adventuring', NOW(), ?)`,
+      [miniId, collectionId, theo.userId, olivia.userId, middayOn(dueInDays)]
+    );
+  }
+
+  it('refuses any day up to and including the day it\'s due back, saying which day is free', async () => {
+    await lentUntil(5);
+
+    for (const start of [0, 3, 5]) {
+      const result = await placeBooking(miniId, wendy.userId, collectionId, window(start), null);
+      expect(result.ok).toBe(false);
+      expect(!result.ok && result.status).toBe(409);
+      expect(!result.ok && result.error).toMatch(/out on loan until .*earliest you can book it is/);
+    }
+  });
+
+  it('allows the day after it\'s due back', async () => {
+    await lentUntil(5);
+
+    expect((await placeBooking(miniId, wendy.userId, collectionId, window(6), null)).ok).toBe(true);
+  });
+
+  it('treats a quest with a back-by date exactly like a loan due that day', async () => {
+    await pool.execute('UPDATE minis SET on_quest_since = NOW(), on_quest_until = ? WHERE id = ?', [day(5), miniId]);
+
+    const onTheDay = await placeBooking(miniId, wendy.userId, collectionId, window(5), null);
+    expect(!onTheDay.ok && onTheDay.error).toMatch(/on a quest with its owner until/);
+    expect((await placeBooking(miniId, wendy.userId, collectionId, window(6), null)).ok).toBe(true);
+  });
+
+  it('can\'t be booked at all while on a quest with no back-by date — a hold is the way in', async () => {
+    await pool.execute('UPDATE minis SET on_quest_since = NOW(), on_quest_until = NULL WHERE id = ?', [miniId]);
+
+    const result = await placeBooking(miniId, wendy.userId, collectionId, window(30), null);
+
+    expect(result.ok).toBe(false);
+    expect(!result.ok && result.error).toMatch(/no date it's due back — place a hold/);
+  });
+
+  it('counts an overdue mini as due back today, so tomorrow is the earliest', async () => {
+    await lentUntil(-3);
+
+    expect((await placeBooking(miniId, wendy.userId, collectionId, window(0), null)).ok).toBe(false);
+    expect((await placeBooking(miniId, wendy.userId, collectionId, window(1), null)).ok).toBe(true);
+  });
+
+  it('tells the page all of this before anyone picks a day', async () => {
+    await lentUntil(5);
+    const lent = await miniCalendar(miniId, wendy.userId, collectionId);
+    expect(lent).toMatchObject({ out: { until: day(5), reason: 'loan' }, bookable: true, earliestStart: day(6) });
+
+    await pool.execute('DELETE FROM loans WHERE mini_id = ?', [miniId]);
+    await pool.execute('UPDATE minis SET on_quest_since = NOW(), on_quest_until = NULL WHERE id = ?', [miniId]);
+    const questing = await miniCalendar(miniId, wendy.userId, collectionId);
+    expect(questing).toMatchObject({ out: { until: null, reason: 'quest' }, bookable: false, earliestStart: null });
+
+    await pool.execute('UPDATE minis SET on_quest_since = NULL WHERE id = ?', [miniId]);
+    const home = await miniCalendar(miniId, wendy.userId, collectionId);
+    expect(home).toMatchObject({ out: null, bookable: true, earliestStart: day(0) });
+  });
+
+  // A request that hasn't been handed over yet has no due date; the handoff
+  // rule (routes/loans.ts) makes its loan fit around the booking instead.
+  it('still takes a booking while it\'s only requested, not yet handed over', async () => {
+    await pool.execute(
+      `INSERT INTO loans (mini_id, collection_id, borrower_id, owner_id, status) VALUES (?, ?, ?, ?, 'negotiating')`,
+      [miniId, collectionId, theo.userId, olivia.userId]
+    );
+
+    expect((await placeBooking(miniId, wendy.userId, collectionId, window(3), null)).ok).toBe(true);
   });
 });
 
@@ -242,7 +330,7 @@ describe('a booking constrains the loan calendar', () => {
   it('reports the booking a loan due that day would run into', async () => {
     await placeBooking(miniId, wendy.userId, collectionId, window(14, 15), null);
 
-    const blocking = await bookingBlocking(miniId, new Date(Date.now() + 14 * DAY_MS), theo.userId);
+    const blocking = await bookingBlocking(miniId, middayOn(14), theo.userId);
 
     expect(blocking).toEqual({ startsOn: day(14), holderName: 'wendy display' });
   });
@@ -250,21 +338,21 @@ describe('a booking constrains the loan calendar', () => {
   it('says nothing about a loan due the day before it starts', async () => {
     await placeBooking(miniId, wendy.userId, collectionId, window(14, 15), null);
 
-    expect(await bookingBlocking(miniId, new Date(Date.now() + 13 * DAY_MS), theo.userId)).toBeNull();
+    expect(await bookingBlocking(miniId, middayOn(13), theo.userId)).toBeNull();
   });
 
   // Your own booking is not a reason to refuse you the mini.
   it('ignores the prospective borrower\'s own booking', async () => {
     await placeBooking(miniId, wendy.userId, collectionId, window(14, 15), null);
 
-    expect(await bookingBlocking(miniId, new Date(Date.now() + 20 * DAY_MS), wendy.userId)).toBeNull();
+    expect(await bookingBlocking(miniId, middayOn(20), wendy.userId)).toBeNull();
   });
 
   it('ignores a booking that has already become a request', async () => {
     await placeBooking(miniId, wendy.userId, collectionId, window(14, 15), null);
     await pool.execute('UPDATE bookings SET started_at = NOW() WHERE mini_id = ?', [miniId]);
 
-    expect(await bookingBlocking(miniId, new Date(Date.now() + 20 * DAY_MS), theo.userId)).toBeNull();
+    expect(await bookingBlocking(miniId, middayOn(20), theo.userId)).toBeNull();
   });
 });
 
@@ -302,13 +390,15 @@ describe('a booking coming due', () => {
     expect(loans).toHaveLength(1);
   });
 
+  // Booked while it was home; it went out anyway (overdue from an earlier loan,
+  // say) and is still out on the day.
   it('waits, rather than double-booking, while the mini is still out', async () => {
+    await bookStartingToday(wendy);
     await pool.execute(
       `INSERT INTO loans (mini_id, collection_id, borrower_id, owner_id, status, handed_off_at, due_at)
        VALUES (?, ?, ?, ?, 'adventuring', NOW(), NOW() + INTERVAL 3 DAY)`,
       [miniId, collectionId, theo.userId, olivia.userId]
     );
-    await bookStartingToday(wendy);
 
     expect(await startDueBookings()).toBe(0);
     const [bookings] = await pool.query<RowDataPacket[]>(
@@ -324,6 +414,45 @@ describe('a booking coming due', () => {
     expect(await startDueBookings()).toBe(0);
     const [loans] = await pool.query<RowDataPacket[]>('SELECT id FROM loans WHERE mini_id = ?', [miniId]);
     expect(loans).toHaveLength(0);
+  });
+
+  // The person who booked it already has it — borrowed through the hold line,
+  // or requested straight from the cart. Their booking is simply fulfilled.
+  it.each(['adventuring', 'negotiating'])('is fulfilled by the booker\'s own %s loan: no second request, no notice', async (status) => {
+    await bookStartingToday(wendy);
+    const [loan] = await pool.execute<import('mysql2').ResultSetHeader>(
+      `INSERT INTO loans (mini_id, collection_id, borrower_id, owner_id, status, handed_off_at, due_at)
+       VALUES (?, ?, ?, ?, ?, NOW(), NOW() + INTERVAL 10 DAY)`,
+      [miniId, collectionId, wendy.userId, olivia.userId, status]
+    );
+
+    expect(await startDueBookings()).toBe(0);
+
+    const [loans] = await pool.query<RowDataPacket[]>('SELECT id FROM loans WHERE mini_id = ?', [miniId]);
+    expect(loans).toHaveLength(1);
+    const [bookings] = await pool.query<RowDataPacket[]>('SELECT started_at, loan_id FROM bookings WHERE mini_id = ?', [miniId]);
+    expect(bookings[0].started_at).not.toBeNull();
+    expect(bookings[0].loan_id).toBe(loan.insertId);
+    const [notices] = await pool.query<RowDataPacket[]>(
+      "SELECT id FROM notifications WHERE type IN ('booking_started', 'booking_became_request')"
+    );
+    expect(notices).toHaveLength(0);
+  });
+
+  it('never tells someone who had it all along that it "never came free"', async () => {
+    await bookStartingToday(wendy);
+    await pool.execute(
+      `INSERT INTO loans (mini_id, collection_id, borrower_id, owner_id, status, handed_off_at, due_at)
+       VALUES (?, ?, ?, ?, 'adventuring', NOW(), NOW() + INTERVAL 10 DAY)`,
+      [miniId, collectionId, wendy.userId, olivia.userId]
+    );
+    await startDueBookings();
+
+    // Days later, once the booked days are over.
+    await sweepPastBookings(new Date(Date.now() + 5 * 24 * 60 * 60 * 1000));
+
+    const [missed] = await pool.query<RowDataPacket[]>("SELECT id FROM notifications WHERE type = 'booking_missed'");
+    expect(missed).toHaveLength(0);
   });
 
   it('leaves a booking whose day hasn\'t come alone', async () => {

@@ -77,6 +77,15 @@ export function priceProblem(value: string): string | null {
   return null;
 }
 
+// A comma-separated tag list, judged the way the server saves it: trimmed,
+// lowercased, each once.
+export function tagsProblem(value: string): string | null {
+  const tagNames = new Set(value.split(',').map(t => t.trim().toLowerCase()).filter(Boolean));
+  if (tagNames.size > LIMITS.tagsPerMini) return `Use ${LIMITS.tagsPerMini} tags or fewer.`;
+  if ([...tagNames].some(t => t.length > LIMITS.tag)) return `Keep each tag to ${LIMITS.tag} characters or fewer.`;
+  return null;
+}
+
 export function validatePassword(password: string): ValidationResult {
   if ([...password].length < PASSWORD_MIN_CHARS) {
     return { valid: false, error: `Password must be at least ${PASSWORD_MIN_CHARS} characters` };

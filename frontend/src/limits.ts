@@ -5,6 +5,7 @@
 //   MAX_IMAGES, MAX_PHOTO_BYTES, MAX_PRICE → backend/src/routes/minis.ts
 //   MAX_BOOKING_DAYS, MAX_BOOKING_AHEAD_DAYS → backend/src/utils/bookingRules.ts
 //   MAX_CONDITION_PHOTOS → backend/src/utils/conditionReports.ts
+//   HANDOFF_EARLIEST_MINUTES, HANDOFF_LATEST_MINUTES → backend/src/utils/loanRules.ts
 export const LIMITS = {
   displayName: 100,
   neighborhood: 100,
@@ -25,6 +26,9 @@ export const LIMITS = {
   bookingNote: 255,      // "game night at the shop"
   bookingDays: 90,       // a booking can't reserve longer than a loan can run
   bookingAheadDays: 180, // and can't be made further out than that
+  loanMessage: 500,      // one message on a loan's thread
+  handoffEarliestMinutes: 6 * 60, // a handoff is arranged for 6:00am...
+  handoffLatestMinutes: 22 * 60,  // ...to 10:00pm, the group's local time
 } as const;
 
 // How often the pages that show other people's activity check for changes.

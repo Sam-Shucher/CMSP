@@ -36,6 +36,9 @@ function makeLoan(overrides: Partial<Loan> = {}): Loan {
     extendableDays: 0,
     conditionReports: 0,
     openConditionPhases: [],
+    messageCount: 0,
+    unreadMessages: 0,
+    messagesOpen: true,
     ...overrides,
   };
 }
@@ -140,6 +143,113 @@ describe('LoansPage — holds', () => {
     await screen.findByText('Beholder');
     expect(screen.queryByRole('region', { name: /waiting in line/i })).not.toBeInTheDocument();
     expect(screen.queryByRole('region', { name: /notify me/i })).not.toBeInTheDocument();
+  });
+});
+
+// Feature 13: the days you've claimed, and the days others have claimed on
+// your minis, next to the loans they'll turn into.
+describe('LoansPage — bookings', () => {
+  const MINE = {
+    id: 1, miniId: 42, miniName: 'Dire Wolf', miniImage: null, ownerName: 'Alice', holderName: 'Bob',
+    startsOn: '2026-10-14', endsOn: '2026-10-14', note: 'game night', started: false, loanId: null,
+  };
+  const ON_MY_MINI = {
+    id: 2, miniId: 43, miniName: 'Owlbear', miniImage: null, ownerName: 'Bob', holderName: 'Alice',
+    startsOn: '2026-10-20', endsOn: '2026-10-22', note: null, started: false, loanId: null,
+  };
+  const STARTED = { ...MINE, id: 3, miniName: 'Beholder', started: true, loanId: 9 };
+
+  function mockBookings(bookings: unknown) {
+    let current = bookings;
+    vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const key = `${init?.method ?? 'GET'} ${urlOf(input)}`;
+      if (key === 'GET /api/loans') return jsonResponse([]);
+      if (key === 'GET /api/holds') return jsonResponse({ holds: [], watching: [] });
+      if (key === 'GET /api/bookings') return jsonResponse(current);
+      if (key === 'DELETE /api/bookings/1') {
+        current = { mine: [], onMyMinis: [ON_MY_MINI] };
+        return jsonResponse({ cancelled: true });
+      }
+      if (key === 'DELETE /api/bookings/2') {
+        return jsonResponse({ error: 'That booking has already started' }, { ok: false, status: 409 });
+      }
+      return jsonResponse({ error: `unexpected ${key}` }, { ok: false });
+    });
+  }
+
+  beforeEach(() => {
+    nextId = 1;
+    vi.stubGlobal('fetch', vi.fn());
+  });
+
+  it('lists your bookings with whose mini it is, and bookings on your minis with who made them', async () => {
+    mockBookings({ mine: [MINE], onMyMinis: [ON_MY_MINI] });
+    renderLoans();
+
+    const section = await screen.findByRole('region', { name: /booked days/i });
+    expect(section).toHaveTextContent(/Dire Wolf/);
+    expect(section).toHaveTextContent(/Oct 14 · from Alice · game night/);
+    expect(section).toHaveTextContent(/Owlbear/);
+    expect(section).toHaveTextContent(/Oct 20 – Oct 22 · booked by Alice/);
+  });
+
+  it('shows a single day as one date, not a range of one', async () => {
+    mockBookings({ mine: [MINE], onMyMinis: [] });
+    renderLoans();
+
+    const section = await screen.findByRole('region', { name: /booked days/i });
+    expect(section).not.toHaveTextContent(/Oct 14 – Oct 14/);
+  });
+
+  it('lets you cancel a booking from here, and shows the list without it', async () => {
+    mockBookings({ mine: [MINE], onMyMinis: [ON_MY_MINI] });
+    renderLoans();
+
+    await userEvent.click(await screen.findByRole('button', { name: /cancel the booking on dire wolf/i }));
+
+    await waitFor(() => expect(screen.queryByText('Dire Wolf')).not.toBeInTheDocument());
+    expect(screen.getByText('Owlbear')).toBeInTheDocument();
+    expect(vi.mocked(fetch)).toHaveBeenCalledWith('/api/bookings/1', expect.objectContaining({ method: 'DELETE' }));
+  });
+
+  it('shows the server\'s reason when a cancel is refused', async () => {
+    mockBookings({ mine: [], onMyMinis: [ON_MY_MINI] });
+    renderLoans();
+
+    await userEvent.click(await screen.findByRole('button', { name: /cancel the booking on owlbear/i }));
+
+    expect(await screen.findByText('That booking has already started')).toBeInTheDocument();
+  });
+
+  it('marks a booking that has already become a request, with nothing left to cancel', async () => {
+    mockBookings({ mine: [STARTED], onMyMinis: [] });
+    renderLoans();
+
+    const section = await screen.findByRole('region', { name: /booked days/i });
+    expect(section).toHaveTextContent(/now a request/);
+    expect(within(section).queryByRole('button')).not.toBeInTheDocument();
+  });
+
+  it('does not count as "nothing here" when you have bookings but no loans', async () => {
+    mockBookings({ mine: [MINE], onMyMinis: [] });
+    renderLoans();
+
+    await screen.findByRole('region', { name: /booked days/i });
+    expect(screen.queryByText(/no requests or loans yet/i)).not.toBeInTheDocument();
+  });
+
+  it('still shows the loans if bookings can\'t be loaded', async () => {
+    vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL) => {
+      const url = urlOf(input);
+      if (url === '/api/loans') return jsonResponse([makeLoan({ miniName: 'Beholder' })]);
+      if (url === '/api/bookings') return jsonResponse({ error: 'Server error' }, { ok: false, status: 500 });
+      return jsonResponse({ holds: [], watching: [] });
+    });
+    renderLoans();
+
+    expect(await screen.findByText('Beholder')).toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: /booked days/i })).not.toBeInTheDocument();
+    expect(screen.queryByText('Server error')).not.toBeInTheDocument();
   });
 });
 

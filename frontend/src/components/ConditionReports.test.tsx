@@ -92,6 +92,26 @@ describe('ConditionReports', () => {
     expect(photos.map(img => img.getAttribute('src'))).toEqual(['/uploads/a.jpg', '/uploads/b.jpg', '/uploads/c.jpg']);
   });
 
+  // The server refuses a fourth photo outright; the page keeps the first three
+  // instead of letting a whole report be refused over one too many.
+  it('sends only the first three photos when more are picked, and a photo alone is enough', async () => {
+    const saved = mockApi([], {
+      'POST /api/loans/5/condition': () => jsonResponse([HANDOFF]),
+    });
+    const onRecorded = vi.fn();
+    renderPanel({ onRecorded });
+
+    await userEvent.click(screen.getByRole('button', { name: /record how it looks/i }));
+    const photos = ['a', 'b', 'c', 'd'].map(n => new File(['x'], `${n}.png`, { type: 'image/png' }));
+    await userEvent.upload(await screen.findByLabelText(/photos/i), photos);
+    await userEvent.click(screen.getByRole('button', { name: /^record$/i }));
+
+    await waitFor(() => expect(onRecorded).toHaveBeenCalled());
+    const body = saved[0].body as FormData;
+    expect((body.getAll('photos') as File[]).map(f => f.name)).toEqual(['a.png', 'b.png', 'c.png']);
+    expect(body.get('note') ?? '').toBe('');
+  });
+
   it('records a note for the end you pick, as multipart so a photo can ride along', async () => {
     const saved = mockApi([], {
       'POST /api/loans/5/condition': () => jsonResponse([HANDOFF]),

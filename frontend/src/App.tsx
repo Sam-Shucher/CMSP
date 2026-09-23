@@ -5,6 +5,7 @@ import LoginPage from './pages/LoginPage';
 import RegisterPage from './pages/RegisterPage';
 import DashboardPage from './pages/DashboardPage';
 import UploadMiniPage from './pages/UploadMiniPage';
+import BulkAddPage from './pages/BulkAddPage';
 import EditMiniPage from './pages/EditMiniPage';
 import AdminPage from './pages/AdminPage';
 import ProfilePage from './pages/ProfilePage';
@@ -16,6 +17,7 @@ import NotificationBell from './components/NotificationBell';
 import CartLink from './components/CartLink';
 import ErrorBoundary from './components/ErrorBoundary';
 import ChangePasswordForm from './components/ChangePasswordForm';
+import { resyncPush, forgetPushOnSignOut, listenForPushes } from './push';
 
 // ---------------------------------------------------------------------------
 // Auth context
@@ -48,6 +50,15 @@ export function useAuth(): AuthContextType {
   return useContext(AuthContext);
 }
 
+// Whether the group being shown has prices on (an admin can turn them off, on
+// the Admin page). Decides whether to offer a price field or "sort by price";
+// prices themselves simply don't arrive from the server when it's off. On
+// unless the group says otherwise, so nothing flickers away while loading.
+export function useShowPrices(): boolean {
+  const { user, collections } = useAuth();
+  return collections.find((c: Collection) => c.id === user?.collectionId)?.showPrices !== false;
+}
+
 // ---------------------------------------------------------------------------
 // NavBar — only rendered when a user is logged in
 // ---------------------------------------------------------------------------
@@ -57,6 +68,8 @@ function NavBar(): React.ReactElement | null {
   const navigate = useNavigate();
 
   async function logout(): Promise<void> {
+    // Before the session ends — it's what lets the server know whose device this is.
+    await forgetPushOnSignOut();
     await api('/api/auth/logout', { method: 'POST' });
     setUser(null);
     navigate('/login');
@@ -197,6 +210,7 @@ function AppBody({ groupNotice, onDismissGroupNotice }: { groupNotice?: string; 
         {/* Protected routes — redirect to /login if not authenticated */}
         <Route path="/"              element={<PrivateRoute><DashboardPage /></PrivateRoute>} />
         <Route path="/upload"        element={<PrivateRoute><UploadMiniPage /></PrivateRoute>} />
+        <Route path="/upload/bulk"   element={<PrivateRoute><BulkAddPage /></PrivateRoute>} />
         <Route path="/minis/:id/edit" element={<PrivateRoute><EditMiniPage /></PrivateRoute>} />
         <Route path="/profile"       element={<PrivateRoute><ProfilePage /></PrivateRoute>} />
         <Route path="/cart"          element={<PrivateRoute><CartPage /></PrivateRoute>} />
@@ -272,6 +286,17 @@ export default function App(): React.ReactElement {
     });
     setUser((prev: User | null) => prev ? { ...prev, collectionId: updated.collectionId, role: updated.role } : prev);
   }
+
+  // Whoever is signed in gets this device's phone notifications (if it has
+  // them on) — after every sign-in, and on every start, since the server
+  // forgets devices on sign-out and on a password change.
+  const signedInAs = user?.userId;
+  useEffect(() => {
+    if (signedInAs !== undefined) void resyncPush();
+  }, [signedInAs]);
+
+  // A push arriving while the site is open refreshes the bell and Loans page.
+  useEffect(() => listenForPushes(), []);
 
   // When the server says the session is over (logged out on another device,
   // idle too long, or expired), drop back to sign-in and say why — but only

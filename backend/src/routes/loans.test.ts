@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import request from 'supertest';
 import { authCookie } from '../test/helpers';
 import { bookingBlocking } from '../services/bookings';
+import { messagePosted } from '../services/loanEvents';
 
 // The loan rules and SQL are exercised end-to-end in loans.integration.test.ts.
 // These mocked tests cover the two things a real database won't do on demand:
@@ -10,9 +11,21 @@ import { bookingBlocking } from '../services/bookings';
 //      (e.g. the other person cancels at the same moment you approve). Every
 //      UPDATE re-checks the loan's status in its WHERE clause, and a
 //      0-row result must come back as a clean 409, never a false success.
-vi.mock('../db/connection', () => ({
-  pool: { execute: vi.fn() },
-}));
+// A transaction runs on one connection from the pool; here that connection
+// shares the pool's execute mock, so a route's statements come out of the same
+// one-at-a-time sequence whether or not they're inside a transaction. Plain
+// functions rather than vi.fn, so mockReset() in beforeEach leaves them working.
+vi.mock('../db/connection', () => {
+  const execute = vi.fn();
+  const connection = {
+    execute,
+    beginTransaction: async () => {},
+    commit: async () => {},
+    rollback: async () => {},
+    release: () => {},
+  };
+  return { pool: { execute, getConnection: async () => connection } };
+});
 
 import { pool } from '../db/connection';
 import { createApp } from '../app';
@@ -23,6 +36,7 @@ const execute = pool.execute as unknown as ReturnType<typeof vi.fn>;
 const OWNER = { userId: 1, username: 'owner', role: 'user', collectionId: 10 };
 const BORROWER = { userId: 2, username: 'borrower', role: 'user', collectionId: 10 };
 const MEMBERSHIP_CONFIRMED = [[{ id: 1 }]];
+const HOUR_MS = 60 * 60 * 1000;
 
 function loanRow(overrides: Record<string, unknown> = {}) {
   return {
@@ -50,6 +64,9 @@ function loanRow(overrides: Record<string, unknown> = {}) {
     owner_name: 'Owner',
     holds_waiting: 0, // the query counts the hold line; nobody waiting by default
     condition_reports: 0, // and the condition reports filed on this loan
+    messages: 0,             // and its message thread: how long it is,
+    unread_from_owner: 0,    // what the borrower hasn't seen yet,
+    unread_from_borrower: 0, // and what the owner hasn't
     ...overrides,
   };
 }
@@ -401,7 +418,7 @@ describe('POST /api/loans/:id/condition', () => {
   it('refuses a claim about the handoff once the loan is over', async () => {
     execute
       .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
-      .mockResolvedValueOnce([[loanRow({ ...OUT, status: 'returned', returned_at: new Date('2026-10-14T10:00:00.000Z') })]]);
+      .mockResolvedValueOnce([[loanRow({ ...OUT, status: 'returned', returned_at: new Date(Date.now() - HOUR_MS) })]]);
 
     const res = await request(app).post('/api/loans/5/condition')
       .set('Cookie', authCookie(BORROWER))
@@ -417,7 +434,7 @@ describe('POST /api/loans/:id/condition', () => {
   it('still accepts a report about the return after the loan is over', async () => {
     execute
       .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
-      .mockResolvedValueOnce([[loanRow({ ...OUT, status: 'returned', returned_at: new Date('2026-10-14T10:00:00.000Z') })]])
+      .mockResolvedValueOnce([[loanRow({ ...OUT, status: 'returned', returned_at: new Date(Date.now() - HOUR_MS) })]])
       .mockResolvedValueOnce(RECORDED)
       .mockResolvedValueOnce([[reportRow({ phase: 'return' })]]);
 
@@ -427,6 +444,21 @@ describe('POST /api/loans/:id/condition', () => {
       .field('note', 'Came back with a chipped base');
 
     expect(res.status).toBe(201);
+  });
+
+  it('closes the return twelve hours after the loan ended', async () => {
+    execute
+      .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
+      .mockResolvedValueOnce([[loanRow({ ...OUT, status: 'returned', returned_at: new Date(Date.now() - 13 * HOUR_MS) })]]);
+
+    const res = await request(app).post('/api/loans/5/condition')
+      .set('Cookie', authCookie(OWNER))
+      .field('phase', 'return')
+      .field('note', 'Found a chip on the shelf a day later');
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toMatch(/within 12 hours/);
+    expect(execute).not.toHaveBeenCalledWith(expect.stringContaining('INSERT IGNORE INTO loan_condition_reports'), expect.anything());
   });
 
   it('refuses any report on a request that never changed hands', async () => {
@@ -526,6 +558,233 @@ describe('GET /api/loans/:id/condition', () => {
   });
 });
 
+// A message thread per loan. The storage, ordering and read-marking against a
+// real database are in loans.integration.test.ts; here, the rules a mocked
+// database can check — and the race where the loan ends as you hit send.
+describe('loan messages', () => {
+  function messageRow(overrides: Record<string, unknown> = {}) {
+    return {
+      id: 3, author_id: BORROWER.userId, author_name: 'Borrower', body: 'Running 20 minutes late',
+      created_at: new Date('2026-10-01T17:45:00.000Z'), read_at: null, ...overrides,
+    };
+  }
+  const POSTED = [{ affectedRows: 1, insertId: 3 }];
+  // The loan as re-read, locked, inside the posting transaction.
+  const LOCKED = (overrides: Record<string, unknown> = {}) => [[{ status: 'negotiating', messages: 0, ...overrides }]];
+
+  describe('GET /api/loans/:id/messages', () => {
+    it('returns the thread oldest first, saying which are yours and which the other side has seen', async () => {
+      execute
+        .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
+        .mockResolvedValueOnce([[loanRow({ messages: 2 })]])
+        .mockResolvedValueOnce([[
+          messageRow({ id: 1, author_id: OWNER.userId, author_name: 'Owner', body: 'Front door, ring twice', read_at: new Date('2026-10-01T17:40:00.000Z') }),
+          messageRow({ id: 2 }),
+        ]]);
+
+      const res = await request(app).get('/api/loans/5/messages').set('Cookie', authCookie(BORROWER));
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual([
+        { id: 1, authorId: OWNER.userId, authorName: 'Owner', mine: false, body: 'Front door, ring twice', read: true, createdAt: '2026-10-01T17:45:00.000Z' },
+        { id: 2, authorId: BORROWER.userId, authorName: 'Borrower', mine: true, body: 'Running 20 minutes late', read: false, createdAt: '2026-10-01T17:45:00.000Z' },
+      ]);
+      expect(execute).toHaveBeenLastCalledWith(expect.stringMatching(/FROM loan_messages[\s\S]*WHERE m.loan_id = \?[\s\S]*ORDER BY m.id/), [5]);
+    });
+
+    it('404s for anyone who isn\'t one of the loan\'s two people', async () => {
+      execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED).mockResolvedValueOnce([[]]);
+
+      const res = await request(app).get('/api/loans/5/messages')
+        .set('Cookie', authCookie({ userId: 99, username: 'nosy', role: 'user', collectionId: 10 }));
+
+      expect(res.status).toBe(404);
+      // The membership check and the loan lookup, and nothing after them. (The
+      // lookup itself mentions loan_messages — it counts them — so matching
+      // on the table name can't tell the thread query apart.)
+      expect(execute).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe('POST /api/loans/:id/messages', () => {
+    beforeEach(() => {
+      vi.mocked(messagePosted).mockClear();
+    });
+
+    it('adds your message, tells the other side, and returns the thread', async () => {
+      execute
+        .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
+        .mockResolvedValueOnce([[loanRow()]])
+        .mockResolvedValueOnce(LOCKED())
+        .mockResolvedValueOnce(POSTED)
+        .mockResolvedValueOnce([[messageRow()]]);
+
+      const res = await request(app).post('/api/loans/5/messages')
+        .set('Cookie', authCookie(BORROWER))
+        .send({ body: '  Running 20 minutes late  ' });
+
+      expect(res.status).toBe(201);
+      expect(res.body).toEqual([expect.objectContaining({ body: 'Running 20 minutes late', mine: true })]);
+      expect(execute).toHaveBeenCalledWith(
+        expect.stringContaining('INSERT INTO loan_messages'),
+        [5, BORROWER.userId, 'Running 20 minutes late']
+      );
+      expect(messagePosted).toHaveBeenCalledWith(5, BORROWER.userId, 'Running 20 minutes late');
+    });
+
+    it('still takes messages while the mini is out', async () => {
+      execute
+        .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
+        .mockResolvedValueOnce([[loanRow({ status: 'adventuring', handed_off_at: new Date('2026-10-01T18:00:00.000Z') })]])
+        .mockResolvedValueOnce(LOCKED({ status: 'adventuring' }))
+        .mockResolvedValueOnce(POSTED)
+        .mockResolvedValueOnce([[messageRow({ author_id: OWNER.userId })]]);
+
+      const res = await request(app).post('/api/loans/5/messages').set('Cookie', authCookie(OWNER)).send({ body: 'Keep it as long as you need' });
+
+      expect(res.status).toBe(201);
+    });
+
+    // Once the loan is over the thread is a record of what was said.
+    it.each(['returned', 'cancelled', 'lost', 'critically_wounded'])('refuses a new message once the loan is %s', async (status) => {
+      execute
+        .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
+        .mockResolvedValueOnce([[loanRow({ status })]]);
+
+      const res = await request(app).post('/api/loans/5/messages').set('Cookie', authCookie(BORROWER)).send({ body: 'Thanks!' });
+
+      expect(res.status).toBe(409);
+      expect(res.body.error).toMatch(/over/i);
+      expect(execute).not.toHaveBeenCalledWith(expect.stringContaining('INSERT INTO loan_messages'), expect.anything());
+    });
+
+    // The other person cancels in the instant between reading the loan and
+    // the insert: the loan is read again, locked, and nothing is added.
+    it('adds nothing, and says so, if the loan ended as the message was sent', async () => {
+      execute
+        .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
+        .mockResolvedValueOnce([[loanRow()]])
+        .mockResolvedValueOnce(LOCKED({ status: 'cancelled' }));
+
+      const res = await request(app).post('/api/loans/5/messages').set('Cookie', authCookie(BORROWER)).send({ body: 'On my way' });
+
+      expect(res.status).toBe(409);
+      expect(res.body.error).toMatch(/just ended/);
+      expect(execute).toHaveBeenCalledWith(expect.stringMatching(/FROM loans l WHERE l\.id = \? FOR UPDATE/), [5]);
+      expect(execute).not.toHaveBeenCalledWith(expect.stringContaining('INSERT INTO loan_messages'), expect.anything());
+      expect(messagePosted).not.toHaveBeenCalled();
+    });
+
+    // Two messages at the same instant: the second one counts after the first
+    // has landed, so a thread one short of full takes one, not two.
+    it('adds nothing if the thread filled up between the first check and the send', async () => {
+      execute
+        .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
+        .mockResolvedValueOnce([[loanRow({ messages: 499 })]])
+        .mockResolvedValueOnce(LOCKED({ messages: 500 }));
+
+      const res = await request(app).post('/api/loans/5/messages').set('Cookie', authCookie(BORROWER)).send({ body: 'One more' });
+
+      expect(res.status).toBe(409);
+      expect(res.body.error).toMatch(/500 messages/);
+      expect(execute).not.toHaveBeenCalledWith(expect.stringContaining('INSERT INTO loan_messages'), expect.anything());
+    });
+
+    it('refuses once the thread is full', async () => {
+      execute
+        .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
+        .mockResolvedValueOnce([[loanRow({ messages: 500 })]]);
+
+      const res = await request(app).post('/api/loans/5/messages').set('Cookie', authCookie(BORROWER)).send({ body: 'One more' });
+
+      expect(res.status).toBe(409);
+      expect(execute).not.toHaveBeenCalledWith(expect.stringContaining('INSERT INTO loan_messages'), expect.anything());
+    });
+
+    it.each([
+      ['a blank message', { body: '   ' }, /message is required/i],
+      ['no message at all', {}, /message is required/i],
+      ['a message that isn\'t text', { body: ['hi'] }, /message is required/i],
+      ['a message longer than the column holds', { body: 'x'.repeat(501) }, /500 characters/],
+    ])('refuses %s', async (_label, body, error) => {
+      execute
+        .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
+        .mockResolvedValueOnce([[loanRow()]]);
+
+      const res = await request(app).post('/api/loans/5/messages').set('Cookie', authCookie(BORROWER)).send(body);
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatch(error);
+      expect(execute).not.toHaveBeenCalledWith(expect.stringContaining('INSERT INTO loan_messages'), expect.anything());
+    });
+
+    it('404s for anyone who isn\'t one of the loan\'s two people', async () => {
+      execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED).mockResolvedValueOnce([[]]);
+
+      const res = await request(app).post('/api/loans/5/messages')
+        .set('Cookie', authCookie({ userId: 99, username: 'nosy', role: 'user', collectionId: 10 }))
+        .send({ body: 'Can I have it next?' });
+
+      expect(res.status).toBe(404);
+    });
+  });
+
+  describe('POST /api/loans/:id/messages/read', () => {
+    it('marks only the other side\'s messages as seen, and clears their bell entry for this loan', async () => {
+      execute
+        .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
+        .mockResolvedValueOnce([[loanRow({ messages: 3, unread_from_borrower: 2 })]])
+        .mockResolvedValueOnce([{ affectedRows: 2 }])
+        .mockResolvedValueOnce([{ affectedRows: 1 }]);
+
+      const res = await request(app).post('/api/loans/5/messages/read').set('Cookie', authCookie(OWNER));
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ read: 2 });
+      expect(execute).toHaveBeenCalledWith(
+        expect.stringMatching(/UPDATE loan_messages SET read_at = NOW\(\)[\s\S]*author_id <> \?[\s\S]*read_at IS NULL/),
+        [5, OWNER.userId]
+      );
+      expect(execute).toHaveBeenCalledWith(
+        expect.stringMatching(/UPDATE notifications SET read_at = NOW\(\)[\s\S]*type = 'loan_message'/),
+        [OWNER.userId, 5]
+      );
+    });
+
+    it('404s for anyone who isn\'t one of the loan\'s two people', async () => {
+      execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED).mockResolvedValueOnce([[]]);
+
+      const res = await request(app).post('/api/loans/5/messages/read')
+        .set('Cookie', authCookie({ userId: 99, username: 'nosy', role: 'user', collectionId: 10 }));
+
+      expect(res.status).toBe(404);
+      expect(execute).not.toHaveBeenCalledWith(expect.stringContaining('UPDATE loan_messages'), expect.anything());
+    });
+  });
+
+  describe('on the loan itself', () => {
+    it('counts the thread, and what each side hasn\'t seen yet, from where you stand', async () => {
+      const row = loanRow({ messages: 4, unread_from_owner: 1, unread_from_borrower: 2 });
+      execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED).mockResolvedValueOnce([[row]]);
+      const asBorrower = await request(app).get('/api/loans').set('Cookie', authCookie(BORROWER));
+
+      execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED).mockResolvedValueOnce([[row]]);
+      const asOwner = await request(app).get('/api/loans').set('Cookie', authCookie(OWNER));
+
+      expect(asBorrower.body[0]).toMatchObject({ messageCount: 4, unreadMessages: 1, messagesOpen: true });
+      expect(asOwner.body[0]).toMatchObject({ messageCount: 4, unreadMessages: 2, messagesOpen: true });
+    });
+
+    it('says the thread is closed once the loan is over', async () => {
+      execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED).mockResolvedValueOnce([[loanRow({ status: 'returned', messages: 2 })]]);
+
+      const res = await request(app).get('/api/loans').set('Cookie', authCookie(BORROWER));
+
+      expect(res.body[0]).toMatchObject({ messageCount: 2, messagesOpen: false });
+    });
+  });
+});
+
 describe('loans — scoping', () => {
   it('only ever looks up loans in the active collection that the caller is part of', async () => {
     execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED).mockResolvedValueOnce([[]]);
@@ -548,6 +807,9 @@ describe('loans — scoping', () => {
     ['POST return', () => request(app).post('/api/loans/5/return')],
     ['POST cancel', () => request(app).post('/api/loans/5/cancel')],
     ['POST apply-terms-to-all', () => request(app).post('/api/loans/5/apply-terms-to-all')],
+    ['GET messages', () => request(app).get('/api/loans/5/messages')],
+    ['POST messages', () => request(app).post('/api/loans/5/messages').send({ body: 'hi' })],
+    ['POST messages/read', () => request(app).post('/api/loans/5/messages/read')],
   ])('%s requires login', async (_route, send) => {
     const res = await send();
 
@@ -566,7 +828,7 @@ describe('loans — database failures', () => {
     expect(res.body).toEqual({ error: 'Server error' });
   });
 
-  it.each(['approve', 'handoff', 'received', 'return', 'cancel', 'apply-terms-to-all'])('POST %s returns a generic 500', async (action) => {
+  it.each(['approve', 'handoff', 'received', 'return', 'cancel', 'apply-terms-to-all', 'messages', 'messages/read'])('POST %s returns a generic 500', async (action) => {
     execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED).mockRejectedValue(new Error('connection lost'));
 
     const res = await request(app).post(`/api/loans/5/${action}`).set('Cookie', authCookie(OWNER));

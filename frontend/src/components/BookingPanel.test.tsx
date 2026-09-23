@@ -168,3 +168,65 @@ describe('BookingPanel', () => {
     expect(screen.queryByRole('list', { name: /booked days/i })).not.toBeInTheDocument();
   });
 });
+
+// While the mini is out — lent, or on a quest with its owner — it can only be
+// booked from the day after it's due back. The panel says so up front, rather
+// than letting someone pick a day for the server to refuse.
+describe('BookingPanel — a mini that is out', () => {
+  it('warns when it\'s due back and starts the date picker the day after', async () => {
+    mockApi({ ...EMPTY, out: { until: '2026-10-14', reason: 'loan' }, bookable: true, earliestStart: '2026-10-15' });
+    render(<BookingPanel miniId={42} isOwn={false} />);
+
+    const note = await screen.findByRole('note');
+    expect(note).toHaveTextContent(/out on loan until Oct 14/i);
+    expect(note).toHaveTextContent(/earliest you can book is Oct 15/i);
+    expect(screen.getByLabelText(/^from$/i)).toHaveAttribute('min', '2026-10-15');
+    expect(screen.getByLabelText(/^to$/i)).toHaveAttribute('min', '2026-10-15');
+  });
+
+  it('says the same for a quest with its owner', async () => {
+    mockApi({ ...EMPTY, out: { until: '2026-10-14', reason: 'quest' }, bookable: true, earliestStart: '2026-10-15' });
+    render(<BookingPanel miniId={42} isOwn={false} />);
+
+    expect(await screen.findByRole('note')).toHaveTextContent(/on a quest with its owner until Oct 14/i);
+  });
+
+  it('won\'t send a typed date before the earliest day', async () => {
+    mockApi({ ...EMPTY, out: { until: '2026-10-14', reason: 'loan' }, bookable: true, earliestStart: '2026-10-15' });
+    render(<BookingPanel miniId={42} isOwn={false} />);
+
+    fireEvent.change(await screen.findByLabelText(/^from$/i), { target: { value: '2026-10-14' } });
+    await userEvent.click(screen.getByRole('button', { name: /book these days/i }));
+
+    expect(await screen.findByText(/earliest you can book it is Oct 15/i)).toBeInTheDocument();
+    expect(vi.mocked(fetch).mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false);
+  });
+
+  it('offers no booking at all for a quest with no back-by date, pointing to the hold line', async () => {
+    mockApi({ ...EMPTY, out: { until: null, reason: 'quest' }, bookable: false, earliestStart: null });
+    render(<BookingPanel miniId={42} isOwn={false} />);
+
+    expect(await screen.findByRole('note')).toHaveTextContent(/place a hold/i);
+    expect(screen.queryByLabelText(/^from$/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /book these days/i })).not.toBeInTheDocument();
+  });
+
+  it('shows the owner no warning — it\'s their own mini', async () => {
+    mockApi({ ...EMPTY, out: { until: '2026-10-14', reason: 'quest' }, bookable: true, earliestStart: '2026-10-15' });
+    render(<BookingPanel miniId={42} isOwn />);
+
+    await waitFor(() => expect(fetch).toHaveBeenCalled());
+    expect(screen.queryByRole('note')).not.toBeInTheDocument();
+  });
+
+  it('lets a mini at home be booked from today, on this device\'s calendar', async () => {
+    mockApi({ ...EMPTY, out: null, bookable: true, earliestStart: null });
+    render(<BookingPanel miniId={42} isOwn={false} />);
+
+    const now = new Date();
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const localToday = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+    expect(await screen.findByLabelText(/^from$/i)).toHaveAttribute('min', localToday);
+    expect(screen.queryByRole('note')).not.toBeInTheDocument();
+  });
+});

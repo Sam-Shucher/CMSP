@@ -13,6 +13,8 @@ import loansRouter from './routes/loans';
 import holdsRouter from './routes/holds';
 import bookingsRouter from './routes/bookings';
 import notificationsRouter from './routes/notifications';
+import pushRouter from './routes/push';
+import exportRouter from './routes/export';
 import healthRouter from './routes/health';
 import { requireAuth } from './middleware/requireAuth';
 import { requireImageAccess } from './middleware/requireImageAccess';
@@ -76,6 +78,8 @@ export function createApp(options: { frontendDist?: string; uploadsDir?: string 
   app.use('/api/holds', holdsRouter);  // /api/holds (the line for unavailable minis, notify list)
   app.use('/api/bookings', bookingsRouter); // /api/bookings (claiming days ahead — "game night on the 14th")
   app.use('/api/notifications', notificationsRouter); // /api/notifications (the bell)
+  app.use('/api/push', pushRouter); // /api/push (phone notifications: this device on/off, a test)
+  app.use('/api/export', exportRouter); // /api/export (a member's own minis as a .zip: CSV, JSON, photos)
   app.use('/api/health', healthRouter); // /api/health (public: up/down for a probe)
 
   // In production the backend also serves the built React app, so the whole

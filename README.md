@@ -31,6 +31,11 @@ several picks which one to enter (and can switch from the nav).
   for now (no dedicated UI yet).
 - To add a new collection: `INSERT INTO collections (name) VALUES ('Name');`
   then invite people into it the normal way from an admin who's a member.
+- Each collection has its own settings, under *Group Settings* on the Admin
+  panel. *Show prices* (on by default) can be turned off for a group that
+  doesn't want a dollar figure on every mini: prices, the price field, and
+  "sort by price" disappear for everyone in that group. The prices already
+  entered are kept, and come back if it's turned on again.
 
 ## Project layout
 
@@ -110,6 +115,63 @@ each end of a loan — a note and up to three photos, from the Loans page:
 - Condition photos are visible only to the two people on that loan, not to the
   whole collection the way a mini's own photos are.
 
+## Messages on a loan
+
+The terms are structured fields on purpose (they're what both of you approve),
+but a real handoff also needs "running 20 minutes late" and "front door, ring
+twice". Each loan card on the Loans page has a message thread for that, so
+what was agreed stays with the loan instead of in a text thread.
+
+- Only the **two people on the loan** can read or write it.
+- It's **open while the loan is active** — negotiating or out adventuring. Once
+  the loan ends it's kept, read-only, as a record of what was said.
+- The other person gets a notification quoting the message. A back-and-forth
+  doesn't flood the bell: their unread notice about that loan's messages is
+  replaced by the newest one, and opening the thread marks it read.
+- The card shows how many messages are **new**, and your own messages say
+  **Seen** once the other person has opened the thread.
+
+## Adding a whole shelf
+
+"Add several at once" on the Add Mini page (`/upload/bulk`) takes a shelf in
+one go instead of one form per mini:
+
+- **Photos** — drop or pick a pile of them and each becomes a mini to name. A
+  file already named for what's in it (`dire_wolf.jpg`) fills the name in; a
+  camera's own names (`IMG_4412.jpg`) are left blank. A mini photographed from
+  more than one side can have its extra photos put with the mini above.
+- **A spreadsheet** — a CSV file, or cells copied straight out of Excel/Google
+  Sheets and pasted in. The first row names the columns: `name` is required;
+  `description`, `tags`, and `price` are optional, and anything else is skipped
+  (and said so) — including `price`, in a group with prices turned off. Tags can be separated with `;` as well as `,`.
+- "Tags for all of these" is added to every row (handy for "shelf 3").
+
+Every row is checked before anything is sent, then each is added in turn
+through the same `POST /api/minis` as the single form — so a row the server
+refuses stays on the page with its reason while the rest still go in.
+
+## Exporting your minis
+
+"Export my minis" on the Profile page downloads everything you've added to the
+group you're in as one `.zip` (`GET /api/export`) — your own backup, not the
+Pi's:
+
+- `minis.csv` — one row per mini, in Bulk Add's own columns first (`name`,
+  `description`, `tags`, `price`), so the file can be dropped straight back
+  onto that page, here or in another group. `set` and `photos` follow for
+  reference. A cell that starts like a spreadsheet formula (`=`, `+`, `-`,
+  `@`) is written with a leading `'`, which Bulk Add takes off again.
+- `minis.json` — the full record: tags, set, price, when it was added, its
+  condition, and who has borrowed it and when (the same history the owner
+  already sees on the edit page).
+- `photos/` — every photo, named after its mini (`001-dire-wolf-1.jpg`).
+
+Only your own minis, only in this group, nothing archived; no price anywhere in
+a group with prices turned off. Six exports per person per hour — each one
+reads every photo off the SD card. The zip is written by `utils/zip.ts` (stored,
+not compressed — photos don't shrink) and streamed, one photo in memory at a
+time.
+
 ## Booking for a date
 
 A hold answers "tell me when it's free". A booking answers "I need this for
@@ -131,6 +193,38 @@ happens to be free right now.
   told. If the mini is still out with someone, it keeps trying each hour —
   and if the whole window passes without it ever coming free, the booking is
   cleared and you're told that too, rather than left wondering.
+
+## Phone notifications and the home-screen app
+
+The site is an installable app ("Add to Home Screen"), and can put everything
+the bell gets on a phone's lock screen — so a loan request reaches the owner
+without them opening the site. There's still no email, by design.
+
+- **Turn it on per device** under **Phone notifications** on your profile page.
+  "Send a test" checks it works. Android (Chrome) works straight from the
+  browser; **iPhone and iPad need iOS 16.4+ and the home-screen app** — Safari
+  only offers notifications to a site added from Share → Add to Home Screen.
+- **What arrives** is the bell's message, titled with the group
+  ("Mini Library · Chicago"), and tapping it opens the Loans page. A loan's
+  messages replace each other, one per conversation, the same as in the bell.
+- **Who sees it:** the push goes through the browser maker's push service
+  (Google, Apple, Mozilla, Microsoft), encrypted for the device — they see
+  that something was sent, not what it says.
+- **Signing out** pauses them on that device until someone signs in there
+  again (and they go to whoever that is). **Log out everywhere**, or a password
+  change, stops them on every device; yours sign back up on their own.
+- The service worker (`frontend/public/sw.js`) only shows notifications. It
+  caches nothing, so a deploy never leaves a phone on an old copy.
+
+**Setting it up** needs no manual step on the Pi: `scripts/rpi-update.sh`
+generates the server's key pair (`VAPID_PUBLIC_KEY`/`VAPID_PRIVATE_KEY`)
+into `backend/.env` the first time. It stays **off until `FRONTEND_URL` is
+the site's `https://` address** (Apple refuses anything else as a contact);
+the service log says "Phone notifications: on" or why not. Keep the key pair
+once people are using it — a new one stops every phone's notifications until
+that phone next opens the app. Locally, `npm --prefix backend run vapid:keys`
+prints a pair, and `VAPID_SUBJECT=mailto:you@example.com` stands in for an
+https address.
 
 ## Sessions and cleanup
 
@@ -332,3 +426,5 @@ See `backend/.env.example` for the full list. Key ones:
 | `PORT`         | Port the backend listens on (`4233` in production)  |
 | `FRONTEND_URL` | Allowed CORS origin / public URL of the site         |
 | `NODE_ENV`     | `production` makes the backend also serve the built frontend |
+| `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` | Phone notifications' key pair — generated by `rpi-update.sh`; optional |
+| `VAPID_SUBJECT` | Contact for the push services; defaults to `FRONTEND_URL` when it's `https://` |

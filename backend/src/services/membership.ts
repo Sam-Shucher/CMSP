@@ -115,6 +115,17 @@ export async function removeMember(userId: number, collectionId: number, actorId
     }
   }
 
+  // Their sets in this group go with their minis: archived alongside them (and
+  // back if an admin restores the minis to them), rather than left on the Sets
+  // page, empty, under the name of someone who isn't in the group. When the
+  // account itself is going, sets.owner_id's ON DELETE CASCADE takes them.
+  if (!willDeleteAccount) {
+    await change(
+      'UPDATE sets SET archived_at = NOW() WHERE owner_id = ? AND collection_id = ? AND archived_at IS NULL',
+      [userId, collectionId]
+    );
+  }
+
   await change('DELETE FROM collection_memberships WHERE user_id = ? AND collection_id = ?', [userId, collectionId]);
 
   // Now that they're out of the group, the next person in line gets what they'd requested.
@@ -155,5 +166,11 @@ export async function purgeArchivedMinis(): Promise<number> {
       fs.unlink(path.join(uploadsDir(), path.basename(image_path)), () => {}); // best effort; the hourly sweep catches the rest
     }
   }
+  // Their archived sets go at the same time. Any mini still pointing at one
+  // (restored to someone else keeps no set) is ungrouped by ON DELETE SET NULL.
+  await change(
+    'DELETE FROM sets WHERE archived_at IS NOT NULL AND archived_at <= NOW() - INTERVAL ? DAY',
+    [MINI_ARCHIVE_GRACE_DAYS]
+  );
   return expired.length;
 }

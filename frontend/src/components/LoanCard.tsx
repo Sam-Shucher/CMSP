@@ -2,10 +2,26 @@ import React, { useState } from 'react';
 import { api, Loan, LoanStage } from '../api/client';
 import { formatTimeRemaining, fromDateTimeLocalValue, toDateTimeLocalValue } from '../utils/loanTime';
 import ConditionReports from './ConditionReports';
+import LoanMessages from './LoanMessages';
 import { LIMITS } from '../limits';
 
 const MAX_DURATION_DAYS = LIMITS.loanDays;
 const DURATION_LIMIT_MESSAGE = `Loans can run from 1 to ${MAX_DURATION_DAYS} days (about 3 months)`;
+// Same words the server uses (backend/src/utils/loanRules.ts).
+const HANDOFF_HOURS_MESSAGE = 'Pick a handoff time between 6am and 10pm';
+
+// The time of day in a datetime-local value ("2026-10-01T18:30"), in minutes —
+// read straight from what was picked, which is already the group's local time.
+function minutesOf(localValue: string): number | null {
+  const match = /T(\d{2}):(\d{2})/.exec(localValue);
+  return match ? Number(match[1]) * 60 + Number(match[2]) : null;
+}
+
+function handoffTimeAllowed(localValue: string): boolean {
+  const minutes = minutesOf(localValue);
+  return minutes === null
+    || (minutes >= LIMITS.handoffEarliestMinutes && minutes <= LIMITS.handoffLatestMinutes);
+}
 
 const STAGE_LABELS: Record<LoanStage, string> = {
   negotiating: 'Negotiating',
@@ -133,6 +149,10 @@ export default function LoanCard({ loan, now, otherOpenRequests, onUpdated }: Lo
   async function proposeTerms(e: React.FormEvent): Promise<void> {
     e.preventDefault();
     const patch = changedTerms();
+    if ('when' in patch && !handoffTimeAllowed(when)) {
+      setError(HANDOFF_HOURS_MESSAGE);
+      return;
+    }
     if ('durationDays' in patch) {
       const days = patch.durationDays as number;
       if (!Number.isInteger(days) || days < 1 || days > MAX_DURATION_DAYS) {
@@ -165,7 +185,16 @@ export default function LoanCard({ loan, now, otherOpenRequests, onUpdated }: Lo
         <>
           <form noValidate onSubmit={(e: React.FormEvent) => void proposeTerms(e)} style={{ display: 'grid', gap: '8px', marginBottom: '10px' }}>
             <Field label="When" id={`loan-${loan.id}-when`}>
-              <input id={`loan-${loan.id}-when`} type="datetime-local" value={when} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setWhen(e.target.value)} />
+              <div style={{ display: 'grid', gap: '2px' }}>
+                <input
+                  id={`loan-${loan.id}-when`}
+                  type="datetime-local"
+                  aria-describedby={`loan-${loan.id}-when-hint`}
+                  value={when}
+                  onChange={(e: React.ChangeEvent<HTMLInputElement>) => setWhen(e.target.value)}
+                />
+                <span id={`loan-${loan.id}-when-hint`} style={{ fontSize: '12px', color: '#8a7d6a' }}>Between 6am and 10pm</span>
+              </div>
             </Field>
             <Field label="Where" id={`loan-${loan.id}-where`}>
               <input id={`loan-${loan.id}-where`} type="text" maxLength={255} placeholder="e.g. game night at the shop" value={where} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setWhere(e.target.value)} />
@@ -334,6 +363,17 @@ export default function LoanCard({ loan, now, otherOpenRequests, onUpdated }: Lo
           {isOwner && loan.status === 'critically_wounded' && ' — clear it from the mini\'s edit page once it\'s fine to lend again'}
         </p>
       )}
+
+      {/* "Running 20 minutes late" — said here, next to the terms, instead of
+          by text. Hides itself on a finished loan nobody wrote on. */}
+      <LoanMessages
+        loanId={loan.id}
+        counterpartName={them}
+        messageCount={loan.messageCount}
+        unreadMessages={loan.unreadMessages}
+        canPost={loan.messagesOpen}
+        onChanged={onUpdated}
+      />
 
       {/* What it looked like at each end. Offered from the handoff onwards —
           before that there is nothing to record, so nothing to show. */}

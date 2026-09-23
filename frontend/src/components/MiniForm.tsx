@@ -2,12 +2,13 @@ import React, { useState } from 'react';
 import MultiImagePicker from './MultiImagePicker';
 import FieldError from './FieldError';
 import { useValidatedForm } from '../hooks/useValidatedForm';
-import { looksBlank, normalizePrice, priceProblem } from '../utils/validation';
+import { looksBlank, normalizePrice, priceProblem, tagsProblem } from '../utils/validation';
 import { LIMITS } from '../limits';
+import { useShowPrices } from '../App';
 
 // The server's limits (see src/limits.ts) — checked here too so people see the
 // problem before uploading.
-const { miniName: MAX_NAME_LENGTH, description: MAX_DESCRIPTION_LENGTH, tagsPerMini: MAX_TAGS, tag: MAX_TAG_LENGTH } = LIMITS;
+const { miniName: MAX_NAME_LENGTH, description: MAX_DESCRIPTION_LENGTH } = LIMITS;
 
 export type MiniFormValues = {
   name: string;
@@ -35,17 +36,16 @@ export default function MiniForm({
   onSubmit,
   onCancel,
 }: MiniFormProps): React.ReactElement {
+  // In a group with prices turned off there's no price field, and no price is
+  // sent — the server would ignore one anyway.
+  const showPrice = useShowPrices();
+
   // Problems are pointed out under each field after a pause, on leaving the
   // field, or on save — never mid-keystroke (see useValidatedForm).
   const form = useValidatedForm<MiniFormValues>(initialValues, {
     name: value => (looksBlank(value) ? 'Give your mini a name.' : null),
-    price: priceProblem,
-    tags: value => {
-      const tagNames = new Set(value.split(',').map(t => t.trim().toLowerCase()).filter(Boolean));
-      if (tagNames.size > MAX_TAGS) return `Use ${MAX_TAGS} tags or fewer.`;
-      if ([...tagNames].some(t => t.length > MAX_TAG_LENGTH)) return `Keep each tag to ${MAX_TAG_LENGTH} characters or fewer.`;
-      return null;
-    },
+    price: value => (showPrice ? priceProblem(value) : null),
+    tags: tagsProblem,
   });
   const { name, description, tags, price } = form.values;
 
@@ -68,7 +68,7 @@ export default function MiniForm({
     setLoading(true);
 
     try {
-      await onSubmit({ name: name.trim(), description, tags, price: normalizePrice(price) }, newImages, keptImages);
+      await onSubmit({ name: name.trim(), description, tags, price: showPrice ? normalizePrice(price) : '' }, newImages, keptImages);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Something went wrong');
     } finally {
@@ -134,22 +134,24 @@ export default function MiniForm({
       </div>
 
       {/* Price — optional, defaults to 0 on the server if left blank */}
-      <div>
-        <label style={labelStyle} htmlFor="mini-price">
-          Price{' '}
-          <span style={{ color: '#8a7d6a', textTransform: 'none', fontSize: '11px' }}>
-            (optional)
-          </span>
-        </label>
-        <input
-          {...form.field('price', 'mini-price')}
-          type="text"
-          inputMode="decimal"
-          autoComplete="off"
-          placeholder="0.00"
-        />
-        <FieldError id="mini-price" message={form.errorFor('price')} />
-      </div>
+      {showPrice && (
+        <div>
+          <label style={labelStyle} htmlFor="mini-price">
+            Price{' '}
+            <span style={{ color: '#8a7d6a', textTransform: 'none', fontSize: '11px' }}>
+              (optional)
+            </span>
+          </label>
+          <input
+            {...form.field('price', 'mini-price')}
+            type="text"
+            inputMode="decimal"
+            autoComplete="off"
+            placeholder="0.00"
+          />
+          <FieldError id="mini-price" message={form.errorFor('price')} />
+        </div>
+      )}
 
       {/* Photos — up to 3, click to browse or drag onto the box */}
       <div>

@@ -1,5 +1,8 @@
 import { Check } from './inputs';
 import { MAX_DURATION_DAYS } from './loanRules';
+import { todayInApp, dayIn, addDays, readableDay } from './appTime';
+
+export { readableDay };
 
 // "I need this for game night on the 14th". A hold is a place in a queue; a
 // booking is a claim on a range of days. Kept free of Express and SQL so every
@@ -24,13 +27,6 @@ export interface BookingWindow {
 
 function isoDay(date: Date): string {
   return date.toISOString().slice(0, 10);
-}
-
-// "2026-12-30" → "Dec 30, 2026", for a message someone has to read.
-export function readableDay(day: string): string {
-  return new Date(`${day}T00:00:00Z`).toLocaleDateString('en-US', {
-    month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC',
-  });
 }
 
 // Inclusive: a single day booked as itself is one day, not nought.
@@ -65,17 +61,18 @@ export function parseBookingWindow(
   if (window.endsOn < window.startsOn) {
     return { ok: false, error: 'A booking can\'t end before it starts' };
   }
-  // Yesterday is still allowed, so someone a timezone behind the server
-  // picking "today" isn't told that today is in the past (same tolerance
-  // parseBackBy gives a quest).
-  if (window.startsOn < isoDay(new Date(now.getTime() - DAY_MS))) {
+  // "Today" is the group's today (APP_TIMEZONE) — everyone is in one city, so
+  // there's no one a timezone behind to make allowances for, and a day the
+  // group has already lived through can't be booked.
+  const today = todayInApp(now);
+  if (window.startsOn < today) {
     return { ok: false, error: 'A booking can\'t start in the past' };
   }
   if (bookingDays(window) > MAX_BOOKING_DAYS) {
     return { ok: false, error: `A booking can run up to 3 months — that's ${MAX_BOOKING_DAYS} days at most` };
   }
 
-  const latestStart = isoDay(new Date(now.getTime() + MAX_BOOKING_AHEAD_DAYS * DAY_MS));
+  const latestStart = addDays(today, MAX_BOOKING_AHEAD_DAYS);
   if (window.startsOn > latestStart) {
     return {
       ok: false,
@@ -94,7 +91,32 @@ export function overlaps(a: BookingWindow, b: BookingWindow): boolean {
 // The rule a loan has to obey: the mini must be home before the first booked
 // day. A loan still out on the morning of game night is a loan that ruined it.
 export function bookingBlocksLoan(dueAt: Date, startsOn: string): boolean {
-  return isoDay(dueAt) >= startsOn;
+  return dayIn(dueAt) >= startsOn;
+}
+
+// While a mini is out — lent, or on a quest with its owner, which counts the
+// same — it can only be booked from the day AFTER it's due back: the owner may
+// not want to lend it out again the very day it comes home. An overdue mini is
+// treated as due back today. A quest with no back-by date has no day to book
+// after, so there's nothing to offer but a place in the hold line.
+export type OutState =
+  | { out: false }
+  | { out: true; until: string | null; reason: 'loan' | 'quest' };
+
+export function earliestBookingStart(state: OutState, today: string): { bookable: true; earliest: string } | { bookable: false } {
+  if (!state.out) return { bookable: true, earliest: today };
+  if (state.until === null) return { bookable: false };
+  const until = state.until < today ? today : state.until;
+  return { bookable: true, earliest: addDays(until, 1) };
+}
+
+export function outUntilMessage(state: OutState & { out: true }, earliest: string | null): string {
+  const what = state.reason === 'quest' ? 'on a quest with its owner' : 'out on loan';
+  if (earliest === null) {
+    return `It's ${what} with no date it's due back — place a hold to be next in line when it's home`;
+  }
+  // The day before the earliest start: the due date, or today for one overdue.
+  return `It's ${what} until ${readableDay(addDays(earliest, -1))} — the earliest you can book it is ${readableDay(earliest)}`;
 }
 
 export function bookingBlocksMessage(holder: string, startsOn: string): string {

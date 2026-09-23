@@ -42,8 +42,17 @@ export async function revokeSession(sessionId: string): Promise<void> {
   await change('UPDATE sessions SET revoked_at = NOW() WHERE id = ? AND revoked_at IS NULL', [sessionId]);
 }
 
+// Also stops their phone notifications (services/push.ts): "sign out
+// everywhere" after a lost phone or a shared computer has to mean that device
+// stops showing their loan chatter too. Their own devices sign back up the
+// next time they sign in there (frontend/src/push.ts's resyncPush).
 export async function revokeAllSessions(userId: number): Promise<void> {
   await change('UPDATE sessions SET revoked_at = NOW() WHERE user_id = ? AND revoked_at IS NULL', [userId]);
+  await forgetPushDevices(userId);
+}
+
+async function forgetPushDevices(userId: number): Promise<void> {
+  await change('DELETE FROM push_subscriptions WHERE user_id = ?', [userId]);
 }
 
 // Everywhere but here: used when someone changes their own password, so any
@@ -54,6 +63,9 @@ export async function revokeOtherSessions(userId: number, keepSessionId: string)
     'UPDATE sessions SET revoked_at = NOW() WHERE user_id = ? AND id <> ? AND revoked_at IS NULL',
     [userId, keepSessionId]
   );
+  // Which device is "here" isn't known on this side, so all of them go; the
+  // one doing this signs straight back up (frontend/src/push.ts's resyncPush).
+  await forgetPushDevices(userId);
 }
 
 // Housekeeping: delete sessions that ended (logged out, expired, or went idle)

@@ -133,6 +133,74 @@ describe('loan notifications', () => {
     expect(items[0]).toMatchObject({ type: 'terms_proposed', message: 'owner display updated the terms on 1 other request with you' });
   });
 
+  // Feature 12: the other side should know a record now exists, while they
+  // can still add their own account of the same end.
+  it('tells the other side when a condition report is filed, and nobody else', async () => {
+    const { loanId } = await requestMini();
+    await terms(borrower, loanId, { when: WHEN, where: 'Game store', how: 'In person' });
+    await terms(owner, loanId, { durationDays: 7 });
+    await act(borrower, loanId, 'approve');
+    await act(owner, loanId, 'handoff');
+    const borrowerBefore = (await inbox(borrower)).items.length;
+
+    const res = await request(app).post(`/api/loans/${loanId}/condition`).set('Cookie', owner.cookie)
+      .field('phase', 'handoff').field('note', 'Spear straight');
+    expect(res.status).toBe(201);
+
+    expect((await inbox(borrower)).items[0]).toMatchObject({
+      type: 'condition_recorded', loanId, read: false, message: 'owner display recorded how Dire Wolf looked at the handoff',
+    });
+    expect((await inbox(borrower)).items).toHaveLength(borrowerBefore + 1);
+    expect((await inbox(owner)).items.filter(n => n.type === 'condition_recorded')).toEqual([]); // not told about their own
+    expect((await inbox(bystander)).items).toEqual([]);
+  });
+
+  it('says nothing when a condition report is refused', async () => {
+    const { loanId } = await requestMini();
+    const before = (await inbox(borrower)).items.length;
+
+    // Still negotiating — nothing has changed hands to report on.
+    const res = await request(app).post(`/api/loans/${loanId}/condition`).set('Cookie', owner.cookie)
+      .field('phase', 'handoff').field('note', 'Spear straight');
+
+    expect(res.status).toBe(409);
+    expect((await inbox(borrower)).items).toHaveLength(before);
+  });
+
+  // A back-and-forth would otherwise fill the bell with one entry per line.
+  it('tells the other side about a message — one entry per conversation, showing the latest', async () => {
+    const { loanId } = await requestMini();
+    const say = (who: TestUser, body: string) =>
+      request(app).post(`/api/loans/${loanId}/messages`).set('Cookie', who.cookie).send({ body });
+    const before = (await inbox(owner)).items.length;
+
+    await say(borrower, 'Can we do Thursday?');
+    await say(borrower, 'Running 20 minutes late');
+
+    const messages = (await inbox(owner)).items.filter(n => n.type === 'loan_message');
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toMatchObject({ loanId, read: false, message: 'borrower display about Dire Wolf: “Running 20 minutes late”' });
+    expect((await inbox(owner)).items).toHaveLength(before + 1);
+    expect((await inbox(borrower)).items.filter(n => n.type === 'loan_message')).toEqual([]); // not told about their own
+  });
+
+  it('marks the message notification read when the thread is opened, and starts a fresh one after', async () => {
+    const { loanId } = await requestMini();
+    await request(app).post(`/api/loans/${loanId}/messages`).set('Cookie', borrower.cookie).send({ body: 'Thursday?' });
+
+    await request(app).post(`/api/loans/${loanId}/messages/read`).set('Cookie', owner.cookie);
+    const [seen] = (await inbox(owner)).items.filter(n => n.type === 'loan_message');
+    expect(seen.read).toBe(true);
+
+    // A read entry is left alone (it counts down as usual); a new message gets its own.
+    await request(app).post(`/api/loans/${loanId}/messages`).set('Cookie', borrower.cookie).send({ body: 'Friday, then?' });
+    const after = (await inbox(owner)).items.filter(n => n.type === 'loan_message');
+    expect(after.map(n => [n.message, n.read])).toEqual([
+      ['borrower display about Dire Wolf: “Friday, then?”', false],
+      ['borrower display about Dire Wolf: “Thursday?”', true],
+    ]);
+  });
+
   it('tells both sides once when a loan becomes overdue', async () => {
     const { loanId } = await requestMini();
     await terms(borrower, loanId, { when: WHEN, where: 'Game store', how: 'In person' });

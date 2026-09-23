@@ -7,7 +7,7 @@ import { requireAuth } from '../middleware/requireAuth';
 import { requireAdmin } from '../middleware/requireAdmin';
 import { requireCollectionMembership } from '../middleware/requireCollectionMembership';
 import { route, idFrom } from '../utils/route';
-import { emailAddress, positiveId } from '../utils/inputs';
+import { emailAddress, positiveId, requiredBoolean } from '../utils/inputs';
 import { removeMember } from '../services/membership';
 import { logAdminAction, listAuditLog, displayNameOf } from '../db/auditLog';
 
@@ -240,6 +240,22 @@ router.delete('/users/:id', route(async (req, res) => {
   });
 }));
 
+// PATCH /api/admin/settings  { showPrices }
+// Group-wide settings for the admin's active collection. showPrices: some
+// groups don't want a dollar figure on every mini — off hides price
+// everywhere in this group (requireCollectionMembership hands the setting to
+// every route) while leaving the stored prices alone, so it can be undone.
+router.patch('/settings', route(async (req, res) => {
+  const showPrices = requiredBoolean((req.body as { showPrices?: unknown } | undefined)?.showPrices, 'showPrices');
+  if (!showPrices.ok) {
+    res.status(400).json({ error: showPrices.error });
+    return;
+  }
+
+  await change('UPDATE collections SET show_prices = ? WHERE id = ?', [showPrices.value, req.collectionId!]);
+  res.json({ showPrices: showPrices.value });
+}));
+
 // GET /api/admin/audit-log
 // A trace of admin actions with real consequences in this collection —
 // member removals and mini restores — newest first. See db/auditLog.ts for
@@ -276,7 +292,7 @@ router.get('/archived-minis', route(async (req, res) => {
     return {
       id: mini.id,
       name: mini.name,
-      price: Number(mini.price),
+      price: req.showPrices ? Number(mini.price) : null,
       formerOwnerId: mini.owner_id,
       formerOwnerName: mini.owner_name,
       archivedAt: new Date(mini.archived_at).toISOString(),
@@ -326,6 +342,10 @@ router.post('/archived-minis/:id/restore', route(async (req, res) => {
   if (restored === 0) {
     res.status(404).json({ error: 'Archived mini not found' });
     return;
+  }
+  // Back to its original owner: the set it was in comes back with it.
+  if (keepSet && mini.set_id !== null) {
+    await change('UPDATE sets SET archived_at = NULL WHERE id = ?', [mini.set_id]);
   }
 
   await logAdminAction({
