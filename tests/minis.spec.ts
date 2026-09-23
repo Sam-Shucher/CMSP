@@ -158,10 +158,18 @@ test('a back-by date more than three months away is pulled back to the limit', a
   const olivia = await as('olivia');
   await createMini(olivia, 'Owlbear');
 
-  const limit = new Date(Date.now() + 90 * 86_400_000);
+  // 90 calendar days, not 90 × 24h — the latter lands a day early when run
+  // just after midnight across the November clock change. Capped by the
+  // server's UTC count, as the app does.
+  const now = new Date();
+  const limit = new Date(now);
+  limit.setDate(limit.getDate() + 90);
   const pad = (n: number) => String(n).padStart(2, '0');
-  const latest = `${limit.getFullYear()}-${pad(limit.getMonth() + 1)}-${pad(limit.getDate())}`;
-  const shown = limit.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  const byViewer = `${limit.getFullYear()}-${pad(limit.getMonth() + 1)}-${pad(limit.getDate())}`;
+  const byServer = new Date(now.getTime() + 90 * 86_400_000).toISOString().slice(0, 10);
+  const latest = byViewer < byServer ? byViewer : byServer;
+  const [ly, lm, ld] = latest.split('-').map(Number);
+  const shown = new Date(ly, lm - 1, ld).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 
   await olivia.goto('/');
   await olivia.getByText('Owlbear').click();

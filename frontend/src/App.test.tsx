@@ -95,6 +95,7 @@ const LOGGED_IN_ROUTES: Routes = {
   '/api/auth/logout': { message: 'Logged out' },
   '/api/notifications': { unread: 2, items: [] },
   '/api/holds': { holds: [], watching: [] },
+  '/api/bookings': { mine: [], onMyMinis: [] },
 };
 
 describe('App — logged out', () => {
