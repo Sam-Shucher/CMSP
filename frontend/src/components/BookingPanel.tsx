@@ -125,7 +125,7 @@ export default function BookingPanel({ miniId, isOwn }: BookingPanelProps): Reac
               style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', flexWrap: 'wrap' }}
             >
               <span style={{ color: '#c9a84c', fontWeight: 600 }}>{span(booking)}</span>
-              <span style={{ color: '#8a7d6a' }}>
+              <span style={{ color: 'var(--text-muted)' }}>
                 {booking.mine ? 'booked by you' : booking.holderName ? `booked by ${booking.holderName}` : 'booked'}
                 {booking.note ? ` · ${booking.note}` : ''}
                 {booking.started ? ' · now a request' : ''}
@@ -148,11 +148,11 @@ export default function BookingPanel({ miniId, isOwn }: BookingPanelProps): Reac
 
       {!isOwn && calendar.bookable !== false && (
         <form noValidate onSubmit={(e: React.FormEvent) => void book(e)} style={{ display: 'grid', gap: '6px' }}>
-          <p style={{ fontSize: '12px', color: '#8a7d6a' }}>
+          <p style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
             Need it for a particular day? Book it — it becomes a request that morning.
           </p>
           <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
-            <label htmlFor={`book-${miniId}-from`} style={{ fontSize: '13px', color: '#8a7d6a' }}>From</label>
+            <label htmlFor={`book-${miniId}-from`} style={{ fontSize: '13px', color: 'var(--text-muted)' }}>From</label>
             <input
               id={`book-${miniId}-from`}
               type="date"
@@ -161,7 +161,7 @@ export default function BookingPanel({ miniId, isOwn }: BookingPanelProps): Reac
               value={from}
               onChange={(e: React.ChangeEvent<HTMLInputElement>) => setFrom(e.target.value)}
             />
-            <label htmlFor={`book-${miniId}-to`} style={{ fontSize: '13px', color: '#8a7d6a' }}>To</label>
+            <label htmlFor={`book-${miniId}-to`} style={{ fontSize: '13px', color: 'var(--text-muted)' }}>To</label>
             <input
               id={`book-${miniId}-to`}
               type="date"
@@ -171,7 +171,7 @@ export default function BookingPanel({ miniId, isOwn }: BookingPanelProps): Reac
               onChange={(e: React.ChangeEvent<HTMLInputElement>) => setTo(e.target.value)}
             />
           </div>
-          <label htmlFor={`book-${miniId}-note`} style={{ fontSize: '13px', color: '#8a7d6a' }}>What for</label>
+          <label htmlFor={`book-${miniId}-note`} style={{ fontSize: '13px', color: 'var(--text-muted)' }}>What for</label>
           <input
             id={`book-${miniId}-note`}
             type="text"

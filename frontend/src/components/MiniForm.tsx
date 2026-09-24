@@ -111,7 +111,7 @@ export default function MiniForm({
       <div>
         <label style={labelStyle} htmlFor="mini-tags">
           Tags{' '}
-          <span style={{ color: '#8a7d6a', textTransform: 'none', fontSize: '11px' }}>
+          <span style={{ color: 'var(--text-muted)', textTransform: 'none', fontSize: '11px' }}>
             (comma-separated)
           </span>
         </label>
@@ -138,7 +138,7 @@ export default function MiniForm({
         <div>
           <label style={labelStyle} htmlFor="mini-price">
             Price{' '}
-            <span style={{ color: '#8a7d6a', textTransform: 'none', fontSize: '11px' }}>
+            <span style={{ color: 'var(--text-muted)', textTransform: 'none', fontSize: '11px' }}>
               (optional)
             </span>
           </label>
@@ -176,7 +176,7 @@ const labelStyle: React.CSSProperties = {
   display: 'block',
   fontSize: '12px',
   fontWeight: 500,
-  color: '#8a7d6a',
+  color: 'var(--text-muted)',
   marginBottom: '6px',
   textTransform: 'uppercase',
   letterSpacing: '0.05em',

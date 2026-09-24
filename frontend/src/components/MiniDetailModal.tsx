@@ -147,10 +147,10 @@ export default function MiniDetailModal({ mini, onClose, isOwn = false, inCart =
             <MiniStatusBadge status={mini.status} />
           </div>
 
-          <p style={{ fontSize: '13px', color: '#8a7d6a', marginBottom: mini.set_name ? '4px' : '14px' }}>owned by {mini.owner_name}</p>
+          <p style={{ fontSize: '13px', color: 'var(--text-muted)', marginBottom: mini.set_name ? '4px' : '14px' }}>owned by {mini.owner_name}</p>
 
           {mini.set_name && (
-            <p style={{ fontSize: '13px', color: '#8a7d6a', marginBottom: '14px' }}>
+            <p style={{ fontSize: '13px', color: 'var(--text-muted)', marginBottom: '14px' }}>
               Part of the <strong>{mini.set_name}</strong> set — see the Sets page to borrow it all at once.
             </p>
           )}
@@ -179,7 +179,7 @@ export default function MiniDetailModal({ mini, onClose, isOwn = false, inCart =
             <div style={{ marginTop: '20px', paddingTop: '16px', borderTop: '1px solid #3d3629' }}>
               {isOwn ? (
                 <>
-                  <p style={{ fontSize: '13px', color: '#8a7d6a' }}>This is your mini.</p>
+                  <p style={{ fontSize: '13px', color: 'var(--text-muted)' }}>This is your mini.</p>
                   {onTakeOut && onBringBack && (
                     <QuestControls mini={mini} onTakeOut={onTakeOut} onBringBack={onBringBack} />
                   )}
@@ -269,7 +269,7 @@ function QuestControls({ mini, onTakeOut, onBringBack }: {
       {mini.status === 'available' && (
         <div style={{ display: 'flex', gap: '10px', alignItems: 'flex-end', flexWrap: 'wrap' }}>
           <div style={{ flex: '1 1 160px' }}>
-            <label htmlFor={`back-by-${mini.id}`} style={{ display: 'block', fontSize: '12px', color: '#8a7d6a', marginBottom: '4px' }}>
+            <label htmlFor={`back-by-${mini.id}`} style={{ display: 'block', fontSize: '12px', color: 'var(--text-muted)', marginBottom: '4px' }}>
               Back by (optional)
             </label>
             <input
@@ -288,7 +288,7 @@ function QuestControls({ mini, onTakeOut, onBringBack }: {
       )}
 
       {mini.status === 'available' && (
-        <p style={{ fontSize: '12px', color: moved ? '#c9a84c' : '#8a7d6a', marginTop: '6px' }}>
+        <p style={{ fontSize: '12px', color: moved ? '#c9a84c' : 'var(--text-muted)', marginTop: '6px' }}>
           {moved === 'later'
             ? `A quest can last up to 3 months, so that's been set to ${formatBackBy(latest)} — the latest it can be.`
             : moved === 'earlier'
@@ -309,13 +309,13 @@ function QuestControls({ mini, onTakeOut, onBringBack }: {
       )}
 
       {mini.status === 'requested' && (
-        <p style={{ fontSize: '13px', color: '#8a7d6a' }}>
+        <p style={{ fontSize: '13px', color: 'var(--text-muted)' }}>
           Someone has requested this mini — cancel or finish that request on the Loans page before taking it on a quest.
         </p>
       )}
 
       {mini.status === 'adventuring' && (
-        <p style={{ fontSize: '13px', color: '#8a7d6a' }}>
+        <p style={{ fontSize: '13px', color: 'var(--text-muted)' }}>
           This mini is out adventuring with a borrower right now.
         </p>
       )}

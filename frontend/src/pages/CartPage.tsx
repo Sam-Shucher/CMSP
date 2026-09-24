@@ -69,7 +69,7 @@ export default function CartPage(): React.ReactElement {
   return (
     <div style={{ padding: '28px 32px', maxWidth: '800px', margin: '0 auto' }}>
       <h2 style={{ fontSize: '22px', color: '#c9a84c', marginBottom: '8px' }}>Your Cart</h2>
-      <p style={{ fontSize: '13px', color: '#8a7d6a', marginBottom: '24px' }}>
+      <p style={{ fontSize: '13px', color: 'var(--text-muted)', marginBottom: '24px' }}>
         Adding a mini to your cart doesn't reserve it. Checking out sends a request to each owner —
         then you'll work out when, where, and how together on the Loans page.
       </p>
@@ -91,9 +91,9 @@ export default function CartPage(): React.ReactElement {
       )}
 
       {loading ? (
-        <p style={{ color: '#8a7d6a' }}>Loading…</p>
+        <p style={{ color: 'var(--text-muted)' }}>Loading…</p>
       ) : items.length === 0 ? (
-        <div style={{ textAlign: 'center', padding: '40px 0', color: '#8a7d6a' }}>
+        <div style={{ textAlign: 'center', padding: '40px 0', color: 'var(--text-muted)' }}>
           <p style={{ fontSize: '18px', marginBottom: '8px' }}>Your cart is empty</p>
           <Link to="/">Browse the collection</Link>
         </div>
@@ -119,7 +119,7 @@ export default function CartPage(): React.ReactElement {
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontWeight: 600 }}>{cartItem.name}</div>
                     {cartItem.status !== 'available' && (
-                      <div style={{ fontSize: '12px', color: '#e74c3c' }}>No longer available</div>
+                      <div style={{ fontSize: '12px', color: 'var(--danger-text)' }}>No longer available</div>
                     )}
                   </div>
                   <MiniStatusBadge status={cartItem.status} />

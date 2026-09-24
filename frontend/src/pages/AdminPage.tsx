@@ -229,7 +229,7 @@ export default function AdminPage(): React.ReactElement {
   return (
     <div style={{ padding: '28px 32px', maxWidth: '860px', margin: '0 auto' }}>
       <h2 style={{ fontSize: '22px', color: '#c9a84c', marginBottom: '4px' }}>Admin Panel</h2>
-      <p style={{ fontSize: '13px', color: '#8a7d6a', marginBottom: '24px' }}>
+      <p style={{ fontSize: '13px', color: 'var(--text-muted)', marginBottom: '24px' }}>
         Managing <strong style={{ color: '#e8e0d0' }}>{activeCollectionName}</strong> — switch groups to administer a different one.
       </p>
 
@@ -247,7 +247,7 @@ export default function AdminPage(): React.ReactElement {
           />
           Show prices
         </label>
-        <p style={{ fontSize: '13px', color: '#8a7d6a', marginTop: '6px' }}>
+        <p style={{ fontSize: '13px', color: 'var(--text-muted)', marginTop: '6px' }}>
           Off hides prices everywhere in {activeCollectionName} — on every mini, in the add and edit forms, and in
           sorting. Prices already entered are kept, and come back if you turn this on again.
         </p>
@@ -261,7 +261,7 @@ export default function AdminPage(): React.ReactElement {
       {/* ------------------------------------------------------------------ */}
       <section style={sectionStyle}>
         <h3 style={sectionHeadStyle}>Invite List</h3>
-        <p style={{ fontSize: '13px', color: '#8a7d6a', marginBottom: '16px' }}>
+        <p style={{ fontSize: '13px', color: 'var(--text-muted)', marginBottom: '16px' }}>
           Only emails on this list can create an account.
         </p>
 
@@ -316,7 +316,7 @@ export default function AdminPage(): React.ReactElement {
             ))}
             {emails.length === 0 && (
               <tr>
-                <td colSpan={4} style={{ ...tdStyle, color: '#8a7d6a', textAlign: 'center' }}>
+                <td colSpan={4} style={{ ...tdStyle, color: 'var(--text-muted)', textAlign: 'center' }}>
                   No approved emails yet
                 </td>
               </tr>
@@ -402,7 +402,7 @@ export default function AdminPage(): React.ReactElement {
       {archivedMinis.length > 0 && (
         <section style={sectionStyle}>
           <h3 style={sectionHeadStyle}>Archived Minis</h3>
-          <p style={{ fontSize: '13px', color: '#8a7d6a', marginBottom: '16px' }}>
+          <p style={{ fontSize: '13px', color: 'var(--text-muted)', marginBottom: '16px' }}>
             Left behind when their owner was removed from {activeCollectionName}. Give one to a current member before it's deleted for good.
           </p>
           <table style={tableStyle}>
@@ -465,7 +465,7 @@ export default function AdminPage(): React.ReactElement {
             {auditLog.map((entry: AuditLogEntry) => (
               <li key={entry.id} style={{ fontSize: '13px', color: '#e8e0d0', paddingBottom: '10px', borderBottom: '1px solid #3d3629' }}>
                 <div>{entry.details}</div>
-                <div style={{ fontSize: '11px', color: '#8a7d6a', marginTop: '2px' }}>{new Date(entry.createdAt).toLocaleString()}</div>
+                <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '2px' }}>{new Date(entry.createdAt).toLocaleString()}</div>
               </li>
             ))}
           </ul>
@@ -479,7 +479,7 @@ export default function AdminPage(): React.ReactElement {
       {loanIncidents.length > 0 && (
         <section style={sectionStyle}>
           <h3 style={sectionHeadStyle}>Lost &amp; Damaged</h3>
-          <p style={{ fontSize: '13px', color: '#8a7d6a', marginBottom: '16px' }}>
+          <p style={{ fontSize: '13px', color: 'var(--text-muted)', marginBottom: '16px' }}>
             Visible only to admins — not a ranking, just a way to notice a pattern.
           </p>
           <table style={tableStyle}>
@@ -495,7 +495,7 @@ export default function AdminPage(): React.ReactElement {
                 <tr key={incident.borrowerId ?? `removed:${incident.borrowerName}`} style={{ borderBottom: '1px solid #3d3629' }}>
                   <td style={tdStyle}>
                     {incident.borrowerName}
-                    {incident.borrowerId === null && <span style={{ color: '#8a7d6a' }}> (no longer a member)</span>}
+                    {incident.borrowerId === null && <span style={{ color: 'var(--text-muted)' }}> (no longer a member)</span>}
                   </td>
                   <td style={tdStyle}>{incident.lostCount}</td>
                   <td style={tdStyle}>{incident.woundedCount}</td>
@@ -524,7 +524,7 @@ export default function AdminPage(): React.ReactElement {
             <h3 style={{ fontSize: '17px', color: '#c9a84c', marginBottom: '10px' }}>
               Temporary password for {issuedPassword.displayName}
             </h3>
-            <p style={{ fontSize: '13px', color: '#8a7d6a', marginBottom: '16px' }}>
+            <p style={{ fontSize: '13px', color: 'var(--text-muted)', marginBottom: '16px' }}>
               This is the only time it's shown. Text or tell it to them
               {issuedPassword.phone ? ` on ${issuedPassword.phone}` : ' (no phone number on file)'} — it works for the
               next {issuedPassword.expiresInDays} days, and the app asks them to choose their own when they sign in.
@@ -600,7 +600,7 @@ const thStyle: React.CSSProperties = {
   textAlign: 'left',
   padding: '8px 10px',
   fontSize: '11px',
-  color: '#8a7d6a',
+  color: 'var(--text-muted)',
   textTransform: 'uppercase',
   letterSpacing: '0.05em',
   borderBottom: '1px solid #3d3629',

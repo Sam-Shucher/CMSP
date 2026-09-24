@@ -65,9 +65,13 @@ CREATE TABLE IF NOT EXISTS collection_memberships (
 
 -- Server-side login sessions. The cookie holds only the session id; a session
 -- ends when revoked (logout), after a stretch of inactivity, or at expires_at.
+-- collection_id is the group the sign-in is in now (the cookie's, kept in step
+-- by db/sessions.ts), so phone notifications reach only the group being shown.
+-- No foreign key: a deleted group's id just matches no notice.
 CREATE TABLE IF NOT EXISTS sessions (
   id           CHAR(64) PRIMARY KEY,
   user_id      INT NOT NULL,
+  collection_id INT NULL,
   created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   last_seen_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   expires_at   DATETIME NOT NULL,

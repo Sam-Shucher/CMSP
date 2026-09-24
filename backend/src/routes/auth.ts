@@ -8,7 +8,7 @@ import { validateUsername, validatePassword } from '../utils/validation';
 import { jwtSecret, SESSION_LIFETIME_DAYS } from '../config';
 import { rateLimit } from '../middleware/rateLimit';
 import { emailAddress, optionalText, positiveId, LIMITS } from '../utils/inputs';
-import { createSession, revokeSession, revokeAllSessions } from '../db/sessions';
+import { createSession, setSessionGroup, revokeSession, revokeAllSessions } from '../db/sessions';
 import { hashPassword, verifyPassword, needsRehash } from '../utils/passwords';
 
 const router = Router();
@@ -347,6 +347,7 @@ router.post('/select-collection', requireAuthAllowingTemporaryPassword, route(as
   }
 
   const { sid, userId, username } = req.user!;
+  await setSessionGroup(sid, collection.id);
   setAuthCookie(res, { sid, userId, username, collectionId: collection.id });
   res.json({ userId, username, collectionId: collection.id, collectionName: collection.name, role: roleName(collection.role) });
 }));

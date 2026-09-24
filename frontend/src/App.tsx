@@ -101,12 +101,12 @@ function NavBar(): React.ReactElement | null {
           <button
             type="button"
             onClick={switchCollection}
-            style={{ background: 'none', border: 'none', color: '#8a7d6a', fontSize: '14px', cursor: 'pointer', padding: 0 }}
+            style={{ background: 'none', border: 'none', color: 'var(--text-muted)', fontSize: '14px', cursor: 'pointer', padding: 0 }}
           >
             {activeCollection.name} (Switch)
           </button>
         ) : (
-          <span style={{ color: '#8a7d6a', fontSize: '14px' }}>{activeCollection.name}</span>
+          <span style={{ color: 'var(--text-muted)', fontSize: '14px' }}>{activeCollection.name}</span>
         )
       )}
       <a href="/" style={{ color: '#e8e0d0', fontSize: '14px' }}>Browse</a>
@@ -119,7 +119,7 @@ function NavBar(): React.ReactElement | null {
         <a href="/admin" style={{ color: '#c9a84c', fontSize: '14px' }}>Admin</a>
       )}
       <NotificationBell collectionId={user.collectionId} />
-      <Link to="/profile" style={{ color: '#8a7d6a', fontSize: '14px' }}>{user.username}</Link>
+      <Link to="/profile" style={{ color: 'var(--text-muted)', fontSize: '14px' }}>{user.username}</Link>
       <button className="btn-secondary" style={{ padding: '6px 14px', fontSize: '13px' }} onClick={logout}>
         Logout
       </button>
@@ -136,7 +136,7 @@ function NavBar(): React.ReactElement | null {
 function PrivateRoute({ children }: { children: React.ReactNode }): React.ReactElement {
   const { user, loading } = useAuth();
   if (loading) {
-    return <div style={{ padding: '40px', textAlign: 'center', color: '#8a7d6a' }}>Loading…</div>;
+    return <div style={{ padding: '40px', textAlign: 'center', color: 'var(--text-muted)' }}>Loading…</div>;
   }
   return user ? <>{children}</> : <Navigate to="/login" replace />;
 }
@@ -158,7 +158,7 @@ function AppBody({ groupNotice, onDismissGroupNotice }: { groupNotice?: string; 
   const { user, loading, collections, selectCollection, refreshSession } = useAuth();
 
   if (loading) {
-    return <div style={{ padding: '40px', textAlign: 'center', color: '#8a7d6a' }}>Loading…</div>;
+    return <div style={{ padding: '40px', textAlign: 'center', color: 'var(--text-muted)' }}>Loading…</div>;
   }
 
   // An admin has given them a temporary password: nothing else until they
@@ -168,7 +168,7 @@ function AppBody({ groupNotice, onDismissGroupNotice }: { groupNotice?: string; 
       <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '24px' }}>
         <div style={{ background: '#252219', border: '1px solid #3d3629', borderRadius: '10px', padding: '32px 36px', width: '100%', maxWidth: '420px' }}>
           <h1 style={{ fontSize: '20px', color: '#c9a84c', marginBottom: '8px' }}>Choose a new password</h1>
-          <p style={{ color: '#8a7d6a', fontSize: '13px', marginBottom: '22px' }}>
+          <p style={{ color: 'var(--text-muted)', fontSize: '13px', marginBottom: '22px' }}>
             You're signed in with a temporary password an admin set for you. Pick your own to carry on —
             enter the temporary one as your current password.
           </p>
@@ -183,7 +183,7 @@ function AppBody({ groupNotice, onDismissGroupNotice }: { groupNotice?: string; 
   if (user && !user.collectionId) {
     if (collections.length === 0) {
       return (
-        <div style={{ padding: '60px 24px', textAlign: 'center', color: '#8a7d6a' }}>
+        <div style={{ padding: '60px 24px', textAlign: 'center', color: 'var(--text-muted)' }}>
           <p style={{ fontSize: '18px', marginBottom: '8px' }}>You're not in any group yet.</p>
           <p style={{ fontSize: '14px' }}>Ask an admin to add your email to a group's invite list.</p>
         </div>

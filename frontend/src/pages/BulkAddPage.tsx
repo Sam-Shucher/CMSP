@@ -259,7 +259,7 @@ export default function BulkAddPage(): React.ReactElement {
   return (
     <div style={{ padding: '28px 32px', maxWidth: '800px', margin: '0 auto' }}>
       <h2 style={{ fontSize: '22px', color: '#c9a84c', marginBottom: '8px' }}>Add Several Minis</h2>
-      <p style={{ color: '#8a7d6a', fontSize: '14px', marginBottom: '20px' }}>
+      <p style={{ color: 'var(--text-muted)', fontSize: '14px', marginBottom: '20px' }}>
         Drop a pile of photos — one mini each — and name them as you go. Or bring a spreadsheet: a CSV file, or
         cells copied straight out of one, with a first row naming the columns (<strong>name</strong>, and if you
         like <strong>description</strong>, <strong>tags</strong>{showPrices && <>, <strong>price</strong></>}).{' '}
@@ -270,7 +270,7 @@ export default function BulkAddPage(): React.ReactElement {
         <ImageDropzone onFiles={(files: File[]) => void addPhotos(files)} />
 
         <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap', alignItems: 'center' }}>
-          <label htmlFor="bulk-csv" style={{ fontSize: '13px', color: '#8a7d6a' }}>Choose a CSV file</label>
+          <label htmlFor="bulk-csv" style={{ fontSize: '13px', color: 'var(--text-muted)' }}>Choose a CSV file</label>
           <input
             id="bulk-csv"
             type="file"
@@ -430,7 +430,7 @@ export default function BulkAddPage(): React.ReactElement {
                         Put the photos with the mini above
                       </button>
                     )}
-                    <button type="button" onClick={() => removeRow(row.key)} style={{ ...linkButtonStyle, color: '#c0392b' }}>
+                    <button type="button" onClick={() => removeRow(row.key)} style={{ ...linkButtonStyle, color: 'var(--danger-text)' }}>
                       Remove
                     </button>
                   </div>
@@ -442,7 +442,7 @@ export default function BulkAddPage(): React.ReactElement {
               <button className="btn-primary" type="submit" style={{ padding: '12px 20px' }}>
                 {saving ? 'Adding…' : `Add ${minis(rows.length)}`}
               </button>
-              {saving && <span role="status" style={{ fontSize: '13px', color: '#8a7d6a' }}>{progress}</span>}
+              {saving && <span role="status" style={{ fontSize: '13px', color: 'var(--text-muted)' }}>{progress}</span>}
             </div>
           </fieldset>
         </form>
@@ -480,7 +480,7 @@ const labelStyle: React.CSSProperties = {
   display: 'block',
   fontSize: '12px',
   fontWeight: 500,
-  color: '#8a7d6a',
+  color: 'var(--text-muted)',
   marginBottom: '4px',
   textTransform: 'uppercase',
   letterSpacing: '0.05em',
@@ -503,9 +503,9 @@ const removePhotoStyle: React.CSSProperties = {
 
 const addPhotoStyle: React.CSSProperties = {
   width: '45px', height: '45px', padding: 0, borderRadius: '6px', border: '1px dashed #3d3629',
-  background: 'none', color: '#8a7d6a', cursor: 'pointer', fontSize: '11px',
+  background: 'none', color: 'var(--text-muted)', cursor: 'pointer', fontSize: '11px',
 };
 
 const linkButtonStyle: React.CSSProperties = {
-  background: 'none', border: 'none', color: '#8a7d6a', padding: 0, fontSize: '12px', textDecoration: 'underline', cursor: 'pointer',
+  background: 'none', border: 'none', color: 'var(--text-muted)', padding: 0, fontSize: '12px', textDecoration: 'underline', cursor: 'pointer',
 };

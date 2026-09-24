@@ -95,13 +95,13 @@ export default function ProfilePage(): React.ReactElement {
   }
 
   if (!profile) {
-    return <div style={{ padding: '28px 32px', color: '#8a7d6a' }}>Loading…</div>;
+    return <div style={{ padding: '28px 32px', color: 'var(--text-muted)' }}>Loading…</div>;
   }
 
   return (
     <div style={{ padding: '28px 32px', maxWidth: '480px', margin: '0 auto' }}>
       <h2 style={{ fontSize: '22px', color: '#c9a84c', marginBottom: '8px' }}>My Profile</h2>
-      <p style={{ fontSize: '13px', color: '#8a7d6a', marginBottom: '24px' }}>
+      <p style={{ fontSize: '13px', color: 'var(--text-muted)', marginBottom: '24px' }}>
         {profile.username} · {profile.email}
       </p>
 
@@ -117,14 +117,14 @@ export default function ProfilePage(): React.ReactElement {
 
         <div>
           <label style={labelStyle} htmlFor="profile-phone">
-            Phone <span style={{ color: '#8a7d6a', textTransform: 'none', fontSize: '11px' }}>(optional)</span>
+            Phone <span style={{ color: 'var(--text-muted)', textTransform: 'none', fontSize: '11px' }}>(optional)</span>
           </label>
           <input {...form.field('phone', 'profile-phone')} type="tel" maxLength={20} />
         </div>
 
         <div>
           <label style={labelStyle} htmlFor="profile-neighborhood">
-            Neighborhood <span style={{ color: '#8a7d6a', textTransform: 'none', fontSize: '11px' }}>(optional)</span>
+            Neighborhood <span style={{ color: 'var(--text-muted)', textTransform: 'none', fontSize: '11px' }}>(optional)</span>
           </label>
           <input {...form.field('neighborhood', 'profile-neighborhood')} type="text" maxLength={100} />
         </div>
@@ -136,7 +136,7 @@ export default function ProfilePage(): React.ReactElement {
 
       <div style={{ marginTop: '32px', paddingTop: '20px', borderTop: '1px solid #3d3629' }}>
         <h3 style={{ fontSize: '15px', color: '#c9a84c', marginBottom: '6px' }}>Password</h3>
-        <p style={{ fontSize: '13px', color: '#8a7d6a', marginBottom: '12px' }}>
+        <p style={{ fontSize: '13px', color: 'var(--text-muted)', marginBottom: '12px' }}>
           Changing it signs you out everywhere else, but keeps you signed in here.
         </p>
         <ChangePasswordForm />
@@ -147,7 +147,7 @@ export default function ProfilePage(): React.ReactElement {
       {user?.collectionId !== undefined && (
         <div style={{ marginTop: '32px', paddingTop: '20px', borderTop: '1px solid #3d3629' }}>
           <h3 style={{ fontSize: '15px', color: '#c9a84c', marginBottom: '6px' }}>Export my minis</h3>
-          <p style={{ fontSize: '13px', color: '#8a7d6a', marginBottom: '12px' }}>
+          <p style={{ fontSize: '13px', color: 'var(--text-muted)', marginBottom: '12px' }}>
             Everything you've added{groupName ? ` to ${groupName}` : ''}, as one .zip: a spreadsheet (which
             Bulk Add can read back in, here or in another group), the full record with who has borrowed
             what, and every photo. Worth keeping as your own backup.
@@ -167,7 +167,7 @@ export default function ProfilePage(): React.ReactElement {
 
       <div style={{ marginTop: '32px', paddingTop: '20px', borderTop: '1px solid #3d3629' }}>
         <h3 style={{ fontSize: '15px', color: '#c9a84c', marginBottom: '6px' }}>Sessions</h3>
-        <p style={{ fontSize: '13px', color: '#8a7d6a', marginBottom: '12px' }}>
+        <p style={{ fontSize: '13px', color: 'var(--text-muted)', marginBottom: '12px' }}>
           Sign out on every phone and computer where you're signed in, including this one.
         </p>
         {confirmingLogoutAll ? (
@@ -193,7 +193,7 @@ const labelStyle: React.CSSProperties = {
   display: 'block',
   fontSize: '12px',
   fontWeight: 500,
-  color: '#8a7d6a',
+  color: 'var(--text-muted)',
   marginBottom: '6px',
   textTransform: 'uppercase',
   letterSpacing: '0.05em',

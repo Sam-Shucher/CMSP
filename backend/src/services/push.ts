@@ -59,15 +59,19 @@ interface SubscriptionRow {
   auth: string;
 }
 
-// Sends to every device these people have. Returns how many took it. Never
-// throws: a push that fails must never fail (or undo) what triggered it.
-async function sendToUsers(userIds: number[], notice: PushNotice): Promise<number> {
+// Sends to every device these people have — only those signed in to
+// `collectionId`, when given. Returns how many took it. Never throws: a push
+// that fails must never fail (or undo) what triggered it.
+async function sendToUsers(userIds: number[], notice: PushNotice, collectionId?: number): Promise<number> {
   const config = pushConfig();
   if (!config.enabled || userIds.length === 0) return 0;
 
   // Only devices whose sign-in is still live — the same test requireAuth
   // applies (db/sessions.ts's touchSession). A device with no session at all
   // (signed up before sessions were recorded here) waits for its next sign-in.
+  // A group's notice goes only where that sign-in is in the group: someone in
+  // two groups sees one at a time, as with the bell, and the other group's
+  // notices wait in its bell.
   const devices = await rows<SubscriptionRow>(
     `SELECT p.id, p.endpoint, p.p256dh, p.auth
      FROM push_subscriptions p
@@ -75,8 +79,9 @@ async function sendToUsers(userIds: number[], notice: PushNotice): Promise<numbe
      WHERE p.user_id IN (${userIds.map(() => '?').join(', ')})
        AND s.revoked_at IS NULL
        AND s.expires_at > NOW()
-       AND s.last_seen_at > NOW() - INTERVAL ? DAY`,
-    [...userIds, SESSION_IDLE_DAYS]
+       AND s.last_seen_at > NOW() - INTERVAL ? DAY
+       ${collectionId === undefined ? '' : 'AND s.collection_id = ?'}`,
+    [...userIds, SESSION_IDLE_DAYS, ...(collectionId === undefined ? [] : [collectionId])]
   );
   const { topic, ...payload } = notice;
   const results = await Promise.all(devices.map(async (device) => {
@@ -114,14 +119,15 @@ export async function pushToUsers(
   try {
     if (!pushConfig().enabled || userIds.length === 0) return 0;
     const groupName = await firstValue<string>('SELECT name FROM collections WHERE id = ?', [input.collectionId]);
-    return await sendToUsers(userIds, pushNotice(input, groupName));
+    return await sendToUsers(userIds, pushNotice(input, groupName), input.collectionId);
   } catch (err: unknown) {
     console.error('Push failed:', err);
     return 0;
   }
 }
 
-// "Send a test" on the Profile page — every device of yours that's signed up.
+// "Send a test" on the Profile page — every device of yours that's signed up,
+// whichever group it's in.
 export async function pushTest(userId: number): Promise<number> {
   try {
     return await sendToUsers([userId], {

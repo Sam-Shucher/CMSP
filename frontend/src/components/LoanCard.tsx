@@ -38,11 +38,11 @@ const STAGE_COLORS: Record<LoanStage, string> = {
   negotiating: '#c9a84c',
   agreed: '#27ae60',
   adventuring: '#5dade2',
-  overdue: '#e74c3c',
-  returned: '#8a7d6a',
-  cancelled: '#8a7d6a',
-  lost: '#e74c3c',
-  critically_wounded: '#e74c3c',
+  overdue: 'var(--danger-text)',
+  returned: 'var(--text-muted)',
+  cancelled: 'var(--text-muted)',
+  lost: 'var(--danger-text)',
+  critically_wounded: 'var(--danger-text)',
 };
 
 type LoanCardProps = {
@@ -193,7 +193,7 @@ export default function LoanCard({ loan, now, otherOpenRequests, onUpdated }: Lo
                   value={when}
                   onChange={(e: React.ChangeEvent<HTMLInputElement>) => setWhen(e.target.value)}
                 />
-                <span id={`loan-${loan.id}-when-hint`} style={{ fontSize: '12px', color: '#8a7d6a' }}>Between 6am and 10pm</span>
+                <span id={`loan-${loan.id}-when-hint`} style={{ fontSize: '12px', color: 'var(--text-muted)' }}>Between 6am and 10pm</span>
               </div>
             </Field>
             <Field label="Where" id={`loan-${loan.id}-where`}>
@@ -207,7 +207,7 @@ export default function LoanCard({ loan, now, otherOpenRequests, onUpdated }: Lo
                 <input id={`loan-${loan.id}-duration`} type="number" min={1} max={MAX_DURATION_DAYS} step={1} value={duration} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setDuration(e.target.value)} />
               </Field>
             ) : (
-              <p style={{ fontSize: '13px', color: '#8a7d6a' }}>
+              <p style={{ fontSize: '13px', color: 'var(--text-muted)' }}>
                 {loan.durationDays
                   ? `Loan length: ${loan.durationDays} ${loan.durationDays === 1 ? 'day' : 'days'} (set by ${them})`
                   : `${them} hasn't proposed a duration yet.`}
@@ -220,11 +220,11 @@ export default function LoanCard({ loan, now, otherOpenRequests, onUpdated }: Lo
 
           {/* The two keys */}
           <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap', fontSize: '13px', marginBottom: '10px' }}>
-            <span style={{ color: myKey ? '#27ae60' : '#8a7d6a' }}>🔑 You: {myKey ? 'approved' : 'not yet'}</span>
-            <span style={{ color: theirKey ? '#27ae60' : '#8a7d6a' }}>🔑 {them}: {theirKey ? 'approved' : 'not yet'}</span>
+            <span style={{ color: myKey ? '#27ae60' : 'var(--text-muted)' }}>🔑 You: {myKey ? 'approved' : 'not yet'}</span>
+            <span style={{ color: theirKey ? '#27ae60' : 'var(--text-muted)' }}>🔑 {them}: {theirKey ? 'approved' : 'not yet'}</span>
           </div>
 
-          <p style={{ fontSize: '13px', color: myKey && theirKey ? '#27ae60' : '#8a7d6a', marginBottom: '10px' }}>
+          <p style={{ fontSize: '13px', color: myKey && theirKey ? '#27ae60' : 'var(--text-muted)', marginBottom: '10px' }}>
             {nextStep()}
           </p>
 
@@ -265,7 +265,7 @@ export default function LoanCard({ loan, now, otherOpenRequests, onUpdated }: Lo
                 </button>
               </span>
             ) : (
-              <button type="button" onClick={() => setConfirmingCancel(true)} style={{ background: 'none', color: '#8a7d6a', padding: 0, fontSize: '12px', textDecoration: 'underline' }}>
+              <button type="button" onClick={() => setConfirmingCancel(true)} style={{ background: 'none', color: 'var(--text-muted)', padding: 0, fontSize: '12px', textDecoration: 'underline' }}>
                 Cancel request
               </button>
             )}
@@ -275,10 +275,10 @@ export default function LoanCard({ loan, now, otherOpenRequests, onUpdated }: Lo
 
       {adventuring && loan.dueAt && (
         <div style={{ fontSize: '13px' }}>
-          <p style={{ color: overdue ? '#e74c3c' : '#5dade2', fontWeight: 600 }}>
+          <p style={{ color: overdue ? 'var(--danger-text)' : '#5dade2', fontWeight: 600 }}>
             {formatTimeRemaining(loan.dueAt, now)}
           </p>
-          <p style={{ color: '#8a7d6a' }}>
+          <p style={{ color: 'var(--text-muted)' }}>
             {isOwner ? `With ${them}` : `Borrowed from ${them}`} · due {new Date(loan.dueAt).toLocaleString()}
           </p>
           {/* The borrower's side of the handoff record. The loan already started when the owner confirmed. */}
@@ -287,10 +287,10 @@ export default function LoanCard({ loan, now, otherOpenRequests, onUpdated }: Lo
               {isOwner ? `✓ ${them} confirmed they got it` : '✓ You confirmed you got it'}
             </p>
           ) : isOwner ? (
-            <p style={{ color: '#8a7d6a', marginTop: '6px' }}>{them} hasn't confirmed they got it yet.</p>
+            <p style={{ color: 'var(--text-muted)', marginTop: '6px' }}>{them} hasn't confirmed they got it yet.</p>
           ) : (
             <div style={{ display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap', marginTop: '8px' }}>
-              <span style={{ color: '#8a7d6a' }}>Have it? Let {them} know you got it.</span>
+              <span style={{ color: 'var(--text-muted)' }}>Have it? Let {them} know you got it.</span>
               <button type="button" className="btn-primary" disabled={busy} onClick={() => void run(`/api/loans/${loan.id}/received`)} style={{ padding: '6px 14px', fontSize: '13px' }}>
                 Got it
               </button>
@@ -301,17 +301,17 @@ export default function LoanCard({ loan, now, otherOpenRequests, onUpdated }: Lo
               while anyone is in line: a library won't renew a reserved book,
               and here the next person gets it the moment it's marked back. */}
           {loan.holdsWaiting > 0 ? (
-            <p style={{ color: '#8a7d6a', marginTop: '8px' }}>
+            <p style={{ color: 'var(--text-muted)', marginTop: '8px' }}>
               {loan.holdsWaiting === 1 ? 'Someone is waiting in line' : `${loan.holdsWaiting} people are waiting in line`} for
               {' '}{loan.miniName}, so it can't be kept longer.
             </p>
           ) : loan.extendableDays <= 0 ? (
-            <p style={{ color: '#8a7d6a', marginTop: '8px' }}>
+            <p style={{ color: 'var(--text-muted)', marginTop: '8px' }}>
               It's been out for the three months a loan can run — time to bring it back.
             </p>
           ) : (
             <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap', marginTop: '8px' }}>
-              <label htmlFor={`extend-${loan.id}`} style={{ color: '#8a7d6a' }}>Need longer?</label>
+              <label htmlFor={`extend-${loan.id}`} style={{ color: 'var(--text-muted)' }}>Need longer?</label>
               <input
                 id={`extend-${loan.id}`}
                 type="number"
@@ -354,11 +354,11 @@ export default function LoanCard({ loan, now, otherOpenRequests, onUpdated }: Lo
       )}
 
       {loan.status === 'returned' && loan.returnedAt && (
-        <p style={{ fontSize: '13px', color: '#8a7d6a' }}>Back home since {new Date(loan.returnedAt).toLocaleDateString()}</p>
+        <p style={{ fontSize: '13px', color: 'var(--text-muted)' }}>Back home since {new Date(loan.returnedAt).toLocaleDateString()}</p>
       )}
 
       {(loan.status === 'lost' || loan.status === 'critically_wounded') && loan.returnedAt && (
-        <p style={{ fontSize: '13px', color: '#e74c3c' }}>
+        <p style={{ fontSize: '13px', color: 'var(--danger-text)' }}>
           Reported {loan.status === 'lost' ? 'lost' : 'critically wounded'} on {new Date(loan.returnedAt).toLocaleDateString()}
           {isOwner && loan.status === 'critically_wounded' && ' — clear it from the mini\'s edit page once it\'s fine to lend again'}
         </p>
@@ -394,7 +394,7 @@ export default function LoanCard({ loan, now, otherOpenRequests, onUpdated }: Lo
 function Field({ label, id, children }: { label: string; id: string; children: React.ReactNode }): React.ReactElement {
   return (
     <div style={{ display: 'grid', gridTemplateColumns: '110px 1fr', alignItems: 'center', gap: '8px' }}>
-      <label htmlFor={id} style={{ fontSize: '13px', color: '#8a7d6a' }}>{label}</label>
+      <label htmlFor={id} style={{ fontSize: '13px', color: 'var(--text-muted)' }}>{label}</label>
       {children}
     </div>
   );

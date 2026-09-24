@@ -30,7 +30,7 @@ export default class ErrorBoundary extends React.Component<Props, State> {
     const reload = this.props.onReload ?? (() => window.location.reload());
 
     return (
-      <div style={{ padding: '60px 24px', textAlign: 'center', color: '#8a7d6a' }}>
+      <div style={{ padding: '60px 24px', textAlign: 'center', color: 'var(--text-muted)' }}>
         <p style={{ fontSize: '20px', color: '#c9a84c', marginBottom: '8px' }}>Something went wrong</p>
         <p style={{ fontSize: '14px', marginBottom: '20px' }}>
           This page stopped working. Reloading usually sorts it out — nothing you did is lost.

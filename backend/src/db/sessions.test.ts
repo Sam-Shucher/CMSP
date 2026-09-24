@@ -11,7 +11,7 @@ vi.mock('./connection', () => ({
 }));
 
 import { pool } from './connection';
-import { createSession, touchSession, revokeSession, revokeAllSessions, revokeOtherSessions, purgeEndedSessions } from './sessions';
+import { createSession, touchSession, setSessionGroup, revokeSession, revokeAllSessions, revokeOtherSessions, purgeEndedSessions } from './sessions';
 import { SESSION_LIFETIME_DAYS, SESSION_IDLE_DAYS } from '../config';
 
 const execute = pool.execute as unknown as ReturnType<typeof vi.fn>;
@@ -71,7 +71,7 @@ describe('touchSession', () => {
   // Every collection-scoped request needs both answers; asking for them in one
   // query halves the database round trips per API call on the Pi.
   it('reads their place in the group the cookie names, in the same query', async () => {
-    execute.mockResolvedValueOnce([[{ needs_touch: 0, must_change_password: 0, member_of: 5, role: 'admin', show_prices: 0 }]]);
+    execute.mockResolvedValueOnce([[{ needs_touch: 0, must_change_password: 0, collection_id: 5, member_of: 5, role: 'admin', show_prices: 0 }]]);
 
     expect(await touchSession('abc', 7, 5)).toEqual({
       mustChangePassword: false,
@@ -101,11 +101,54 @@ describe('touchSession', () => {
   it('records activity, but at most every few minutes rather than on every request', async () => {
     execute.mockResolvedValueOnce([[{ needs_touch: 1, must_change_password: 0 }]]).mockResolvedValueOnce([{}]);
     expect(await touchSession('abc', 7)).toEqual({ mustChangePassword: false });
-    expect(execute).toHaveBeenLastCalledWith(expect.stringContaining('UPDATE sessions SET last_seen_at = NOW()'), ['abc']);
+    expect(execute).toHaveBeenLastCalledWith(expect.stringContaining('UPDATE sessions SET last_seen_at = NOW()'), [null, 'abc']);
 
     execute.mockReset().mockResolvedValueOnce([[{ needs_touch: 0, must_change_password: 0 }]]);
     await touchSession('abc', 7);
     expect(execute).toHaveBeenCalledTimes(1);
+  });
+});
+
+// Phone notifications go only to devices signed in to the notice's group
+// (services/push.ts), so the session row keeps track of the group its cookie
+// is in. It follows the cookie: rows from before this was recorded, or a
+// switch in another tab, catch up on the next request.
+describe('which group a sign-in is in', () => {
+  it('records the group the cookie names when the row says otherwise', async () => {
+    execute
+      .mockResolvedValueOnce([[{ needs_touch: 0, must_change_password: 0, collection_id: 3, member_of: 5, role: 'user', show_prices: 1 }]])
+      .mockResolvedValueOnce([{}]);
+
+    await touchSession('abc', 7, 5);
+
+    expect(execute).toHaveBeenCalledTimes(2);
+    expect(execute).toHaveBeenLastCalledWith(expect.stringMatching(/UPDATE sessions SET .*collection_id = \?/), [5, 'abc']);
+  });
+
+  it('records none when the cookie names no group, or one they have left', async () => {
+    execute
+      .mockResolvedValueOnce([[{ needs_touch: 0, must_change_password: 0, collection_id: 3, member_of: null, role: null, show_prices: null }]])
+      .mockResolvedValueOnce([{}]);
+
+    await touchSession('abc', 7, 3);
+
+    expect(execute).toHaveBeenLastCalledWith(expect.stringMatching(/collection_id = \?/), [null, 'abc']);
+  });
+
+  it('writes nothing when it already matches', async () => {
+    execute.mockResolvedValueOnce([[{ needs_touch: 0, must_change_password: 0, collection_id: 5, member_of: 5, role: 'user', show_prices: 1 }]]);
+
+    await touchSession('abc', 7, 5);
+
+    expect(execute).toHaveBeenCalledTimes(1);
+  });
+
+  it('is set straight away when they switch groups', async () => {
+    execute.mockResolvedValueOnce([{}]);
+
+    await setSessionGroup('abc', 6);
+
+    expect(execute).toHaveBeenCalledWith('UPDATE sessions SET collection_id = ? WHERE id = ?', [6, 'abc']);
   });
 });
 

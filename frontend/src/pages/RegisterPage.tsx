@@ -72,7 +72,7 @@ export default function RegisterPage(): React.ReactElement {
     <div style={pageStyle}>
       <div style={cardStyle}>
         <h1 style={{ fontSize: '22px', marginBottom: '6px', color: '#c9a84c' }}>Create Account</h1>
-        <p style={{ color: '#8a7d6a', marginBottom: '24px', fontSize: '13px' }}>
+        <p style={{ color: 'var(--text-muted)', marginBottom: '24px', fontSize: '13px' }}>
           You need an invite email to register.
         </p>
 
@@ -96,7 +96,7 @@ export default function RegisterPage(): React.ReactElement {
           <div>
             <label style={labelStyle} htmlFor="displayName">
               Display Name{' '}
-              <span style={{ color: '#8a7d6a', fontWeight: 400 }}>(optional)</span>
+              <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>(optional)</span>
             </label>
             <input {...form.field('displayName', 'displayName')} type="text" placeholder="Merric the Bard" maxLength={100} />
           </div>
@@ -104,7 +104,7 @@ export default function RegisterPage(): React.ReactElement {
           <div>
             <label style={labelStyle} htmlFor="phone">
               Phone{' '}
-              <span style={{ color: '#8a7d6a', fontWeight: 400 }}>(optional)</span>
+              <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>(optional)</span>
             </label>
             <input {...form.field('phone', 'phone')} type="tel" autoComplete="tel" placeholder="555-123-4567" maxLength={20} />
           </div>
@@ -112,7 +112,7 @@ export default function RegisterPage(): React.ReactElement {
           <div>
             <label style={labelStyle} htmlFor="neighborhood">
               Neighborhood{' '}
-              <span style={{ color: '#8a7d6a', fontWeight: 400 }}>(optional)</span>
+              <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>(optional)</span>
             </label>
             <input {...form.field('neighborhood', 'neighborhood')} type="text" placeholder="Downtown" maxLength={100} />
           </div>
@@ -134,7 +134,7 @@ export default function RegisterPage(): React.ReactElement {
           </button>
         </form>
 
-        <p style={{ textAlign: 'center', marginTop: '20px', fontSize: '14px', color: '#8a7d6a' }}>
+        <p style={{ textAlign: 'center', marginTop: '20px', fontSize: '14px', color: 'var(--text-muted)' }}>
           Already have an account? <Link to="/login">Sign in</Link>
         </p>
       </div>
@@ -168,7 +168,7 @@ const labelStyle: React.CSSProperties = {
   display: 'block',
   fontSize: '12px',
   fontWeight: 500,
-  color: '#8a7d6a',
+  color: 'var(--text-muted)',
   marginBottom: '5px',
   textTransform: 'uppercase',
   letterSpacing: '0.05em',

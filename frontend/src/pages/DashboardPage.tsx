@@ -252,11 +252,11 @@ export default function DashboardPage(): React.ReactElement {
 
       {/* Content area — loading spinner, empty state, or the mini grid */}
       {loading ? (
-        <p style={{ color: '#8a7d6a' }}>Loading…</p>
+        <p style={{ color: 'var(--text-muted)' }}>Loading…</p>
       ) : minis.length === 0 && !error ? (
         // Only when the collection really is empty — saying "no minis found"
         // because the request failed reads as "your collection is gone".
-        <div style={{ textAlign: 'center', padding: '60px 0', color: '#8a7d6a' }}>
+        <div style={{ textAlign: 'center', padding: '60px 0', color: 'var(--text-muted)' }}>
           <p style={{ fontSize: '18px', marginBottom: '8px' }}>No minis found</p>
           <p style={{ fontSize: '14px' }}>
             {search || activeTag
@@ -371,7 +371,7 @@ function MiniCard({ mini, onOpenDetail }: { mini: Mini; onOpenDetail: () => void
           <MiniStatusBadge status={mini.status} />
         </div>
 
-        <p style={{ fontSize: '12px', color: '#8a7d6a', marginBottom: '4px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <p style={{ fontSize: '12px', color: 'var(--text-muted)', marginBottom: '4px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <span>owned by {mini.owner_name}</span>
           {canEdit && (
             <Link
@@ -385,7 +385,7 @@ function MiniCard({ mini, onOpenDetail }: { mini: Mini; onOpenDetail: () => void
         </p>
 
         {mini.set_name && (
-          <p style={{ fontSize: '12px', color: '#8a7d6a', marginBottom: '4px' }}>Part of: {mini.set_name}</p>
+          <p style={{ fontSize: '12px', color: 'var(--text-muted)', marginBottom: '4px' }}>Part of: {mini.set_name}</p>
         )}
 
         {mini.price !== null && mini.price > 0 && (

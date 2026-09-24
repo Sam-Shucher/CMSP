@@ -15,7 +15,7 @@ export default function CollectionPicker({ collections, onSelect }: CollectionPi
     <div style={pageStyle}>
       <div style={cardStyle}>
         <h1 style={{ fontSize: '20px', color: '#c9a84c', marginBottom: '8px' }}>Select a Group</h1>
-        <p style={{ color: '#8a7d6a', marginBottom: '24px', fontSize: '13px' }}>
+        <p style={{ color: 'var(--text-muted)', marginBottom: '24px', fontSize: '13px' }}>
           You're in more than one group. Choose which one to enter — what you can do depends on your role there.
         </p>
         <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>

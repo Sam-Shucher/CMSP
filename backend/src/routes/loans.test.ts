@@ -218,7 +218,9 @@ describe('POST /api/loans/:id/extend', () => {
 
     expect(res.status).toBe(400);
     expect(res.body.error).toMatch(/5 more days/);
-    expect(execute.mock.calls.some(([sql]) => String(sql).includes('FROM holds'))).toBe(false);
+    // The hold-line check itself — not the loan's own read, which counts the
+    // line too (holds_waiting) on every request.
+    expect(execute.mock.calls.some(([sql]) => String(sql).includes('AS waiting FROM holds'))).toBe(false);
     expect(execute.mock.calls.some(([sql]) => String(sql).includes('UPDATE loans'))).toBe(false);
   });
 

@@ -41,16 +41,16 @@ export default function MiniHistory({ miniId }: { miniId: number }): React.React
 
       {open && (
         <div style={{ marginTop: '12px' }}>
-          {loading && <p style={{ color: '#8a7d6a', fontSize: '13px' }}>Loading…</p>}
+          {loading && <p style={{ color: 'var(--text-muted)', fontSize: '13px' }}>Loading…</p>}
           {error && <div className="error-msg" style={{ fontSize: '13px' }}>{error}</div>}
 
           {history?.length === 0 && (
-            <p style={{ color: '#8a7d6a', fontSize: '13px' }}>Nobody's borrowed this one yet.</p>
+            <p style={{ color: 'var(--text-muted)', fontSize: '13px' }}>Nobody's borrowed this one yet.</p>
           )}
 
           {history && history.length > 0 && (
             <>
-              <p style={{ color: '#8a7d6a', fontSize: '13px', marginBottom: '10px' }}>
+              <p style={{ color: 'var(--text-muted)', fontSize: '13px', marginBottom: '10px' }}>
                 Lent out {history.length} time{history.length === 1 ? '' : 's'}.
               </p>
               <ul style={{ listStyle: 'none', padding: 0, margin: 0, display: 'flex', flexDirection: 'column', gap: '8px' }}>
@@ -66,11 +66,11 @@ export default function MiniHistory({ miniId }: { miniId: number }): React.React
                         since {new Date(entry.handedOffAt).toLocaleDateString()} (still out, {entry.daysOut} day{entry.daysOut === 1 ? '' : 's'} so far)
                       </span>
                     ) : entry.outcome === 'lost' ? (
-                      <span style={{ color: '#e74c3c' }}>
+                      <span style={{ color: 'var(--danger-text)' }}>
                         since {new Date(entry.handedOffAt).toLocaleDateString()} — never came back (lost)
                       </span>
                     ) : entry.outcome === 'critically_wounded' ? (
-                      <span style={{ color: '#e74c3c' }}>
+                      <span style={{ color: 'var(--danger-text)' }}>
                         {new Date(entry.handedOffAt).toLocaleDateString()} to {entry.returnedAt ? new Date(entry.returnedAt).toLocaleDateString() : '—'} — came back critically wounded ({entry.daysOut} day{entry.daysOut === 1 ? '' : 's'})
                       </span>
                     ) : (

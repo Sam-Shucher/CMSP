@@ -79,7 +79,7 @@ export default function EditMiniPage(): React.ReactElement {
   }
 
   if (!mini) {
-    return <div style={{ padding: '28px 32px', color: '#8a7d6a' }}>Loading…</div>;
+    return <div style={{ padding: '28px 32px', color: 'var(--text-muted)' }}>Loading…</div>;
   }
 
   return (

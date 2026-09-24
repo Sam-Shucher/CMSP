@@ -4,7 +4,7 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { authCookie, TEST_SESSION_ID } from '../test/helpers';
 import { resetRateLimits } from '../middleware/rateLimit';
-import { createSession, revokeSession, revokeAllSessions } from '../db/sessions';
+import { createSession, setSessionGroup, revokeSession, revokeAllSessions } from '../db/sessions';
 
 vi.mock('../db/connection', () => ({
   pool: { execute: vi.fn() },
@@ -587,6 +587,31 @@ describe('POST /api/auth/select-collection', () => {
     const token = (res.headers['set-cookie']?.[0] ?? '').split(';')[0].replace('token=', '');
     expect(jwt.decode(token)).toMatchObject({ sid: 'session-xyz', collectionId: 6 });
     expect(createSession).not.toHaveBeenCalled();
+  });
+
+  // Phone notifications follow the group a sign-in is in (services/push.ts).
+  it('records the new group on the session, so its phone hears only from there', async () => {
+    execute.mockResolvedValueOnce([[{ id: 6, name: 'dojo', role: 'user' }]]);
+    vi.mocked(setSessionGroup).mockClear();
+
+    await request(app)
+      .post('/api/auth/select-collection')
+      .set('Cookie', authCookie({ ...USER, sid: 'session-xyz' }))
+      .send({ collectionId: 6 });
+
+    expect(setSessionGroup).toHaveBeenCalledWith('session-xyz', 6);
+  });
+
+  it('leaves the session alone when the switch is refused', async () => {
+    execute.mockResolvedValueOnce([[]]);
+    vi.mocked(setSessionGroup).mockClear();
+
+    await request(app)
+      .post('/api/auth/select-collection')
+      .set('Cookie', authCookie(USER))
+      .send({ collectionId: 99 });
+
+    expect(setSessionGroup).not.toHaveBeenCalled();
   });
 
   it('rejects a collection the user does not belong to', async () => {

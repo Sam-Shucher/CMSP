@@ -34,6 +34,7 @@ export interface LiveSession {
 interface SessionRow extends GroupAccessRow {
   needs_touch: number;
   must_change_password: number;
+  collection_id: number | null; // the group this sign-in was last seen in
   member_of: number | null; // the group's id when they're in it, else null
 }
 
@@ -45,10 +46,15 @@ interface SessionRow extends GroupAccessRow {
 // call. A LEFT JOIN, so a live session with no membership there still counts
 // as signed in — the missing membership is requireCollectionMembership's
 // call to refuse, not this one's.
+//
+// Keeps the row's collection_id in step with the cookie's group, since phone
+// notifications go only to devices signed in to the notice's group
+// (services/push.ts). Written only when it differs: a sign-in from before
+// this was recorded, or a group switched in another tab.
 export async function touchSession(sessionId: string, userId: number, collectionId?: number): Promise<LiveSession | null> {
   const session = await firstRow<SessionRow>(
     `SELECT s.last_seen_at < NOW() - INTERVAL ${TOUCH_EVERY_MINUTES} MINUTE AS needs_touch,
-            u.must_change_password,
+            s.collection_id, u.must_change_password,
             cm.collection_id AS member_of, cm.role, c.show_prices
      FROM sessions s
      JOIN users u ON u.id = s.user_id
@@ -62,14 +68,21 @@ export async function touchSession(sessionId: string, userId: number, collection
   );
   if (!session) return null;
 
-  if (Number(session.needs_touch) === 1) {
-    await change('UPDATE sessions SET last_seen_at = NOW() WHERE id = ?', [sessionId]);
+  const inGroup = session.member_of ?? null;
+  if (Number(session.needs_touch) === 1 || inGroup !== (session.collection_id ?? null)) {
+    await change('UPDATE sessions SET last_seen_at = NOW(), collection_id = ? WHERE id = ?', [inGroup, sessionId]);
   }
   const live: LiveSession = { mustChangePassword: Number(session.must_change_password) === 1 };
   if (collectionId !== undefined) {
     live.membership = session.member_of === null ? null : groupAccessFrom(session);
   }
   return live;
+}
+
+// Switching groups (POST /api/auth/select-collection): from now on this
+// sign-in's devices get that group's phone notifications, not the last one's.
+export async function setSessionGroup(sessionId: string, collectionId: number): Promise<void> {
+  await change('UPDATE sessions SET collection_id = ? WHERE id = ?', [collectionId, sessionId]);
 }
 
 export async function revokeSession(sessionId: string): Promise<void> {

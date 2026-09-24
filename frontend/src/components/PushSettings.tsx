@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { api } from '../api/client';
 import { PushStatus, pushStatus, turnOnPush, turnOffPush } from '../push';
 
-const hintStyle: React.CSSProperties = { fontSize: '13px', color: '#8a7d6a', marginBottom: '12px' };
+const hintStyle: React.CSSProperties = { fontSize: '13px', color: 'var(--text-muted)', marginBottom: '12px' };
 
 // What to say for each state this device can be in.
 const EXPLAIN: Record<Exclude<PushStatus, 'on' | 'off'>, string> = {

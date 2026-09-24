@@ -79,7 +79,7 @@ export default function ConditionReports({ loanId, reportCount, openPhases, onRe
       <button
         type="button"
         onClick={() => void expand()}
-        style={{ background: 'none', color: '#8a7d6a', padding: 0, fontSize: '12px', textDecoration: 'underline', marginTop: '8px' }}
+        style={{ background: 'none', color: 'var(--text-muted)', padding: 0, fontSize: '12px', textDecoration: 'underline', marginTop: '8px' }}
       >
         {reportCount > 0 ? `Condition notes (${reportCount})` : 'Record how it looks'}
       </button>
@@ -95,7 +95,7 @@ export default function ConditionReports({ loanId, reportCount, openPhases, onRe
         <button
           type="button"
           onClick={() => setOpen(false)}
-          style={{ background: 'none', color: '#8a7d6a', padding: 0, fontSize: '12px', textDecoration: 'underline' }}
+          style={{ background: 'none', color: 'var(--text-muted)', padding: 0, fontSize: '12px', textDecoration: 'underline' }}
         >
           Hide
         </button>
@@ -105,7 +105,7 @@ export default function ConditionReports({ loanId, reportCount, openPhases, onRe
         <ul aria-label="Condition notes" style={{ listStyle: 'none', display: 'grid', gap: '10px', marginBottom: '10px' }}>
           {reports.map(report => (
             <li key={report.id} style={{ background: '#252219', border: '1px solid #3d3629', borderRadius: '6px', padding: '10px' }}>
-              <div style={{ fontSize: '12px', color: '#8a7d6a', marginBottom: '4px' }}>
+              <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginBottom: '4px' }}>
                 {PHASE_LABELS[report.phase]} · {report.authorName} · {new Date(report.createdAt).toLocaleDateString()}
               </div>
               {report.note && <p style={{ fontSize: '13px', whiteSpace: 'pre-wrap' }}>{report.note}</p>}
@@ -125,12 +125,12 @@ export default function ConditionReports({ loanId, reportCount, openPhases, onRe
           ))}
         </ul>
       ) : (
-        <p style={{ fontSize: '13px', color: '#8a7d6a', marginBottom: '10px' }}>Nothing recorded yet.</p>
+        <p style={{ fontSize: '13px', color: 'var(--text-muted)', marginBottom: '10px' }}>Nothing recorded yet.</p>
       )}
 
       {openPhases.length > 0 && (
         <form noValidate onSubmit={(e: React.FormEvent) => void record(e)} style={{ display: 'grid', gap: '8px' }}>
-          <label htmlFor={`condition-${loanId}-phase`} style={{ fontSize: '13px', color: '#8a7d6a' }}>Which end</label>
+          <label htmlFor={`condition-${loanId}-phase`} style={{ fontSize: '13px', color: 'var(--text-muted)' }}>Which end</label>
           <select
             id={`condition-${loanId}-phase`}
             value={phase}
@@ -141,7 +141,7 @@ export default function ConditionReports({ loanId, reportCount, openPhases, onRe
             ))}
           </select>
 
-          <label htmlFor={`condition-${loanId}-note`} style={{ fontSize: '13px', color: '#8a7d6a' }}>Note</label>
+          <label htmlFor={`condition-${loanId}-note`} style={{ fontSize: '13px', color: 'var(--text-muted)' }}>Note</label>
           <textarea
             id={`condition-${loanId}-note`}
             rows={3}
@@ -151,7 +151,7 @@ export default function ConditionReports({ loanId, reportCount, openPhases, onRe
             onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setNote(e.target.value)}
           />
 
-          <label htmlFor={`condition-${loanId}-photos`} style={{ fontSize: '13px', color: '#8a7d6a' }}>
+          <label htmlFor={`condition-${loanId}-photos`} style={{ fontSize: '13px', color: 'var(--text-muted)' }}>
             Photos (up to {LIMITS.conditionPhotos})
           </label>
           <input
@@ -172,7 +172,7 @@ export default function ConditionReports({ loanId, reportCount, openPhases, onRe
           >
             Record
           </button>
-          <p style={{ fontSize: '12px', color: '#8a7d6a' }}>
+          <p style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
             Once recorded this can't be changed — that's what makes it worth having.
           </p>
         </form>

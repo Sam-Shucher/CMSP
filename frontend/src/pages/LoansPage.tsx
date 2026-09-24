@@ -226,14 +226,14 @@ export default function LoansPage(): React.ReactElement {
       {holds.holds.length > 0 && (
         <section aria-label="Waiting in line" style={{ marginBottom: '28px' }}>
           <h3 style={{ fontSize: '17px', color: '#c9a84c', marginBottom: '4px' }}>Waiting in line</h3>
-          <p style={{ fontSize: '12px', color: '#8a7d6a', marginBottom: '12px' }}>
+          <p style={{ fontSize: '12px', color: 'var(--text-muted)', marginBottom: '12px' }}>
             When a mini comes back, the first person in line is checked out automatically — you'll get a notification.
           </p>
           {holds.holds.map(hold => (
             <div key={hold.miniId} style={rowStyle}>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontWeight: 600 }}>{hold.miniName}</div>
-                <div style={{ fontSize: '12px', color: '#8a7d6a' }}>
+                <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
                   #{hold.position} in line · from {hold.ownerName}
                 </div>
               </div>
@@ -254,7 +254,7 @@ export default function LoansPage(): React.ReactElement {
       {(bookings.mine.length > 0 || bookings.onMyMinis.length > 0) && (
         <section aria-label="Booked days" style={{ marginBottom: '28px' }}>
           <h3 style={{ fontSize: '17px', color: '#c9a84c', marginBottom: '4px' }}>Booked days</h3>
-          <p style={{ fontSize: '12px', color: '#8a7d6a', marginBottom: '12px' }}>
+          <p style={{ fontSize: '12px', color: 'var(--text-muted)', marginBottom: '12px' }}>
             A booking becomes a request on its first day, as long as the mini is free by then.
           </p>
           {[
@@ -264,7 +264,7 @@ export default function LoansPage(): React.ReactElement {
             <div key={booking.id} style={rowStyle}>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontWeight: 600 }}>{booking.miniName}</div>
-                <div style={{ fontSize: '12px', color: '#8a7d6a' }}>
+                <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
                   {bookingSpan(booking)}
                   {' · '}
                   {mine ? `from ${booking.ownerName}` : `booked by ${booking.holderName}`}
@@ -295,7 +295,7 @@ export default function LoansPage(): React.ReactElement {
             <div key={watch.miniId} style={rowStyle}>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontWeight: 600 }}>{watch.miniName}</div>
-                <div style={{ fontSize: '12px', color: '#8a7d6a' }}>Line is full ({watch.holdCount} holds)</div>
+                <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>Line is full ({watch.holdCount} holds)</div>
               </div>
               <button
                 type="button"
@@ -312,10 +312,10 @@ export default function LoansPage(): React.ReactElement {
       )}
 
       {loading ? (
-        <p style={{ color: '#8a7d6a' }}>Loading…</p>
+        <p style={{ color: 'var(--text-muted)' }}>Loading…</p>
       ) : loans.length === 0 && holds.holds.length === 0 && holds.watching.length === 0
         && bookings.mine.length === 0 && bookings.onMyMinis.length === 0 && !error ? (
-        <div style={{ textAlign: 'center', padding: '40px 0', color: '#8a7d6a' }}>
+        <div style={{ textAlign: 'center', padding: '40px 0', color: 'var(--text-muted)' }}>
           <p style={{ fontSize: '18px', marginBottom: '8px' }}>No requests or loans yet</p>
           <Link to="/">Browse the collection</Link>
         </div>
@@ -325,7 +325,7 @@ export default function LoansPage(): React.ReactElement {
           {renderSide('Lending', 'owner')}
           {history.length > 0 && (
             <section aria-label="History">
-              <h3 style={{ fontSize: '17px', color: '#8a7d6a', marginBottom: '12px' }}>History</h3>
+              <h3 style={{ fontSize: '17px', color: 'var(--text-muted)', marginBottom: '12px' }}>History</h3>
               {history.map(renderCard)}
               {olderError && <div className="error-msg" style={{ marginBottom: '12px' }}>{olderError}</div>}
               {canShowOlder && (

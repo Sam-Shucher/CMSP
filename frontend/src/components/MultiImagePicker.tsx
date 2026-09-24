@@ -90,7 +90,7 @@ export default function MultiImagePicker({ existingPaths, onChange }: MultiImage
       {total < MAX_IMAGES ? (
         <ImageDropzone onFiles={(files: File[]) => void addFiles(files)} />
       ) : (
-        <p style={{ fontSize: '12px', color: '#8a7d6a' }}>{MAX_IMAGES} of {MAX_IMAGES} photos used — remove one to add another.</p>
+        <p style={{ fontSize: '12px', color: 'var(--text-muted)' }}>{MAX_IMAGES} of {MAX_IMAGES} photos used — remove one to add another.</p>
       )}
 
       {problems.map((message: string) => (
@@ -119,7 +119,7 @@ const removeButtonStyle: React.CSSProperties = {
   width: '100%',
   background: 'none',
   border: 'none',
-  color: '#c0392b',
+  color: 'var(--danger-text)',
   cursor: 'pointer',
   fontSize: '11px',
   padding: 0,

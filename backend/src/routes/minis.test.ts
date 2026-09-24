@@ -746,7 +746,8 @@ describe('GET /api/minis — paging', () => {
   // matches — otherwise a page could come back short while more matches wait.
   it('cuts a page of search results from the matches, not from the rows read', async () => {
     const matching = Array.from({ length: BROWSE_PAGE_SIZE + 5 }, (_, i) => miniRow({ id: 1000 - i, name: `Wolf ${i}` }));
-    const others = Array.from({ length: 10 }, (_, i) => miniRow({ id: 500 - i, name: `Goblin ${i}` }));
+    // Their own description too — miniRow's default ("A wolf") would match.
+    const others = Array.from({ length: 10 }, (_, i) => miniRow({ id: 500 - i, name: `Goblin ${i}`, description: 'A goblin' }));
     execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED).mockResolvedValueOnce([[...others, ...matching]]);
 
     const res = await request(app).get('/api/minis?q=wolf').set('Cookie', authCookie(OWNER));

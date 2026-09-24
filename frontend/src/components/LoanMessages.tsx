@@ -93,7 +93,7 @@ export default function LoanMessages({
         onClick={() => setOpen(true)}
         style={{
           background: 'none', padding: 0, fontSize: '12px', textDecoration: 'underline', marginTop: '8px', marginRight: '14px',
-          color: unreadMessages > 0 ? '#c9a84c' : '#8a7d6a', fontWeight: unreadMessages > 0 ? 600 : 400,
+          color: unreadMessages > 0 ? '#c9a84c' : 'var(--text-muted)', fontWeight: unreadMessages > 0 ? 600 : 400,
         }}
       >
         {label}
@@ -108,7 +108,7 @@ export default function LoanMessages({
         <button
           type="button"
           onClick={close}
-          style={{ background: 'none', color: '#8a7d6a', padding: 0, fontSize: '12px', textDecoration: 'underline' }}
+          style={{ background: 'none', color: 'var(--text-muted)', padding: 0, fontSize: '12px', textDecoration: 'underline' }}
         >
           Hide
         </button>
@@ -124,7 +124,7 @@ export default function LoanMessages({
                 background: message.mine ? '#2e2a1f' : '#252219', border: '1px solid #3d3629', borderRadius: '8px', padding: '8px 10px',
               }}
             >
-              <div style={{ fontSize: '11px', color: '#8a7d6a', marginBottom: '2px' }}>
+              <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginBottom: '2px' }}>
                 {message.mine ? 'You' : message.authorName} · {sentAt(message.createdAt)}
                 {message.mine && message.read && ' · Seen'}
               </div>
@@ -133,7 +133,7 @@ export default function LoanMessages({
           ))}
         </ul>
       ) : (
-        <p style={{ fontSize: '13px', color: '#8a7d6a', marginBottom: '10px' }}>
+        <p style={{ fontSize: '13px', color: 'var(--text-muted)', marginBottom: '10px' }}>
           No messages yet — handy for "running late" or "which door?".
         </p>
       )}
@@ -144,7 +144,7 @@ export default function LoanMessages({
           onSubmit={(e: React.FormEvent) => { e.preventDefault(); void send(); }}
           style={{ display: 'grid', gap: '6px' }}
         >
-          <label htmlFor={`loan-${loanId}-message`} style={{ fontSize: '13px', color: '#8a7d6a' }}>Message</label>
+          <label htmlFor={`loan-${loanId}-message`} style={{ fontSize: '13px', color: 'var(--text-muted)' }}>Message</label>
           <textarea
             id={`loan-${loanId}-message`}
             rows={2}
@@ -171,7 +171,7 @@ export default function LoanMessages({
           </button>
         </form>
       ) : (
-        <p style={{ fontSize: '12px', color: '#8a7d6a' }}>
+        <p style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
           This loan is over, so the thread is closed — its messages are kept as a record.
         </p>
       )}

@@ -97,7 +97,7 @@ export default function SetsPage(): React.ReactElement {
   return (
     <div style={{ padding: '28px 32px', maxWidth: '800px', margin: '0 auto' }}>
       <h2 style={{ fontSize: '22px', color: '#c9a84c', marginBottom: '8px' }}>Sets</h2>
-      <p style={{ fontSize: '13px', color: '#8a7d6a', marginBottom: '24px' }}>
+      <p style={{ fontSize: '13px', color: 'var(--text-muted)', marginBottom: '24px' }}>
         Group your own minis into a set — a boxed army, a Kill Team — so someone can borrow the whole thing in one go.
       </p>
 
@@ -105,7 +105,7 @@ export default function SetsPage(): React.ReactElement {
 
       <form noValidate onSubmit={(e: React.FormEvent) => void createSet(e)} style={cardStyle}>
         <h3 style={{ fontSize: '15px', color: '#e8e0d0', marginBottom: '12px' }}>Create a set</h3>
-        <label htmlFor="new-set-name" style={{ display: 'block', fontSize: '12px', color: '#8a7d6a', marginBottom: '4px' }}>Name</label>
+        <label htmlFor="new-set-name" style={{ display: 'block', fontSize: '12px', color: 'var(--text-muted)', marginBottom: '4px' }}>Name</label>
         <input
           id="new-set-name"
           value={newName}
@@ -116,7 +116,7 @@ export default function SetsPage(): React.ReactElement {
 
         {ungrouped.length > 0 && (
           <fieldset style={{ border: 'none', padding: 0, marginBottom: '12px' }}>
-            <legend style={{ fontSize: '12px', color: '#8a7d6a', marginBottom: '6px', padding: 0 }}>
+            <legend style={{ fontSize: '12px', color: 'var(--text-muted)', marginBottom: '6px', padding: 0 }}>
               Add your minis (optional — you can add more later)
             </legend>
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px' }}>
@@ -137,9 +137,9 @@ export default function SetsPage(): React.ReactElement {
       </form>
 
       {loading ? (
-        <p style={{ color: '#8a7d6a' }}>Loading…</p>
+        <p style={{ color: 'var(--text-muted)' }}>Loading…</p>
       ) : sets.length === 0 ? (
-        <p style={{ color: '#8a7d6a' }}>No sets yet.</p>
+        <p style={{ color: 'var(--text-muted)' }}>No sets yet.</p>
       ) : (
         sets.map((s: MiniSet) => (
           <SetCard
@@ -238,11 +238,11 @@ function SetCard({ set, isMine, isAdmin, ungrouped, onChanged }: {
     <section aria-label={set.name} style={cardStyle}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: '10px' }}>
         <h3 style={{ fontSize: '16px', color: '#e8e0d0' }}>{set.name}</h3>
-        <span style={{ fontSize: '12px', color: '#8a7d6a' }}>by {set.ownerName}</span>
+        <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>by {set.ownerName}</span>
       </div>
 
       {set.members.length === 0 ? (
-        <p style={{ fontSize: '13px', color: '#8a7d6a' }}>Nothing in this set yet.</p>
+        <p style={{ fontSize: '13px', color: 'var(--text-muted)' }}>Nothing in this set yet.</p>
       ) : (
         <ul style={{ listStyle: 'none', padding: 0, margin: '0 0 12px' }}>
           {set.members.map((m: Mini) => (
@@ -290,7 +290,7 @@ function SetCard({ set, isMine, isAdmin, ungrouped, onChanged }: {
       {canManage && (
         <div style={{ borderTop: '1px solid #3d3629', paddingTop: '12px', display: 'flex', flexWrap: 'wrap', gap: '10px', alignItems: 'flex-end' }}>
           <div>
-            <label htmlFor={`rename-${set.id}`} style={{ display: 'block', fontSize: '12px', color: '#8a7d6a', marginBottom: '4px' }}>
+            <label htmlFor={`rename-${set.id}`} style={{ display: 'block', fontSize: '12px', color: 'var(--text-muted)', marginBottom: '4px' }}>
               Rename
             </label>
             <input
@@ -313,7 +313,7 @@ function SetCard({ set, isMine, isAdmin, ungrouped, onChanged }: {
           {isMine && ungrouped.length > 0 && (
             <>
               <div>
-                <label htmlFor={`add-${set.id}`} style={{ display: 'block', fontSize: '12px', color: '#8a7d6a', marginBottom: '4px' }}>
+                <label htmlFor={`add-${set.id}`} style={{ display: 'block', fontSize: '12px', color: 'var(--text-muted)', marginBottom: '4px' }}>
                   Add a mini
                 </label>
                 <select
@@ -333,7 +333,7 @@ function SetCard({ set, isMine, isAdmin, ungrouped, onChanged }: {
 
           {confirmingDelete ? (
             <>
-              <span style={{ fontSize: '13px', color: '#8a7d6a' }}>Delete this set? Its minis stay, just ungrouped.</span>
+              <span style={{ fontSize: '13px', color: 'var(--text-muted)' }}>Delete this set? Its minis stay, just ungrouped.</span>
               <button type="button" className="btn-danger" disabled={busy} onClick={() => void deleteSet()}>Yes, delete</button>
               <button type="button" className="btn-secondary" onClick={() => setConfirmingDelete(false)}>Cancel</button>
             </>

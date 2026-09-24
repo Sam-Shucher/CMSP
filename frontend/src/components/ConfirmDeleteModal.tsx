@@ -36,9 +36,9 @@ export default function ConfirmDeleteModal({
         padding: '28px', width: '100%', maxWidth: '420px',
       }}>
         <h3 style={{ fontSize: '17px', color: '#c9a84c', marginBottom: '10px' }}>{title}</h3>
-        <p style={{ fontSize: '13px', color: '#8a7d6a', marginBottom: '16px' }}>{description}</p>
+        <p style={{ fontSize: '13px', color: 'var(--text-muted)', marginBottom: '16px' }}>{description}</p>
 
-        <label style={{ display: 'block', fontSize: '12px', color: '#8a7d6a', marginBottom: '6px' }} htmlFor="confirm-delete-input">
+        <label style={{ display: 'block', fontSize: '12px', color: 'var(--text-muted)', marginBottom: '6px' }} htmlFor="confirm-delete-input">
           Type <strong style={{ color: '#e8e0d0' }}>{confirmPhrase}</strong> to confirm
         </label>
         <input

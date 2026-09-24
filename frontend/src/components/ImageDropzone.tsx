@@ -48,7 +48,7 @@ export default function ImageDropzone({ onFiles }: ImageDropzoneProps): React.Re
         onMouseEnter={(e: React.MouseEvent<HTMLDivElement>) => (e.currentTarget.style.borderColor = '#c9a84c')}
         onMouseLeave={(e: React.MouseEvent<HTMLDivElement>) => { if (!dragActive) e.currentTarget.style.borderColor = '#3d3629'; }}
       >
-        <div style={{ textAlign: 'center', color: '#8a7d6a', padding: '0 16px' }}>
+        <div style={{ textAlign: 'center', color: 'var(--text-muted)', padding: '0 16px' }}>
           <div style={{ fontSize: '32px', marginBottom: '8px' }}>📷</div>
           <p style={{ fontSize: '13px' }}>
             Click here to upload from your file system, or just drag the pictures here

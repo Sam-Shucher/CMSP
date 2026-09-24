@@ -11,7 +11,7 @@ const TICK_MS = POLL_MS.clockTick;
 const iconButtonStyle: React.CSSProperties = {
   background: 'none',
   border: 'none',
-  color: '#8a7d6a',
+  color: 'var(--text-muted)',
   cursor: 'pointer',
   fontSize: '12px',
   lineHeight: 1,
@@ -136,13 +136,13 @@ export default function NotificationBell({ collectionId }: { collectionId?: numb
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 12px', borderBottom: '1px solid #3d3629' }}>
             <strong style={{ fontSize: '14px', color: '#c9a84c' }}>Notifications</strong>
             {inbox.unread > 0 && (
-              <button type="button" onClick={() => void markAllRead()} style={{ background: 'none', border: 'none', color: '#8a7d6a', fontSize: '12px', cursor: 'pointer', padding: 0 }}>
+              <button type="button" onClick={() => void markAllRead()} style={{ background: 'none', border: 'none', color: 'var(--text-muted)', fontSize: '12px', cursor: 'pointer', padding: 0 }}>
                 Mark all read
               </button>
             )}
           </div>
           {inbox.items.length === 0 ? (
-            <p style={{ padding: '16px 12px', fontSize: '13px', color: '#8a7d6a' }}>No notifications yet.</p>
+            <p style={{ padding: '16px 12px', fontSize: '13px', color: 'var(--text-muted)' }}>No notifications yet.</p>
           ) : (
             <ul style={{ listStyle: 'none', margin: 0, padding: 0 }}>
               {inbox.items.map(item => (
@@ -160,7 +160,7 @@ export default function NotificationBell({ collectionId }: { collectionId?: numb
                       }}
                     >
                       <span style={{ display: 'block', fontSize: '13px', fontWeight: item.read ? 400 : 600 }}>{item.message}</span>
-                      <span style={{ display: 'block', fontSize: '11px', color: '#8a7d6a', marginTop: '2px' }}>
+                      <span style={{ display: 'block', fontSize: '11px', color: 'var(--text-muted)', marginTop: '2px' }}>
                         {timeAgo(item.createdAt, now)}
                         {item.expiresAt && ` · Disappears in ${timeUntil(item.expiresAt, now)}`}
                       </span>

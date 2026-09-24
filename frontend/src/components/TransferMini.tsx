@@ -64,11 +64,11 @@ export default function TransferMini({ miniId, miniName, ownerId, onTransferred 
 
       {open && (
         <div style={{ marginTop: '12px' }}>
-          {loading && <p style={{ color: '#8a7d6a', fontSize: '13px' }}>Loading…</p>}
+          {loading && <p style={{ color: 'var(--text-muted)', fontSize: '13px' }}>Loading…</p>}
           {error && <div className="error-msg" style={{ fontSize: '13px', marginBottom: '10px' }}>{error}</div>}
 
           {members?.length === 0 && (
-            <p style={{ color: '#8a7d6a', fontSize: '13px' }}>There's nobody else in this collection to give it to yet.</p>
+            <p style={{ color: 'var(--text-muted)', fontSize: '13px' }}>There's nobody else in this collection to give it to yet.</p>
           )}
 
           {members && members.length > 0 && (

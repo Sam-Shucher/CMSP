@@ -34,12 +34,13 @@ export async function createCollection(name: string): Promise<number> {
   return result.insertId;
 }
 
-// A live session row matching the id authCookie() puts in its cookies.
-export async function createTestSession(userId: number): Promise<string> {
+// A live session row matching the id authCookie() puts in its cookies,
+// signed in to `collectionId` when given (see db/sessions.ts's touchSession).
+export async function createTestSession(userId: number, collectionId: number | null = null): Promise<string> {
   const id = testSessionId(userId);
   await pool.execute(
-    'INSERT IGNORE INTO sessions (id, user_id, expires_at) VALUES (?, ?, NOW() + INTERVAL 7 DAY)',
-    [id, userId]
+    'INSERT IGNORE INTO sessions (id, user_id, collection_id, expires_at) VALUES (?, ?, ?, NOW() + INTERVAL 7 DAY)',
+    [id, userId, collectionId]
   );
   return id;
 }
@@ -62,7 +63,7 @@ export async function createUser(username: string, collectionId: number, role: '
     'INSERT INTO collection_memberships (user_id, collection_id, role) VALUES (?, ?, ?)',
     [userId, collectionId, role]
   );
-  await createTestSession(userId);
+  await createTestSession(userId, collectionId);
   return { userId, username, collectionId, cookie: authCookie({ userId, username, collectionId }) };
 }
 

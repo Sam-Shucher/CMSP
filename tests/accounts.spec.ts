@@ -70,6 +70,8 @@ test.describe('groups and roles', () => {
     const tabA = await as('ada');
     await tabA.goto('/');
     await tabA.getByRole('button', { name: /^Chicago/ }).click();
+    // Wait for the switch to land: navigating first cancels it, cookie and all.
+    await expect(tabA.getByRole('button', { name: 'Chicago (Switch)' })).toBeVisible();
     await tabA.goto('/upload');
     await tabA.getByLabel(/Name/).fill('Meant for Chicago');
 
@@ -133,6 +135,7 @@ test.describe('invites and registration', () => {
     const ada = await as('ada');
     await ada.goto('/');
     await ada.getByRole('button', { name: /^Chicago/ }).click();
+    await expect(ada.getByRole('button', { name: 'Chicago (Switch)' })).toBeVisible();
 
     // Someone new, so this test doesn't disturb the other seeded people.
     await ada.goto('/admin');

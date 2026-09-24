@@ -8,9 +8,8 @@ import { test, expect, createMini, requestMini, apiCall } from './support/fixtur
 // see it in — with minis on it, a loan open, a dialog up — because an empty
 // page hides most of what can go wrong.
 //
-// Colour contrast is scanned separately (the last test): the muted text
-// colour used across the app (#8a7d6a) sits at about 4.3:1 on the page
-// background, just under AA's 4.5:1, so that check is marked to fix rather
+// Colour contrast is scanned separately (the last test), across the main
+// pages at once, so one colour that slips shows up as one failure rather
 // than failing every other page's scan along with it.
 
 const WCAG = ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'];
@@ -117,6 +116,8 @@ test('sets, the profile page, and the admin page', async ({ as }) => {
   const ada = await as('ada');
   await ada.goto('/');
   await ada.getByRole('button', { name: /^Chicago/ }).click();
+  // Wait for the switch to land: navigating first cancels it, cookie and all.
+  await expect(ada.getByRole('button', { name: 'Chicago (Switch)' })).toBeVisible();
   await ada.goto('/admin');
   await expect(ada.getByRole('heading', { name: /admin/i }).first()).toBeVisible();
   expect(await scan(ada)).toEqual([]);
@@ -133,11 +134,11 @@ test('the notification bell, open', async ({ as }) => {
   expect(await scan(olivia)).toEqual([]);
 });
 
-// Known: the muted grey (#8a7d6a) used for hints, dates and secondary text is
-// about 4.3:1 on the page background (#1c1a17) and lower on cards (#252219) —
-// AA needs 4.5:1. #978a76 clears both (about 5.1:1 and 4.7:1). Remove .fixme
-// once the colour is changed; this test then keeps it from drifting back.
-test.fixme('text contrast meets WCAG AA across the main pages', async ({ as }) => {
+// The muted grey for hints, dates and secondary text (--text-muted in
+// global.css) is the one to watch: it has to reach AA's 4.5:1 on both the page
+// background (#1c1a17) and cards (#252219). #978a76 does (about 5.1:1 and
+// 4.7:1); the old #8a7d6a didn't.
+test('text contrast meets WCAG AA across the main pages', async ({ as }) => {
   const olivia = await as('olivia');
   await createMini(olivia, 'Dire Wolf', { tags: 'painted' });
   for (const path of ['/', '/loans', '/sets', '/profile', '/upload']) {

@@ -65,8 +65,8 @@ beforeEach(() => {
   // Its presence is what says "this is a browser that can draw images".
   vi.stubGlobal('createImageBitmap', vi.fn(async () => ({ close: () => {} })));
   const createElement = document.createElement.bind(document);
-  vi.spyOn(document, 'createElement').mockImplementation(((tag: string) =>
-    (tag === 'canvas' ? fakeCanvas() : createElement(tag))) as typeof document.createElement);
+  vi.spyOn(document, 'createElement').mockImplementation((tag: string) =>
+    (tag === 'canvas' ? fakeCanvas() : createElement(tag)));
 });
 
 afterEach(() => {

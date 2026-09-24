@@ -28,6 +28,7 @@ if (process.env.UPLOADS_DIR) fs.mkdirSync(process.env.UPLOADS_DIR, { recursive: 
 vi.mock('../db/sessions', () => ({
   createSession: vi.fn(async () => 'test-session-id'),
   touchSession: vi.fn(async () => ({ mustChangePassword: false })),
+  setSessionGroup: vi.fn(async () => {}),
   revokeSession: vi.fn(async () => {}),
   revokeAllSessions: vi.fn(async () => {}),
   purgeEndedSessions: vi.fn(async () => 0),

@@ -110,7 +110,9 @@ SQL step for the person deploying this.
   add a new place that stores upload paths, add it to the sweep's in-use query.
 - **Phone notifications (Web Push):** every `notify()` also pushes, via
   `services/push.ts`, which never throws — don't send pushes from anywhere else.
-  Subscription endpoints are accepted only on the browser push services
+  A group's notice goes only to devices whose sign-in is in that group right now
+  (`sessions.collection_id`, kept in step with the cookie by `touchSession` and
+  set on a switch); the rest wait in that group's bell. Subscription endpoints are accepted only on the browser push services
   (`utils/pushSubscription.ts`), since the server makes requests to them.
 - **Secrets:** `JWT_SECRET` comes from `config.ts` (no fallback). Nothing secret
   goes in git; `backend/.env` is ignored.

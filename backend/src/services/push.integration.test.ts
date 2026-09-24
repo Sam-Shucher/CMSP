@@ -13,7 +13,7 @@ import { sendNotification } from 'web-push';
 import { createApp } from '../app';
 import { pool } from '../db/connection';
 import { MAX_PUSH_DEVICES } from '../utils/pushSubscription';
-import { assertDatabaseReachable, resetDatabase, createCollection, createUser, createMini, TestUser } from '../test/dbHelpers';
+import { assertDatabaseReachable, resetDatabase, createCollection, createUser, createMini, joinCollection, TestUser } from '../test/dbHelpers';
 import { authCookie, testSessionId } from '../test/helpers';
 import { purgeEndedSessions } from '../db/sessions';
 
@@ -285,6 +285,71 @@ describe('a device goes quiet when its sign-in ends', () => {
   it('sends nothing to a device with no sign-in recorded', async () => {
     await subscribe(owner, 'owner-phone');
     await pool.execute('UPDATE push_subscriptions SET session_id = NULL WHERE user_id = ?', [owner.userId]);
+
+    await requestMini();
+    await settle();
+
+    expect(send).not.toHaveBeenCalled();
+  });
+});
+
+// Someone in two groups sees only the group they're in — the bell already
+// worked that way, and phones do too: a notice from the other group waits in
+// that group's bell rather than buzzing a phone that's showing this one (and
+// opening this group's Loans page when tapped).
+describe('a device only hears from the group it is in', () => {
+  const settle = () => new Promise(resolve => setTimeout(resolve, 100));
+  let dojo: number;
+  let ownerInDojo: TestUser;
+
+  beforeEach(async () => {
+    dojo = await createCollection('Dojo');
+    ownerInDojo = await joinCollection(owner, dojo);
+    await subscribe(owner, 'owner-phone');
+  });
+
+  it('gets nothing from a group they have switched away from', async () => {
+    await request(app).post('/api/auth/select-collection').set('Cookie', owner.cookie).send({ collectionId: dojo });
+
+    await requestMini(); // a Chicago notice
+    await settle();
+
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("still keeps it in that group's bell for when they come back", async () => {
+    await request(app).post('/api/auth/select-collection').set('Cookie', owner.cookie).send({ collectionId: dojo });
+    await requestMini();
+
+    const bell = await request(app).get('/api/notifications').set('Cookie', owner.cookie);
+
+    expect(bell.body.unread).toBe(1);
+  });
+
+  it('hears from it again once they switch back', async () => {
+    await request(app).post('/api/auth/select-collection').set('Cookie', owner.cookie).send({ collectionId: dojo });
+    await request(app).post('/api/auth/select-collection').set('Cookie', ownerInDojo.cookie).send({ collectionId: chicago });
+
+    await requestMini();
+
+    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+    expect(sent(0).payload.title).toBe('Mini Library · Chicago');
+  });
+
+  // A switch made in another tab, or a sign-in from before the group was
+  // recorded: the next request with that cookie puts it right.
+  it('follows the group the cookie is in', async () => {
+    await request(app).get('/api/notifications').set('Cookie', ownerInDojo.cookie);
+
+    await requestMini();
+    await settle();
+
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it('gets nothing while signed in but not yet in any group (the picker)', async () => {
+    const noGroup = authCookie({ userId: owner.userId, username: owner.username });
+    await request(app).get('/api/auth/me').set('Cookie', noGroup);
 
     await requestMini();
     await settle();

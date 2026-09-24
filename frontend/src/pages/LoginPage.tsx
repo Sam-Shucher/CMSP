@@ -47,7 +47,7 @@ export default function LoginPage(): React.ReactElement {
     <div style={pageStyle}>
       <div style={cardStyle}>
         <h1 style={{ fontSize: '24px', marginBottom: '8px', color: '#c9a84c' }}>Mini Library</h1>
-        <p style={{ color: '#8a7d6a', marginBottom: '28px', fontSize: '14px' }}>
+        <p style={{ color: 'var(--text-muted)', marginBottom: '28px', fontSize: '14px' }}>
           Sign in to browse and share your collection
         </p>
 
@@ -95,12 +95,12 @@ export default function LoginPage(): React.ReactElement {
         </form>
 
         {/* There's no email in this app, so a reset goes through a person. */}
-        <p style={{ textAlign: 'center', marginTop: '20px', fontSize: '13px', color: '#8a7d6a' }}>
+        <p style={{ textAlign: 'center', marginTop: '20px', fontSize: '13px', color: 'var(--text-muted)' }}>
           Forgotten your password? Ask an admin of your group — they can set a temporary
           one and pass it on to you.
         </p>
 
-        <p style={{ textAlign: 'center', marginTop: '12px', fontSize: '14px', color: '#8a7d6a' }}>
+        <p style={{ textAlign: 'center', marginTop: '12px', fontSize: '14px', color: 'var(--text-muted)' }}>
           Don't have an account?{' '}
           <Link to="/register">Register with your invite</Link>
         </p>
@@ -135,7 +135,7 @@ const labelStyle: React.CSSProperties = {
   display: 'block',
   fontSize: '13px',
   fontWeight: 500,
-  color: '#8a7d6a',
+  color: 'var(--text-muted)',
   marginBottom: '6px',
   textTransform: 'uppercase',
   letterSpacing: '0.05em',

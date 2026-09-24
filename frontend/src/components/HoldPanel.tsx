@@ -86,14 +86,14 @@ export default function HoldPanel({ miniId, status, isOwn }: HoldPanelProps): Re
           </button>
         ) : summary.watching ? (
           <>
-            <span style={{ fontSize: '13px', color: '#8a7d6a' }}>The line is full. We'll let you know when a spot opens.</span>
+            <span style={{ fontSize: '13px', color: 'var(--text-muted)' }}>The line is full. We'll let you know when a spot opens.</span>
             <button type="button" className="btn-secondary" disabled={busy} onClick={() => void run(`${base}/watch`, 'DELETE')} style={smallButton}>
               Stop notifying me
             </button>
           </>
         ) : (
           <>
-            <span style={{ fontSize: '13px', color: '#8a7d6a' }}>The line is full.</span>
+            <span style={{ fontSize: '13px', color: 'var(--text-muted)' }}>The line is full.</span>
             <button type="button" className="btn-secondary" disabled={busy} onClick={() => void run(`${base}/watch`, 'POST')} style={smallButton}>
               Notify me when a spot opens
             </button>
@@ -107,5 +107,5 @@ export default function HoldPanel({ miniId, status, isOwn }: HoldPanelProps): Re
 }
 
 const panelStyle: React.CSSProperties = { marginTop: '12px' };
-const mutedStyle: React.CSSProperties = { fontSize: '13px', color: '#8a7d6a' };
+const mutedStyle: React.CSSProperties = { fontSize: '13px', color: 'var(--text-muted)' };
 const smallButton: React.CSSProperties = { padding: '6px 14px', fontSize: '13px' };
