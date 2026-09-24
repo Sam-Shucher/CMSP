@@ -223,18 +223,16 @@ ones below, just no longer planned; recorded here so the numbers aren't reused):
   in one collection. A small convenience isn't worth undoing the guarantee.
 - **Anything public or SEO-facing.** Invite-only is a feature.
 
-## Loans vanish when the other person's account is deleted
+## Loans vanish when the other person's account is deleted — *done*
 
-A bug, found 2026-09-23 and not yet fixed. Since migration 022 a loan outlives
-a deleted account (`borrower_id`/`owner_id` go NULL, the name is kept in
-`removed_borrower_name`/`removed_owner_name`). But `LOAN_SELECT` in
-`routes/loans.ts` still uses an inner `JOIN users` for both people, so a loan
-whose other person has gone drops out of the remaining person's Loans page and
-history entirely. Fix: `LEFT JOIN users` for both, and
-`COALESCE(b.display_name, l.removed_borrower_name)` (likewise for the owner)
-— the rule CLAUDE.md already states. Test it in `loans.integration.test.ts`:
-delete the borrower's account, then the owner's `GET /api/loans` and
-`/api/loans/history` should still list the loan under the saved name.
+**Fixed (2026-09-24):** `LOAN_SELECT` in `routes/loans.ts` joined both people
+with an inner `JOIN users`, so once migration 022 let a loan outlive a deleted
+account, that loan dropped out of the remaining person's Loans page and
+history. Both joins are `LEFT JOIN` now, with the name from
+`removed_borrower_name`/`removed_owner_name`; the loan's `counterpart` then
+has a null `id` and `username`. Tested in `loans.integration.test.ts`.
+`services/loanEvents.ts`'s `loadLoan` keeps its inner joins on purpose: with
+the other person gone there's nobody to notify, and skipping is right.
 
 ## Upgrade react-router
 

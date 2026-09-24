@@ -10,6 +10,7 @@ import {
   assertDatabaseReachable, resetDatabase, createCollection, createUser, createMini, TestUser,
 } from '../test/dbHelpers';
 import { todayInApp, addDays } from '../utils/appTime';
+import { removeMember } from '../services/membership';
 
 const app = createApp();
 
@@ -86,6 +87,42 @@ describe('seeing loans', () => {
     const borrowerInDojo = { ...borrower, cookie: authCookie({ userId: borrower.userId, username: 'borrower', role: 'user', collectionId: dojo }) };
 
     expect((await proposeTerms(borrowerInDojo, loanId, { where: 'Game store' })).status).toBe(404);
+  });
+});
+
+// Removing someone from their last group deletes their account, but their
+// loans stay (migration 022): borrower_id goes NULL and their name is kept on
+// the loan. The owner's Loans page must still show it — under that name.
+describe('a loan whose borrower has since left for good', () => {
+  async function loanWithBorrowerGone(): Promise<number> {
+    const loanId = await requestMini(borrower, await createMini(owner, 'Dire Wolf'));
+    await act(borrower, loanId, 'cancel');
+    const removed = await removeMember(borrower.userId, owner.collectionId, owner.userId);
+    expect(removed).toMatchObject({ ok: true, accountDeleted: true });
+    return loanId;
+  }
+
+  it("still shows on the owner's Loans page, under the name they had", async () => {
+    const loanId = await loanWithBorrowerGone();
+
+    const res = await request(app).get('/api/loans').set('Cookie', owner.cookie);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject([{
+      id: loanId, role: 'owner', status: 'cancelled',
+      counterpart: { id: null, username: null, displayName: 'borrower display' },
+    }]);
+  });
+
+  it('still shows when paging back through older history', async () => {
+    const older = await loanWithBorrowerGone();
+    const newer = await requestMini(bystander, await createMini(owner, 'Beholder'));
+    await act(bystander, newer, 'cancel');
+
+    const res = await request(app).get(`/api/loans/history?before=${newer}`).set('Cookie', owner.cookie);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject([{ id: older, counterpart: { displayName: 'borrower display' } }]);
   });
 });
 

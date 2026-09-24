@@ -22,8 +22,10 @@ export interface LoanApprovals {
 
 export interface LoanSnapshot extends LoanTerms, LoanApprovals {
   status: LoanStatus;
-  borrowerId: number;
-  ownerId: number;
+  // null once that person's account is deleted — only ever on a finished loan,
+  // since removing someone is refused while a loan with them is open.
+  borrowerId: number | null;
+  ownerId: number | null;
   dueAt: Date | null;
 }
 
@@ -43,7 +45,7 @@ const MIN_YEAR = 2000;
 const MAX_YEAR = 2100;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-export function roleOf(loan: { borrowerId: number; ownerId: number }, userId: number): LoanRole | null {
+export function roleOf(loan: { borrowerId: number | null; ownerId: number | null }, userId: number): LoanRole | null {
   if (loan.borrowerId === userId) return 'borrower';
   if (loan.ownerId === userId) return 'owner';
   return null;

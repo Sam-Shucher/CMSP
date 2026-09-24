@@ -29,8 +29,8 @@ router.use(requireAuth, requireCollectionMembership);
 interface LoanRow {
   id: number;
   mini_id: number;
-  borrower_id: number;
-  owner_id: number;
+  borrower_id: number | null; // null once that account is deleted — see LOAN_SELECT
+  owner_id: number | null;
   status: LoanStatus;
   handoff_when: Date | null;
   handoff_where: string | null;
@@ -45,9 +45,9 @@ interface LoanRow {
   created_at: Date;
   mini_name: string;
   mini_image: string | null;
-  borrower_username: string;
+  borrower_username: string | null;
   borrower_name: string;
-  owner_username: string;
+  owner_username: string | null;
   owner_name: string;
   holds_waiting: number;     // people in line for this mini — they block an extension
   condition_reports: number; // how many condition notes have been filed on this loan
@@ -59,11 +59,14 @@ interface LoanRow {
 // Params: collectionId, userId, userId — callers append further conditions.
 // Unread messages are counted per author rather than "not by me", so the
 // caller's id needn't be another parameter; serializeLoan picks the reader's side.
+// LEFT JOINs: a finished loan outlives the other person's deleted account
+// (services/membership.ts), and is still yours to see — under the name saved
+// on the loan, with no id or username.
 const LOAN_SELECT = `
   SELECT l.*, m.name AS mini_name,
          (SELECT mi.image_path FROM mini_images mi WHERE mi.mini_id = m.id ORDER BY mi.position LIMIT 1) AS mini_image,
-         b.username AS borrower_username, b.display_name AS borrower_name,
-         o.username AS owner_username, o.display_name AS owner_name,
+         b.username AS borrower_username, COALESCE(b.display_name, l.removed_borrower_name) AS borrower_name,
+         o.username AS owner_username, COALESCE(o.display_name, l.removed_owner_name) AS owner_name,
          (SELECT COUNT(*) FROM holds h WHERE h.mini_id = m.id) AS holds_waiting,
          (SELECT COUNT(*) FROM loan_condition_reports r WHERE r.loan_id = l.id) AS condition_reports,
          (SELECT COUNT(*) FROM loan_messages lm WHERE lm.loan_id = l.id) AS messages,
@@ -71,8 +74,8 @@ const LOAN_SELECT = `
          (SELECT COUNT(*) FROM loan_messages lm WHERE lm.loan_id = l.id AND lm.author_id = l.borrower_id AND lm.read_at IS NULL) AS unread_from_borrower
   FROM loans l
   JOIN minis m ON m.id = l.mini_id
-  JOIN users b ON b.id = l.borrower_id
-  JOIN users o ON o.id = l.owner_id
+  LEFT JOIN users b ON b.id = l.borrower_id
+  LEFT JOIN users o ON o.id = l.owner_id
   WHERE l.collection_id = ? AND (l.borrower_id = ? OR l.owner_id = ?)
 `;
 
@@ -327,7 +330,8 @@ router.post('/:id/handoff', withLoan(async (req, res, row) => {
   const dueAt = dueAtFrom(handedOffAt, snapshot.durationDays!);
   const refused = await inTransaction<RuleFailure | null>(async conn => {
     await lockMini(row.mini_id, conn);
-    const booked = await bookingBlocking(row.mini_id, dueAt, row.borrower_id, new Date(), conn);
+    // An open loan always has both people: removal is refused until it ends.
+    const booked = await bookingBlocking(row.mini_id, dueAt, row.borrower_id!, new Date(), conn);
     if (booked) return { ok: false, status: 409, error: bookingBlocksMessage(booked.holderName, booked.startsOn) };
 
     const handedOff = await change(
@@ -397,7 +401,7 @@ router.post('/:id/extend', withLoan(async (req, res, row) => {
 
     // Same rule as the handoff: keeping it longer can't run into days someone
     // else has booked.
-    const booked = await bookingBlocking(row.mini_id, dueAt, row.borrower_id, new Date(), conn);
+    const booked = await bookingBlocking(row.mini_id, dueAt, row.borrower_id!, new Date(), conn);
     if (booked) return { ok: false, status: 409, error: bookingBlocksMessage(booked.holderName, booked.startsOn) };
 
     const extended = await change(

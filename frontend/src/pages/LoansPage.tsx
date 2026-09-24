@@ -191,7 +191,7 @@ export default function LoansPage(): React.ReactElement {
     const mine = active.filter((l: Loan) => l.role === role);
     if (mine.length === 0) return null;
 
-    const byPerson = new Map<number, { name: string; loans: Loan[] }>();
+    const byPerson = new Map<number | null, { name: string; loans: Loan[] }>();
     for (const loan of mine) {
       const group = byPerson.get(loan.counterpart.id) ?? { name: loan.counterpart.displayName, loans: [] };
       group.loans.push(loan);
@@ -203,7 +203,7 @@ export default function LoansPage(): React.ReactElement {
         <h3 style={{ fontSize: '17px', color: '#c9a84c', marginBottom: '12px' }}>{title}</h3>
         {[...byPerson.entries()].map(([personId, group]) => (
           <section
-            key={personId}
+            key={personId ?? 'removed'}
             aria-label={`With ${group.name}`}
             style={{ background: '#252219', border: '1px solid #3d3629', borderRadius: '8px', padding: '14px', marginBottom: '14px' }}
           >

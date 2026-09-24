@@ -229,7 +229,9 @@ export type Loan = {
   miniName: string;
   miniImage: string | null;
   role: 'borrower' | 'owner';
-  counterpart: { id: number; username: string; displayName: string };
+  // id and username are null once their account is deleted (only ever on a
+  // finished loan); displayName is then the name they had.
+  counterpart: { id: number | null; username: string | null; displayName: string };
   status: 'negotiating' | 'adventuring' | 'returned' | 'cancelled' | 'lost' | 'critically_wounded';
   stage: LoanStage;
   handoffWhen: string | null;  // ISO timestamp
