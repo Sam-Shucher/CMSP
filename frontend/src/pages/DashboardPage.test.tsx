@@ -6,6 +6,7 @@ import DashboardPage, { SEARCH_DEBOUNCE_MS } from './DashboardPage';
 import { AuthContext } from '../App';
 import { CartItem, Mini, MiniOwner, CART_CHANGED_EVENT } from '../api/client';
 import { jsonResponse, urlOf, jsonBodyOf} from '../test/apiMock';
+import { PAGE_SIZE } from '../limits';
 
 const MINI_OWNED_BY_1: Mini = {
   id: 1,
@@ -609,5 +610,107 @@ describe('DashboardPage — a group with prices turned off', () => {
 
     expect(screen.getByRole('button', { name: /close/i })).toBeInTheDocument();
     expect(screen.queryByText(/\$/)).not.toBeInTheDocument();
+  });
+});
+
+// The server sends a page of minis at a time (PAGE_SIZE.browsePage); a full
+// page means there may be more, and the next one carries on after the last
+// mini shown (?after=<its id>).
+describe('DashboardPage — more than a page of minis', () => {
+  const PAGE = PAGE_SIZE.browsePage;
+
+  function minisNumbered(from: number, count: number): Mini[] {
+    return Array.from({ length: count }, (_, i) => ({ ...MINI_OWNED_BY_1, id: from + i, name: `Mini ${from + i}` }));
+  }
+
+  // Page one is ids 1..PAGE; after=<PAGE> gets `rest` more.
+  function mockPages(rest: number): void {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = urlOf(input);
+      if (url.startsWith('/api/minis/tags') || url.startsWith('/api/minis/owners')) return jsonResponse([]);
+      if (url.startsWith('/api/minis?')) {
+        const after = new URL(url, 'http://x').searchParams.get('after');
+        return jsonResponse(after === String(PAGE) ? minisNumbered(PAGE + 1, rest) : after ? [] : minisNumbered(1, PAGE));
+      }
+      if (url === '/api/cart') return jsonResponse([]);
+      return jsonResponse({}, { ok: false });
+    }));
+  }
+
+  function minisUrls(): string[] {
+    return vi.mocked(fetch).mock.calls.map(([u]) => urlOf(u)).filter(u => u.startsWith('/api/minis?'));
+  }
+
+  it('offers no "Load more" when everything fits on one page', async () => {
+    mockApi({ minis: minisNumbered(1, PAGE - 1) });
+    renderDashboard({ userId: 2, username: 'other', role: 'user' });
+    await screen.findByText('Mini 1');
+
+    expect(screen.queryByRole('button', { name: /load more/i })).not.toBeInTheDocument();
+  });
+
+  it('loads the next page after the last mini shown, adding it below', async () => {
+    mockPages(3);
+    renderDashboard({ userId: 2, username: 'other', role: 'user' });
+    await screen.findByText(`Mini ${PAGE}`);
+
+    await userEvent.click(screen.getByRole('button', { name: /load more/i }));
+
+    expect(await screen.findByText(`Mini ${PAGE + 3}`)).toBeInTheDocument();
+    expect(screen.getByText('Mini 1')).toBeInTheDocument(); // still there
+    expect(minisUrls().at(-1)).toBe(`/api/minis?after=${PAGE}`);
+    // A short page was the last one.
+    expect(screen.queryByRole('button', { name: /load more/i })).not.toBeInTheDocument();
+  });
+
+  it('keeps the search, filters and sort on the next page', async () => {
+    mockPages(3);
+    renderDashboard({ userId: 2, username: 'other', role: 'user' });
+    await screen.findByText(`Mini ${PAGE}`);
+    await userEvent.selectOptions(screen.getByLabelText('Sort by'), 'name');
+    await userEvent.click(screen.getByLabelText('Available only'));
+    await waitFor(() => expect(minisUrls().at(-1)).toBe('/api/minis?sort=name&available=1'));
+    await screen.findByText(`Mini ${PAGE}`);
+
+    await userEvent.click(await screen.findByRole('button', { name: /load more/i }));
+
+    await waitFor(() => expect(minisUrls().at(-1)).toBe(`/api/minis?sort=name&available=1&after=${PAGE}`));
+  });
+
+  it('starts again from the first page when a filter changes', async () => {
+    mockPages(3);
+    renderDashboard({ userId: 2, username: 'other', role: 'user' });
+    await screen.findByText(`Mini ${PAGE}`);
+    await userEvent.click(screen.getByRole('button', { name: /load more/i }));
+    await screen.findByText(`Mini ${PAGE + 3}`);
+
+    await userEvent.click(screen.getByLabelText('Available only'));
+
+    await waitFor(() => expect(minisUrls().at(-1)).toBe('/api/minis?available=1'));
+    await waitFor(() => expect(screen.queryByText(`Mini ${PAGE + 3}`)).not.toBeInTheDocument());
+  });
+
+  it('leaves the minis shown in place when the next page fails, and says so', async () => {
+    mockPages(3);
+    renderDashboard({ userId: 2, username: 'other', role: 'user' });
+    await screen.findByText(`Mini ${PAGE}`);
+    vi.mocked(fetch).mockImplementation(async () => jsonResponse({ error: 'Server error' }, { ok: false }));
+
+    await userEvent.click(screen.getByRole('button', { name: /load more/i }));
+
+    expect(await screen.findByText('Server error')).toBeInTheDocument();
+    expect(screen.getByText('Mini 1')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /load more/i })).toBeInTheDocument(); // try again
+  });
+
+  // Photos below the fold aren't fetched until they're scrolled near — on a
+  // phone, a page of full-size photos at once is what gets the tab killed.
+  it('lets the browser put off loading card photos until they are near the screen', async () => {
+    mockApi({ minis: [{ ...MINI_OWNED_BY_1, images: ['/uploads/a.jpg'] }] });
+    renderDashboard({ userId: 2, username: 'other', role: 'user' });
+
+    const photo = await screen.findByRole('img', { name: 'Dire Wolf' });
+    expect(photo).toHaveAttribute('loading', 'lazy');
+    expect(photo).toHaveAttribute('decoding', 'async');
   });
 });

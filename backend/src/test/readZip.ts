@@ -1,5 +1,16 @@
 import { expect } from 'vitest';
 
+// A supertest parser that keeps a download's raw bytes: `.buffer(true).parse(binaryBody)`.
+// superagent's types call the response its own ResponseBase, but in Node what
+// arrives here is the http response stream itself — hence `unknown`, which
+// also keeps `tsc` (and so the Pi's build) happy.
+export function binaryBody(res: unknown, done: (err: Error | null, body: Buffer) => void): void {
+  const stream = res as NodeJS.ReadableStream;
+  const chunks: Buffer[] = [];
+  stream.on('data', (chunk: Buffer) => chunks.push(chunk));
+  stream.on('end', () => done(null, Buffer.concat(chunks)));
+}
+
 // Reads an archive back the way an unzip tool does: from the end-of-directory
 // record at the tail, through the central directory, to each entry's local
 // header and bytes. If this can read it, so can Explorer, Finder and unzip.

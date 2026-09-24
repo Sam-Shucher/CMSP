@@ -52,7 +52,7 @@ export function minisCsv(minis: ExportMini[], { withPrice }: { withPrice: boolea
     cells.push(mini.set ?? '', mini.photos.join('; '));
     lines.push(cells.map(csvCell).join(','));
   }
-  return `﻿${lines.join('\r\n')}\r\n`;
+  return `\uFEFF${lines.join('\r\n')}\r\n`;
 }
 
 // Letters and digits in any language, dashes between words — nothing that

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import request from 'supertest';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
@@ -8,7 +8,7 @@ import { pool } from './connection';
 import { purgeEndedSessions } from './sessions';
 import { resetRateLimits } from '../middleware/rateLimit';
 import { jwtSecret } from '../config';
-import { assertDatabaseReachable, resetDatabase, createCollection } from '../test/dbHelpers';
+import { assertDatabaseReachable, resetDatabase, createCollection, createUser } from '../test/dbHelpers';
 
 // Real logins against the real database: the cookie is only as good as the
 // session row behind it.
@@ -175,5 +175,43 @@ describe('purgeEndedSessions', () => {
 
     const [rows] = await pool.query<RowDataPacket[]>('SELECT id FROM sessions ORDER BY id');
     expect(rows.map(r => r.id).sort()).toEqual([live, loggedOutJustNow].sort());
+  });
+});
+
+// The session and the caller's membership of their group come back from one
+// query (db/sessions.ts's touchSession), so a collection-scoped request costs
+// one round trip for access control, not two. On the Pi that's half the
+// database traffic of every poll.
+describe('access control per request', () => {
+  it('checks the session and the group membership in a single query', async () => {
+    const member = await createUser('counted', collectionId);
+    const execute = vi.spyOn(pool, 'execute');
+    try {
+      const res = await request(app).get('/api/minis/tags').set('Cookie', member.cookie);
+
+      expect(res.status).toBe(200);
+      // One for the session (with the membership), one for the tags themselves.
+      expect(execute).toHaveBeenCalledTimes(2);
+    } finally {
+      execute.mockRestore();
+    }
+  });
+
+  it('still refuses a live session in a group they have been removed from', async () => {
+    const member = await createUser('removed', collectionId);
+    await pool.execute('DELETE FROM collection_memberships WHERE user_id = ?', [member.userId]);
+
+    const res = await request(app).get('/api/minis/tags').set('Cookie', member.cookie);
+
+    expect(res.status).toBe(403);
+  });
+
+  it('picks up a promotion to admin on the very next request', async () => {
+    const member = await createUser('promoted', collectionId);
+    expect((await request(app).get('/api/admin/users').set('Cookie', member.cookie)).status).toBe(403);
+
+    await pool.execute("UPDATE collection_memberships SET role = 'admin' WHERE user_id = ?", [member.userId]);
+
+    expect((await request(app).get('/api/admin/users').set('Cookie', member.cookie)).status).toBe(200);
   });
 });

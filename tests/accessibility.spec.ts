@@ -16,7 +16,11 @@ import { test, expect, createMini, requestMini, apiCall } from './support/fixtur
 const WCAG = ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'];
 
 async function scan(page: Page, options: { include?: string; contrast?: boolean } = {}) {
-  let builder = new AxeBuilder({ page }).withTags(WCAG);
+  // No preload: it re-downloads every stylesheet with XHR — Google Fonts'
+  // included — which the site's connect-src rightly blocks, and only an
+  // experimental rule (not run) ever reads what it fetched. Set first:
+  // options() replaces whatever withTags() and the rest have set.
+  let builder = new AxeBuilder({ page }).options({ preload: false }).withTags(WCAG);
   if (!options.contrast) builder = builder.disableRules(['color-contrast']);
   if (options.include) builder = builder.include(options.include);
   const { violations } = await builder.analyze();

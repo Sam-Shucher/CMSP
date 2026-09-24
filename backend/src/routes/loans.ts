@@ -1,5 +1,5 @@
 import { Router, Response } from 'express';
-import { rows, firstRow, firstValue, change, insert, inTransaction } from '../db/query';
+import { rows, firstRow, firstValue, change, insert, inTransaction, Db } from '../db/query';
 import { requireAuth } from '../middleware/requireAuth';
 import { route, idFrom } from '../utils/route';
 import { requireCollectionMembership, CollectionRequest } from '../middleware/requireCollectionMembership';
@@ -14,7 +14,7 @@ import * as events from '../services/loanEvents';
 import { promoteNextHold, announceMiniRemoved } from '../services/holds';
 import { bookingBlocking } from '../services/bookings';
 import { bookingBlocksMessage } from '../utils/bookingRules';
-import { optionalEnum, optionalText, LIMITS } from '../utils/inputs';
+import { optionalEnum, optionalText, optionalId, LIMITS } from '../utils/inputs';
 import {
   photoUpload, handleUploadError, verifyImageContents, discardUploadsIfRejected, uploadPath,
 } from '../middleware/uploads';
@@ -190,13 +190,52 @@ function withLoan(handler: (req: CollectionRequest, res: Response, row: LoanRow)
   });
 }
 
+// How many finished loans come back at a time. Mirrored by
+// frontend/src/limits.ts (loanHistoryPage), which offers "Show older" after a
+// full page.
+export const LOAN_HISTORY_PAGE_SIZE = 20;
+
+// A loan still in progress — being arranged, or out.
+const OPEN = "l.status IN ('negotiating', 'adventuring')";
+const FINISHED = "l.status NOT IN ('negotiating', 'adventuring')";
+const NEWEST_FIRST = 'ORDER BY l.created_at DESC, l.id DESC';
+
 // GET /api/loans
-// Every loan you're part of in this collection, as borrower or owner.
+// Every open loan you're part of in this collection, as borrower or owner,
+// plus the latest page of finished ones. The Loans page polls this every 30
+// seconds, so it can't grow with every loan you've ever had; older history is
+// GET /api/loans/history. One query, so a poll is one round trip.
 router.get('/', route(async (req, res) => {
   const userId = req.user!.userId;
+  const params = [req.collectionId!, userId, userId];
   const loans = await rows<LoanRow>(
-    `${LOAN_SELECT} ORDER BY l.created_at DESC, l.id DESC`,
-    [req.collectionId!, userId, userId]
+    `(${LOAN_SELECT} AND ${OPEN})
+     UNION ALL
+     (${LOAN_SELECT} AND ${FINISHED} ${NEWEST_FIRST} LIMIT ${LOAN_HISTORY_PAGE_SIZE})
+     ORDER BY created_at DESC, id DESC`,
+    [...params, ...params]
+  );
+  res.json(loans.map(loan => serializeLoan(loan, userId)));
+}));
+
+// GET /api/loans/history?before=<loan id>
+// The next page of your finished loans, older than the one given — the oldest
+// the page already shows. That loan has to be one of yours in this group:
+// carrying on from someone else's would say where it sorts, which is to say
+// when it was made. (One that isn't simply matches nothing — an empty page.)
+router.get('/history', route(async (req, res) => {
+  const beforeCheck = optionalId(req.query.before, 'Before');
+  if (!beforeCheck.ok || beforeCheck.value === null) {
+    res.status(400).json({ error: beforeCheck.ok ? 'Say which loan to carry on from' : beforeCheck.error });
+    return;
+  }
+  const userId = req.user!.userId;
+  const loans = await rows<LoanRow>(
+    `${LOAN_SELECT} AND ${FINISHED}
+       AND (l.created_at, l.id) < (SELECT c.created_at, c.id FROM loans c
+                                    WHERE c.id = ? AND c.collection_id = ? AND (c.borrower_id = ? OR c.owner_id = ?))
+     ${NEWEST_FIRST} LIMIT ${LOAN_HISTORY_PAGE_SIZE}`,
+    [req.collectionId!, userId, userId, beforeCheck.value, req.collectionId!, userId, userId]
   );
   res.json(loans.map(loan => serializeLoan(loan, userId)));
 }));
@@ -260,6 +299,14 @@ router.post('/:id/apply-terms-to-all', withLoan(async (req, res, row) => {
   res.json({ updated });
 }));
 
+// The mini's row, locked for the rest of the transaction. Placing a hold,
+// booking days and checking out all take this same lock (services/holds.ts,
+// services/bookings.ts, routes/cart.ts), so what's read after it stays true
+// until the transaction commits.
+async function lockMini(miniId: number, conn: Db): Promise<void> {
+  await firstRow<{ id: number }>('SELECT id FROM minis WHERE id = ? FOR UPDATE', [miniId], conn);
+}
+
 // POST /api/loans/:id/handoff
 // Owner confirms the mini changed hands — it starts Adventuring and the clock starts.
 router.post('/:id/handoff', withLoan(async (req, res, row) => {
@@ -274,19 +321,24 @@ router.post('/:id/handoff', withLoan(async (req, res, row) => {
   // Someone may have claimed days this loan would run through. A hold decides
   // who is next; a booking constrains the calendar — the mini has to be home
   // before the first booked day, so a loan that couldn't be is refused here
-  // rather than discovered on the morning of their game night.
+  // rather than discovered on the morning of their game night. Asked with the
+  // mini locked, so a booking can't land between the answer and the handoff.
   const handedOffAt = nowToTheSecond();
-  const booked = await bookingBlocking(row.mini_id, dueAtFrom(handedOffAt, snapshot.durationDays!), row.borrower_id);
-  if (booked) {
-    return fail(res, { ok: false, status: 409, error: bookingBlocksMessage(booked.holderName, booked.startsOn) });
-  }
+  const dueAt = dueAtFrom(handedOffAt, snapshot.durationDays!);
+  const refused = await inTransaction<RuleFailure | null>(async conn => {
+    await lockMini(row.mini_id, conn);
+    const booked = await bookingBlocking(row.mini_id, dueAt, row.borrower_id, new Date(), conn);
+    if (booked) return { ok: false, status: 409, error: bookingBlocksMessage(booked.holderName, booked.startsOn) };
 
-  const handedOff = await change(
-    `UPDATE loans SET status = 'adventuring', handed_off_at = ?, due_at = ?
-     WHERE id = ? AND status = 'negotiating' AND borrower_approved = 1 AND owner_approved = 1`,
-    [handedOffAt, dueAtFrom(handedOffAt, snapshot.durationDays!), row.id]
-  );
-  if (handedOff === 0) return fail(res, NOT_NEGOTIATING);
+    const handedOff = await change(
+      `UPDATE loans SET status = 'adventuring', handed_off_at = ?, due_at = ?
+       WHERE id = ? AND status = 'negotiating' AND borrower_approved = 1 AND owner_approved = 1`,
+      [handedOffAt, dueAt, row.id],
+      conn
+    );
+    return handedOff === 0 ? NOT_NEGOTIATING : null;
+  });
+  if (refused) return fail(res, refused);
   await events.handedOff(row.id);
   await sendLoan(req, res, row.id);
 }));
@@ -325,32 +377,38 @@ router.post('/:id/extend', withLoan(async (req, res, row) => {
     return fail(res, { ok: false, status: 409, error: "This mini isn't out adventuring" });
   }
 
-  const waiting = Number(await firstValue<number>(
-    'SELECT COUNT(*) AS waiting FROM holds WHERE mini_id = ?',
-    [row.mini_id]
-  ));
-
+  // Checked before the hold line, so "that's more days than you have left"
+  // is what you hear when both are true — it's the answer you can act on.
   const parsed = parseExtension((req.body ?? {}) as { extraDays?: unknown }, row.duration_days);
   if (!parsed.ok) return fail(res, parsed);
 
-  // Checked after the number itself, so "that's more days than you have left"
-  // is what you hear when both are true — it's the answer you can act on.
-  if (waiting > 0) return fail(res, { ok: false, status: 409, error: HOLD_BLOCKS_EXTENSION });
-
+  // The hold line and the calendar are both read with the mini locked —
+  // placing a hold and booking days take the same lock — so nobody can join
+  // the line or claim the days between these answers and the new due date.
   const dueAt = dueAtFrom(row.handed_off_at!, parsed.totalDays);
-  // Same rule as the handoff: keeping it longer can't run into days someone
-  // else has booked.
-  const booked = await bookingBlocking(row.mini_id, dueAt, row.borrower_id);
-  if (booked) {
-    return fail(res, { ok: false, status: 409, error: bookingBlocksMessage(booked.holderName, booked.startsOn) });
-  }
+  const refused = await inTransaction<RuleFailure | null>(async conn => {
+    await lockMini(row.mini_id, conn);
+    const waiting = Number(await firstValue<number>(
+      'SELECT COUNT(*) AS waiting FROM holds WHERE mini_id = ?',
+      [row.mini_id],
+      conn
+    ));
+    if (waiting > 0) return { ok: false, status: 409, error: HOLD_BLOCKS_EXTENSION };
 
-  const extended = await change(
-    `UPDATE loans SET duration_days = ?, due_at = ?, overdue_notified_at = NULL
-     WHERE id = ? AND status = 'adventuring'`,
-    [parsed.totalDays, dueAt, row.id]
-  );
-  if (extended === 0) return fail(res, { ok: false, status: 409, error: 'This loan changed — refresh and try again' });
+    // Same rule as the handoff: keeping it longer can't run into days someone
+    // else has booked.
+    const booked = await bookingBlocking(row.mini_id, dueAt, row.borrower_id, new Date(), conn);
+    if (booked) return { ok: false, status: 409, error: bookingBlocksMessage(booked.holderName, booked.startsOn) };
+
+    const extended = await change(
+      `UPDATE loans SET duration_days = ?, due_at = ?, overdue_notified_at = NULL
+       WHERE id = ? AND status = 'adventuring'`,
+      [parsed.totalDays, dueAt, row.id],
+      conn
+    );
+    return extended === 0 ? { ok: false, status: 409, error: 'This loan changed — refresh and try again' } : null;
+  });
+  if (refused) return fail(res, refused);
 
   await events.extended(row.id, req.user!.userId, parsed.totalDays - row.duration_days!);
   await sendLoan(req, res, row.id);

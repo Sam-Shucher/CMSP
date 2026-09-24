@@ -21,3 +21,10 @@ export function idFrom(value: string | undefined): number | null {
   const id = Number(value);
   return Number.isInteger(id) && id > 0 ? id : null;
 }
+
+// The mini's (or set's) owner, or an admin of this group — the people who may
+// edit, delete, transfer or correct it. The role is the one
+// requireCollectionMembership just read, so being an admin elsewhere counts for nothing.
+export function ownerOrAdmin(req: CollectionRequest, ownerId: number): boolean {
+  return ownerId === req.user!.userId || req.user!.role === 'admin';
+}

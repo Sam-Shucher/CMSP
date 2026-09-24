@@ -180,6 +180,60 @@ describe('at the same instant', () => {
     expect(Number(loan[0].duration_days)).toBeLessThanOrEqual(MAX_DURATION_DAYS);
   });
 
+  // The handoff asks "has anyone booked days this loan would run into?" and
+  // then starts the loan. A booking landing between the two would leave the
+  // mini out on someone's booked day.
+  it('a handoff and a booking of days the loan would run into: never both', async () => {
+    const miniId = await createMini(olivia, 'Dire Wolf');
+    const loanId = await agreed(bruno, miniId, 7);
+    const { todayInApp, addDays } = await import('./utils/appTime');
+    const day = (n: number) => addDays(todayInApp(), n);
+
+    const [handoff, booking] = await Promise.all([
+      post(olivia, `/api/loans/${loanId}/handoff`),
+      post(wendy, `/api/bookings/minis/${miniId}`, { startsOn: day(3), endsOn: day(4) }),
+    ]);
+
+    expect(handoff.status === 200 && booking.status === 201).toBe(false);
+    const [loan] = await pool.execute<RowDataPacket[]>('SELECT status FROM loans WHERE id = ?', [loanId]);
+    const booked = await count('SELECT COUNT(*) AS n FROM bookings WHERE mini_id = ?', [miniId]);
+    expect(loan[0].status === 'adventuring' && booked > 0).toBe(false);
+  });
+
+  it('an extension and a booking of the days it would add: never both', async () => {
+    const miniId = await createMini(olivia, 'Dire Wolf');
+    const loanId = await agreed(bruno, miniId, 7);
+    await post(olivia, `/api/loans/${loanId}/handoff`);
+    const { todayInApp, addDays } = await import('./utils/appTime');
+    const day = (n: number) => addDays(todayInApp(), n);
+
+    const [extension, booking] = await Promise.all([
+      post(bruno, `/api/loans/${loanId}/extend`, { extraDays: 10 }),
+      post(wendy, `/api/bookings/minis/${miniId}`, { startsOn: day(10), endsOn: day(11) }),
+    ]);
+
+    expect(extension.status === 200 && booking.status === 201).toBe(false);
+    const [loan] = await pool.execute<RowDataPacket[]>('SELECT duration_days FROM loans WHERE id = ?', [loanId]);
+    const booked = await count('SELECT COUNT(*) AS n FROM bookings WHERE mini_id = ?', [miniId]);
+    expect(Number(loan[0].duration_days) > 7 && booked > 0).toBe(false);
+  });
+
+  // Deleting cascades a mini's loans away. A request made in the instant
+  // between the delete's check and the delete itself would vanish unnoticed.
+  it('a delete and a checkout of the same mini: never a request deleted out from under someone', async () => {
+    const miniId = await createMini(olivia, 'Dire Wolf');
+    await post(bruno, '/api/cart', { miniId });
+
+    const [removal, checkout] = await Promise.all([
+      request(app).delete(`/api/minis/${miniId}`).set('Cookie', olivia.cookie),
+      post(bruno, '/api/cart/checkout'),
+    ]);
+
+    expect(removal.status === 200 && checkout.status === 201).toBe(false);
+    const minisLeft = await count('SELECT COUNT(*) AS n FROM minis WHERE id = ?', [miniId]);
+    expect(minisLeft).toBe(removal.status === 200 ? 0 : 1);
+  });
+
   it('two people booking overlapping days on the same mini: only one gets them', async () => {
     const miniId = await createMini(olivia, 'Dire Wolf');
     const { todayInApp, addDays } = await import('./utils/appTime');

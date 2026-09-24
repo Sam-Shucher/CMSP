@@ -5,6 +5,7 @@ import { createApp } from '../app';
 import { pool } from '../db/connection';
 import { uploadsDir } from '../config';
 import { MAX_MESSAGES_PER_LOAN } from '../utils/loanMessages';
+import { LOAN_HISTORY_PAGE_SIZE } from './loans';
 import {
   assertDatabaseReachable, resetDatabase, createCollection, createUser, createMini, TestUser,
 } from '../test/dbHelpers';
@@ -85,6 +86,87 @@ describe('seeing loans', () => {
     const borrowerInDojo = { ...borrower, cookie: authCookie({ userId: borrower.userId, username: 'borrower', role: 'user', collectionId: dojo }) };
 
     expect((await proposeTerms(borrowerInDojo, loanId, { where: 'Game store' })).status).toBe(404);
+  });
+});
+
+describe('seeing loans a page at a time', () => {
+  type Listed = { id: number; status: string };
+
+  // Finished loans straight into the table, in one statement — most share a
+  // created_at second, which is when only the id keeps the order stable.
+  async function finishedLoans(count: number, miniId: number): Promise<void> {
+    const statuses = ['returned', 'cancelled', 'lost', 'critically_wounded'];
+    await pool.execute(
+      `INSERT INTO loans (mini_id, collection_id, borrower_id, owner_id, status) VALUES ${Array(count).fill('(?, ?, ?, ?, ?)').join(', ')}`,
+      Array.from({ length: count }, (_, i) => [miniId, owner.collectionId, borrower.userId, owner.userId, statuses[i % statuses.length]]).flat()
+    );
+  }
+
+  it('lists every open loan, but only the latest page of finished ones', async () => {
+    const wolf = await createMini(owner, 'Dire Wolf');
+    await finishedLoans(LOAN_HISTORY_PAGE_SIZE + 7, wolf);
+    const open = await requestMini(borrower, await createMini(owner, 'Beholder'));
+
+    const res = await request(app).get('/api/loans').set('Cookie', borrower.cookie);
+
+    expect(res.status).toBe(200);
+    const listed = res.body as Listed[];
+    expect(listed.filter(l => l.id === open)).toHaveLength(1);
+    expect(listed.filter(l => l.status !== 'negotiating')).toHaveLength(LOAN_HISTORY_PAGE_SIZE);
+  });
+
+  it('pages back through the rest of the history, each loan once, newest first', async () => {
+    const wolf = await createMini(owner, 'Dire Wolf');
+    const total = LOAN_HISTORY_PAGE_SIZE * 2 + 3;
+    await finishedLoans(total, wolf);
+
+    const seen: Listed[] = (await request(app).get('/api/loans').set('Cookie', owner.cookie)).body;
+    const pageSizes: number[] = [];
+    for (let page = 0; page < 5; page++) {
+      const res = await request(app).get(`/api/loans/history?before=${seen.at(-1)!.id}`).set('Cookie', owner.cookie);
+      expect(res.status).toBe(200);
+      pageSizes.push(res.body.length);
+      seen.push(...(res.body as Listed[]));
+      if (res.body.length < LOAN_HISTORY_PAGE_SIZE) break;
+    }
+
+    expect(pageSizes).toEqual([LOAN_HISTORY_PAGE_SIZE, 3]);
+    const [all] = await pool.query<import('mysql2').RowDataPacket[]>(
+      'SELECT id FROM loans WHERE collection_id = ? ORDER BY created_at DESC, id DESC', [owner.collectionId]
+    );
+    expect(seen.map(l => l.id)).toEqual(all.map(row => Number(row.id)));
+  });
+
+  it('never pages into an open loan', async () => {
+    const wolf = await createMini(owner, 'Dire Wolf');
+    await finishedLoans(3, wolf);
+    const open = await requestMini(borrower, await createMini(owner, 'Beholder'));
+    await finishedLoans(2, wolf);
+    const [[newest]] = await pool.query<import('mysql2').RowDataPacket[]>('SELECT MAX(id) AS id FROM loans');
+
+    const res = await request(app).get(`/api/loans/history?before=${Number(newest.id)}`).set('Cookie', borrower.cookie);
+
+    expect((res.body as Listed[]).map(l => l.id)).not.toContain(open);
+    expect(res.body).toHaveLength(4);
+  });
+
+  // Carrying on from someone else's loan would say where it sorts — that is,
+  // when it was made — and loans are only ever visible to their two people.
+  it("gives nothing when carrying on from a loan that isn't yours", async () => {
+    const wolf = await createMini(owner, 'Dire Wolf');
+    // The bystander's own finished loan, older than the others — a cursor
+    // that worked would page straight to it.
+    await pool.execute(
+      "INSERT INTO loans (mini_id, collection_id, borrower_id, owner_id, status) VALUES (?, ?, ?, ?, 'returned')",
+      [wolf, owner.collectionId, bystander.userId, owner.userId]
+    );
+    await finishedLoans(3, wolf);
+    const [[newest]] = await pool.query<import('mysql2').RowDataPacket[]>('SELECT MAX(id) AS id FROM loans');
+
+    const res = await request(app).get(`/api/loans/history?before=${Number(newest.id)}`).set('Cookie', bystander.cookie);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual([]);
   });
 });
 

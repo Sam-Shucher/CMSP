@@ -6,7 +6,8 @@ import { MAX_DURATION_DAYS, HANDOFF_EARLIEST_MINUTES, HANDOFF_LATEST_MINUTES } f
 import { MAX_QUEST_DAYS } from './utils/quest';
 import { MAX_BOOKING_DAYS, MAX_BOOKING_AHEAD_DAYS } from './utils/bookingRules';
 import { MAX_CONDITION_PHOTOS } from './utils/conditionReports';
-import { MAX_IMAGES, MAX_PHOTO_BYTES, MAX_PRICE } from './routes/minis';
+import { MAX_IMAGES, MAX_PHOTO_BYTES, MAX_PRICE, BROWSE_PAGE_SIZE } from './routes/minis';
+import { LOAN_HISTORY_PAGE_SIZE } from './routes/loans';
 
 // frontend/src/limits.ts is a hand-copied mirror of the numbers this side
 // enforces, so a form can stop someone before the server has to. Nothing kept
@@ -85,6 +86,13 @@ describe('frontend/src/limits.ts mirrors what the server actually enforces', () 
 
   it('mirrors how many photos a condition report takes', () => {
     expect(mirrored('conditionPhotos')).toBe(MAX_CONDITION_PHOTOS);
+  });
+
+  // The pages decide "is there more?" from a full page, so a mismatch would
+  // either hide the last minis/loans or offer a "Load more" that finds nothing.
+  it('mirrors the page sizes of the browse list and the loan history', () => {
+    expect(mirrored('browsePage')).toBe(BROWSE_PAGE_SIZE);
+    expect(mirrored('loanHistoryPage')).toBe(LOAN_HISTORY_PAGE_SIZE);
   });
 
   // If a limit is added on this side, the mirror should grow with it — this at

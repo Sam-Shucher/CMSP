@@ -199,8 +199,11 @@ CREATE TABLE IF NOT EXISTS loans (
   id                INT PRIMARY KEY AUTO_INCREMENT,
   mini_id           INT NOT NULL,
   collection_id     INT NOT NULL,
-  borrower_id       INT NOT NULL,
-  owner_id          INT NOT NULL,
+  -- NULL once that person's account is deleted: the loan itself stays, so a
+  -- mini's history and the admins' lost/wounded tally don't lose it, under
+  -- the name saved in removed_borrower_name / removed_owner_name.
+  borrower_id       INT NULL,
+  owner_id          INT NULL,
   status            ENUM('negotiating', 'adventuring', 'returned', 'cancelled', 'lost', 'critically_wounded') NOT NULL DEFAULT 'negotiating',
   handoff_when      DATETIME NULL,
   handoff_where     VARCHAR(255) NULL,
@@ -215,6 +218,8 @@ CREATE TABLE IF NOT EXISTS loans (
   cancelled_by      INT NULL,
   created_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   overdue_notified_at DATETIME NULL, -- set once "overdue" has been announced
+  removed_borrower_name VARCHAR(100) NULL, -- their display name, saved as their account was deleted
+  removed_owner_name    VARCHAR(100) NULL,
   -- Is this mini out? Asked once per mini on every browse.
   INDEX idx_loans_mini_status (mini_id, status),
   -- Your loans in this group, either side of the deal — polled every 30s.
@@ -222,8 +227,8 @@ CREATE TABLE IF NOT EXISTS loans (
   INDEX idx_loans_collection_owner (collection_id, owner_id),
   FOREIGN KEY (mini_id) REFERENCES minis(id) ON DELETE CASCADE,
   FOREIGN KEY (collection_id) REFERENCES collections(id) ON DELETE CASCADE,
-  FOREIGN KEY (borrower_id) REFERENCES users(id) ON DELETE CASCADE,
-  FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE,
+  FOREIGN KEY (borrower_id) REFERENCES users(id) ON DELETE SET NULL,
+  FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE SET NULL,
   FOREIGN KEY (cancelled_by) REFERENCES users(id) ON DELETE SET NULL
 );
 

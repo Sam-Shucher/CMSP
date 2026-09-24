@@ -169,7 +169,7 @@ export default function LoanCard({ loan, now, otherOpenRequests, onUpdated }: Lo
       <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '10px' }}>
         <div style={{ width: '44px', height: '44px', flexShrink: 0, background: '#252219', borderRadius: '4px', overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
           {loan.miniImage
-            ? <img src={loan.miniImage} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+            ? <img src={loan.miniImage} alt="" loading="lazy" decoding="async" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
             : <span style={{ opacity: 0.2 }}>⚔</span>}
         </div>
         <div style={{ fontWeight: 600, flex: 1, minWidth: 0 }}>{loan.miniName}</div>

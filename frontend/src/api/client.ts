@@ -172,8 +172,8 @@ export type SetCartResult = {
 // Owner (or admin) only.
 export type MiniHistoryEntry = {
   loanId: number;
-  borrowerId: number;
-  borrowerUsername: string;
+  borrowerId: number | null;       // null once the borrower's account has been deleted —
+  borrowerUsername: string | null; // their name is kept, though
   borrowerName: string;
   handedOffAt: string;       // ISO
   returnedAt: string | null; // null while still out

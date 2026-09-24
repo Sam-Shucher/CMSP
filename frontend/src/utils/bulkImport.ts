@@ -13,7 +13,7 @@ export type DraftFields = Record<DraftColumn, string>;
 // inside quotes is a quote, and a quoted cell may run over several lines.
 // Cells are trimmed and rows with nothing in them are dropped.
 export function parseTable(text: string): string[][] {
-  const source = text.replace(/^﻿/, ''); // Excel's byte-order mark
+  const source = text.replace(/^\uFEFF/, ''); // Excel's byte-order mark
   const firstLine = source.split(/\r?\n/).find(line => line.trim() !== '') ?? '';
   // Semicolons are what a spreadsheet saves as "CSV" where the comma is the
   // decimal point — told apart by a header row with semicolons and no commas.

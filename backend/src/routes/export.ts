@@ -137,10 +137,11 @@ router.get('/', exportLimit, route(async (req, res) => {
   // The same loans GET /api/minis/:id/history shows the owner: every one that
   // reached a handoff, including from before the mini was transferred to them.
   const loans = await rows<OwnLoanRow>(
-    `SELECT l.mini_id, u.display_name AS borrower_name, l.handed_off_at, l.returned_at, l.status
+    `SELECT l.mini_id, COALESCE(u.display_name, l.removed_borrower_name) AS borrower_name,
+            l.handed_off_at, l.returned_at, l.status
      FROM loans l
      JOIN minis m ON m.id = l.mini_id
-     JOIN users u ON u.id = l.borrower_id
+     LEFT JOIN users u ON u.id = l.borrower_id
      WHERE m.owner_id = ? AND m.collection_id = ? AND m.archived_at IS NULL
        AND l.collection_id = ? AND l.handed_off_at IS NOT NULL
      ORDER BY l.handed_off_at`,

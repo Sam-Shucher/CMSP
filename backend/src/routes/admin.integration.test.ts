@@ -242,6 +242,21 @@ describe('GET /api/admin/archived-minis and POST .../restore', () => {
     expect(mini.body.set_id).not.toBeNull();
   });
 
+  // "On a quest" means the owner has it at home. Whoever it's restored to —
+  // even its old owner — never took it anywhere, so it comes back available.
+  it('comes back available, not still on the quest its old owner took it on', async () => {
+    const dojo = await createCollection('dojo');
+    await joinCollection(bruno, dojo);
+    const beholder = await createMini(bruno, 'Beholder');
+    expect((await request(app).post(`/api/minis/${beholder}/take-out`).set('Cookie', bruno.cookie).send({})).status).toBe(200);
+
+    await remove(bruno);
+    await request(app).post(`/api/admin/archived-minis/${beholder}/restore`).set('Cookie', admin.cookie).send({ newOwnerId: olivia.userId });
+
+    const mini = await request(app).get(`/api/minis/${beholder}`).set('Cookie', olivia.cookie);
+    expect(mini.body).toMatchObject({ status: 'available', on_quest_since: null, on_quest_until: null });
+  });
+
   it('rejects restoring to someone who isn\'t a member of this collection', async () => {
     const dojo = await createCollection('dojo');
     await joinCollection(bruno, dojo);
@@ -255,6 +270,49 @@ describe('GET /api/admin/archived-minis and POST .../restore', () => {
       .send({ newOwnerId: outsider.userId });
 
     expect(res.status).toBe(404);
+  });
+});
+
+describe('lending history outlives a deleted account', () => {
+  it("keeps the loan on the owner's mini history, under the borrower's name", async () => {
+    const dragon = await createMini(olivia, 'Dragon');
+    const loanId = await checkOut(bruno, dragon);
+    await handOff(olivia, bruno, loanId);
+    await request(app).post(`/api/loans/${loanId}/return`).set('Cookie', olivia.cookie).send({ outcome: 'returned' });
+
+    expect((await remove(bruno)).status).toBe(200);
+
+    const history = await request(app).get(`/api/minis/${dragon}/history`).set('Cookie', olivia.cookie);
+    expect(history.status).toBe(200);
+    expect(history.body).toEqual([expect.objectContaining({
+      loanId, borrowerId: null, borrowerUsername: null, borrowerName: 'bruno display', outcome: 'returned',
+    })]);
+  });
+
+  it("keeps the loans a deleted owner made on a mini they'd since given away", async () => {
+    const dragon = await createMini(bruno, 'Dragon');
+    const loanId = await checkOut(theo, dragon);
+    await handOff(bruno, theo, loanId);
+    await request(app).post(`/api/loans/${loanId}/return`).set('Cookie', bruno.cookie).send({ outcome: 'returned' });
+    await pool.execute('UPDATE minis SET owner_id = ? WHERE id = ?', [olivia.userId, dragon]);
+
+    expect((await remove(bruno)).status).toBe(200);
+
+    expect(await rows('SELECT owner_id, removed_owner_name FROM loans WHERE id = ?', [loanId]))
+      .toEqual([expect.objectContaining({ owner_id: null, removed_owner_name: 'bruno display' })]);
+    const history = await request(app).get(`/api/minis/${dragon}/history`).set('Cookie', olivia.cookie);
+    expect(history.body).toEqual([expect.objectContaining({ loanId, borrowerName: 'theo display' })]);
+  });
+
+  it("shows a borrower who's still around by their current name, not a saved one", async () => {
+    const dragon = await createMini(olivia, 'Dragon');
+    const loanId = await checkOut(bruno, dragon);
+    await handOff(olivia, bruno, loanId);
+    await pool.execute('UPDATE users SET display_name = ? WHERE id = ?', ['Bruno B.', bruno.userId]);
+
+    const history = await request(app).get(`/api/minis/${dragon}/history`).set('Cookie', olivia.cookie);
+
+    expect(history.body[0]).toMatchObject({ borrowerId: bruno.userId, borrowerName: 'Bruno B.' });
   });
 });
 
@@ -278,6 +336,24 @@ describe('GET /api/admin/loan-incidents', () => {
 
     expect(res.status).toBe(200);
     expect(res.body).toEqual([{ borrowerId: bruno.userId, borrowerName: 'bruno display', lostCount: 1, woundedCount: 1 }]);
+  });
+
+  // Removing someone from their last group deletes the account — but not what
+  // happened while they had it. A borrower who lost minis shouldn't be able to
+  // wipe the record by being removed (or by asking to be).
+  it('still counts a borrower whose account has since been deleted, by the name they had', async () => {
+    const dragon = await createMini(olivia, 'Dragon');
+    const loanId = await checkOut(bruno, dragon);
+    await handOff(olivia, bruno, loanId);
+    await request(app).post(`/api/loans/${loanId}/return`).set('Cookie', olivia.cookie).send({ outcome: 'lost' });
+
+    const removed = await remove(bruno);
+    expect(removed.status).toBe(200);
+    expect(await rows('SELECT id FROM users WHERE id = ?', [bruno.userId])).toHaveLength(0);
+
+    const res = await request(app).get('/api/admin/loan-incidents').set('Cookie', admin.cookie);
+
+    expect(res.body).toEqual([{ borrowerId: null, borrowerName: 'bruno display', lostCount: 1, woundedCount: 0 }]);
   });
 
   it('is empty when nothing has ever been lost or critically wounded', async () => {

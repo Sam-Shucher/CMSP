@@ -147,7 +147,15 @@ export async function removeMember(userId: number, collectionId: number, actorId
     collectionId, actorId, actorName, action: 'member_removed', targetUserId: userId, targetName: name, details,
   });
 
-  if (willDeleteAccount) await change('DELETE FROM users WHERE id = ?', [userId]);
+  if (willDeleteAccount) {
+    // Their loans outlive the account — every group's, since a loan from a
+    // group they left earlier is still someone's history — so a lost mini
+    // stays on the admins' tally and the owner's history. The ids go NULL
+    // with the account (ON DELETE SET NULL); the name is saved first.
+    await change('UPDATE loans SET removed_borrower_name = ? WHERE borrower_id = ?', [name, userId]);
+    await change('UPDATE loans SET removed_owner_name = ? WHERE owner_id = ?', [name, userId]);
+    await change('DELETE FROM users WHERE id = ?', [userId]);
+  }
 
   return { ok: true, accountDeleted: willDeleteAccount, minisRemoved: minis.length };
 }

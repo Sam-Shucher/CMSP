@@ -113,7 +113,7 @@ export default function CartPage(): React.ReactElement {
                 >
                   <div style={{ width: '48px', height: '48px', flexShrink: 0, background: '#1c1a17', borderRadius: '4px', overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                     {cartItem.image
-                      ? <img src={cartItem.image} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                      ? <img src={cartItem.image} alt="" loading="lazy" decoding="async" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
                       : <span style={{ opacity: 0.2 }}>⚔</span>}
                   </div>
                   <div style={{ flex: 1, minWidth: 0 }}>

@@ -6,7 +6,7 @@ import { pool } from '../db/connection';
 import { resetRateLimits } from '../middleware/rateLimit';
 import { hashPassword } from '../utils/passwords';
 import {
-  assertDatabaseReachable, resetDatabase, createCollection, createUser, TestUser,
+  assertDatabaseReachable, resetDatabase, createCollection, createUser, joinCollection, TestUser,
 } from '../test/dbHelpers';
 
 // Losing and regaining a password, against the real database. There's no email
@@ -97,6 +97,79 @@ describe('an admin resets a forgotten password', () => {
     const other = await createUser('nosy', chicago);
 
     expect((await resetFor(member, other)).status).toBe(403);
+  });
+
+  // The password is the whole account's, not this group's: resetting it hands
+  // the admin a way in as that person everywhere. So an admin of one group
+  // can't reach into a group they don't run — say, to become its admin.
+  it("is refused when they're also in a group this admin doesn't run", async () => {
+    const dojo = await createCollection('dojo');
+    await joinCollection(member, dojo, 'admin');
+
+    const res = await resetFor(member);
+
+    expect(res.status).toBe(403);
+    expect(res.body.temporaryPassword).toBeUndefined();
+    expect(await userRow(member.userId)).toMatchObject({ must_change_password: 0 });
+    expect((await login('forgetful@example.com', THEIR_PASSWORD)).status).toBe(200);
+  });
+
+  it('is refused when the admin is only a regular member of their other group', async () => {
+    const dojo = await createCollection('dojo');
+    await joinCollection(member, dojo);
+    await joinCollection(admin, dojo);
+
+    expect((await resetFor(member)).status).toBe(403);
+  });
+
+  it("is allowed when the admin runs every group they're in", async () => {
+    const dojo = await createCollection('dojo');
+    await joinCollection(member, dojo);
+    await joinCollection(admin, dojo, 'admin');
+
+    expect((await resetFor(member)).status).toBe(200);
+  });
+});
+
+// The app's "choose a new password" screen is only the page's doing; the API
+// itself has to hold the line too, or a temporary password sent by text stays
+// a working key for anyone calling the API directly.
+describe('while a temporary password is still in use', () => {
+  async function signInWithTemporaryPassword() {
+    const { body } = await resetFor(member);
+    const signIn = await login('forgetful@example.com', body.temporaryPassword);
+    return { temporaryPassword: body.temporaryPassword as string, cookie: signIn.headers['set-cookie'] };
+  }
+
+  it('refuses the rest of the API, saying why', async () => {
+    const { cookie } = await signInWithTemporaryPassword();
+
+    for (const res of [
+      await request(app).get('/api/loans').set('Cookie', cookie),
+      await request(app).get('/api/minis').set('Cookie', cookie),
+      await request(app).patch('/api/users/me').set('Cookie', cookie).send({ displayName: 'Someone else' }),
+    ]) {
+      expect(res.status).toBe(403);
+      expect(res.body.code).toBe('password_change_required');
+    }
+  });
+
+  it('still allows what the app needs to sign in and change it', async () => {
+    const { cookie } = await signInWithTemporaryPassword();
+
+    expect((await request(app).get('/api/auth/me').set('Cookie', cookie)).status).toBe(200);
+    expect((await request(app).get('/api/auth/collections').set('Cookie', cookie)).status).toBe(200);
+    expect((await request(app).post('/api/auth/select-collection').set('Cookie', cookie).send({ collectionId: chicago })).status).toBe(200);
+  });
+
+  it("opens up again once they've chosen their own", async () => {
+    const { temporaryPassword, cookie } = await signInWithTemporaryPassword();
+
+    const changed = await request(app).patch('/api/users/me/password').set('Cookie', cookie)
+      .send({ currentPassword: temporaryPassword, newPassword: 'a brand new password 2' });
+
+    expect(changed.status).toBe(200);
+    expect((await request(app).get('/api/loans').set('Cookie', cookie)).status).toBe(200);
   });
 });
 

@@ -3,11 +3,18 @@ import path from 'path';
 
 type Env = Record<string, string | undefined>;
 
+// A setting from backend/.env, trimmed — blank counts as not set, so an empty
+// `APP_TIMEZONE=` line falls back to the default instead of being used as-is.
+function setting(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed === '' ? undefined : trimmed;
+}
+
 // Where uploaded mini photos live. Tests point UPLOADS_DIR at a scratch folder
 // so they never write into (or clean up) the real photos.
 export function uploadsDir(env: Env = process.env): string {
   // An empty UPLOADS_DIR means "not set", not "the current directory".
-  const configured = env.UPLOADS_DIR?.trim();
+  const configured = setting(env.UPLOADS_DIR);
   if (configured) return path.resolve(configured);
   return path.resolve(path.join(__dirname, '../uploads'));
 }
@@ -74,7 +81,7 @@ export const MINI_ARCHIVE_GRACE_DAYS = 30;
 export const DEFAULT_APP_TIMEZONE = 'America/Chicago';
 
 export function appTimezone(env: Env = process.env): string {
-  const zone = env.APP_TIMEZONE?.trim() || DEFAULT_APP_TIMEZONE;
+  const zone = setting(env.APP_TIMEZONE) ?? DEFAULT_APP_TIMEZONE;
   try {
     new Intl.DateTimeFormat('en-US', { timeZone: zone });
   } catch {
@@ -100,21 +107,20 @@ function base64UrlBytes(value: string): Buffer | null {
 }
 
 export function pushConfig(env: Env = process.env): PushConfig {
-  const publicKey = env.VAPID_PUBLIC_KEY?.trim() ?? '';
-  const privateKey = env.VAPID_PRIVATE_KEY?.trim() ?? '';
+  const publicKey = setting(env.VAPID_PUBLIC_KEY);
+  const privateKey = setting(env.VAPID_PRIVATE_KEY);
   if (!publicKey || !privateKey) {
     return { enabled: false, reason: 'VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY are not both set in backend/.env (scripts/rpi-update.sh generates them)' };
   }
   // An uncompressed P-256 point is 65 bytes starting 0x04; the private key is 32.
   const pub = base64UrlBytes(publicKey);
   const priv = base64UrlBytes(privateKey);
-  if (!pub || pub.length !== 65 || pub[0] !== 4 || !priv || priv.length !== 32) {
+  if (pub?.length !== 65 || pub[0] !== 4 || priv?.length !== 32) {
     return { enabled: false, reason: 'VAPID_PUBLIC_KEY or VAPID_PRIVATE_KEY in backend/.env is not a valid key' };
   }
 
-  const explicit = env.VAPID_SUBJECT?.trim();
-  const site = env.FRONTEND_URL?.trim();
-  const subject = explicit || (site?.startsWith('https://') ? site : '');
+  const site = setting(env.FRONTEND_URL);
+  const subject = setting(env.VAPID_SUBJECT) ?? (site?.startsWith('https://') ? site : '');
   if (!/^(mailto:|https:\/\/)/.test(subject)) {
     return { enabled: false, reason: 'set FRONTEND_URL to the site\'s https:// address (or VAPID_SUBJECT to a mailto: or https:// contact) in backend/.env' };
   }

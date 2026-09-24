@@ -5,6 +5,7 @@ import { MemoryRouter, Routes, Route } from 'react-router-dom';
 import NotificationBell, { POLL_INTERVAL_MS } from './NotificationBell';
 import { NotificationItem, LOANS_CHANGED_EVENT, NOTIFICATIONS_CHANGED_EVENT } from '../api/client';
 import { jsonResponse, urlOf} from '../test/apiMock';
+import { setTabVisibility, resetTabVisibility } from '../test/visibility';
 
 function item(overrides: Partial<NotificationItem> = {}): NotificationItem {
   return {
@@ -74,6 +75,7 @@ describe('NotificationBell', () => {
 
   afterEach(() => {
     vi.useRealTimers();
+    resetTabVisibility();
   });
 
   it('shows how many notifications are unread', async () => {
@@ -186,6 +188,25 @@ describe('NotificationBell', () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS); });
 
     expect(await screen.findByRole('button', { name: /notifications \(1 unread\)/i })).toBeInTheDocument();
+  });
+
+  it('does not check while the tab is hidden, and catches up the moment it is shown', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const inbox = mockInbox({ unread: 0, items: [] });
+    renderBell();
+    await screen.findByRole('button', { name: /^notifications$/i });
+    const inboxChecks = (): number => vi.mocked(fetch).mock.calls.filter(([u]) => urlOf(u) === '/api/notifications').length;
+    expect(inboxChecks()).toBe(1);
+
+    act(() => { setTabVisibility('hidden'); });
+    inbox.set({ unread: 1, items: [item()] });
+    await act(async () => { await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS * 5); });
+    expect(inboxChecks()).toBe(1);
+
+    act(() => { setTabVisibility('visible'); });
+
+    expect(await screen.findByRole('button', { name: /notifications \(1 unread\)/i })).toBeInTheDocument();
+    expect(inboxChecks()).toBe(2);
   });
 
   // A phone notification arriving while the site is open (src/push.ts).

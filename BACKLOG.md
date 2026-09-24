@@ -260,7 +260,21 @@ path `/`, and has no Domain — which stops a sibling subdomain from planting on
 One-line change in `routes/auth.ts` plus `requireAuth`; the cost is that
 everyone is signed out once when it ships, since the old cookie name is ignored.
 
-## Serve photos at the size they're shown (the big one)
+## Serve photos at the size they're shown (the big one) — *browser half done*
+
+**Done (2026-09-23):** photos are shrunk in the browser before upload
+(`frontend/src/utils/photoFiles.ts`'s `preparePhotos` / `shrinkPhoto`) —
+longest side 1600px, JPEG stays JPEG at 0.85, anything else becomes WebP
+(keeps transparency; a browser that can't encode WebP hands back PNG). GIFs,
+photos already under 1600px and 1 MB, and anything the browser can't read are
+sent untouched. Drawn from an `<img>`, so EXIF orientation is applied. One
+photo at a time, since a full-size decode is ~48 MB on a phone. Used by Add /
+Edit Mini, Bulk Add, and condition photos; the 10 MB cap now applies to the
+shrunk file. Card, loan and cart thumbnails have `loading="lazy"` and
+`decoding="async"`. **Still open:** photos uploaded before this stay full size,
+and a card still downloads the 1600px copy — the server-side `sharp` thumbnail
+below is what fixes both. It adds a native dependency on the Pi (check the
+memory headroom first), so it was left for its own change.
 
 **Why.** Uploads are stored exactly as received (`routes/minis.ts`, multer
 `diskStorage` — nothing resizes them) up to a 10 MB cap, and a card renders the
@@ -281,7 +295,21 @@ it the first week real photos go in.
 Then `loading="lazy"`, `decoding="async"`, and explicit width/height on the card
 `<img>` — nearly free, and stops fetching thirty photos for a screen showing six.
 
-## Bound the browse and loans payloads
+## Bound the browse and loans payloads — *paging done*
+
+**Done (2026-09-23):** `GET /api/minis` returns a page of 60
+(`BROWSE_PAGE_SIZE`); the next page is the same query plus `after=<the last
+mini's id>` — keyset paging, with the server looking up where that mini sorts
+in the chosen order (inside the caller's group only), so it works for all three
+sorts and nothing shifts when a mini is added meanwhile. Search still matches
+in JS, so for a search the database reads on from the cursor and the page is
+cut from the matches. `GET /api/loans` is every open loan plus the latest 20
+finished ones, in one query; `GET /api/loans/history?before=<loan id>` pages
+back (the cursor must be one of the caller's own loans). Browse has "Load
+more", Loans has "Show older", Sets asks for `?owner=<me>` page by page. Page
+sizes are mirrored in `frontend/src/limits.ts` (`PAGE_SIZE`) and pinned by
+`limitsMirror.test.ts`. **Still open:** descriptions still ride along in the
+list; dropping them means the detail view fetching `GET /api/minis/:id`.
 
 - `GET /api/minis` returns the whole collection including full 5000-char
   descriptions (~1 MB of JSON at 200 minis). Paginate (keyset on `created_at`),
@@ -309,7 +337,11 @@ no debounce either (`DashboardPage.tsx:101`) — one full query per character.
 restrict fuzzy matching to name + tags, and let SQL `LIKE` cover descriptions
 with fuzzy as the fallback when nothing matches.
 
-## Guard against out-of-order search responses
+## Guard against out-of-order search responses — *done*
+
+**Done (2026-09-23)** with paging: `DashboardPage` numbers each list request
+(`listVersion`) and drops a response for filters that have since changed —
+the same check stops a "Load more" for the old filters landing in the new list.
 
 `fetchMinis` calls `setMinis` unconditionally (`DashboardPage.tsx:31`) with no
 `AbortController` and no sequence check. On a mobile connection a slow response
@@ -317,7 +349,15 @@ for "owl" can land after the fast one for "owlbear", leaving the grid showing
 results that don't match the box. Abort the previous request, or ignore any
 response that isn't for the current query.
 
-## Make the pollers visibility-aware
+## Make the pollers visibility-aware — *done*
+
+**Done (2026-09-23):** `frontend/src/hooks/usePollWhileVisible.ts` — the bell,
+the cart count and the Loans page make no requests while the tab is hidden,
+and check at once when it's shown again. Also done: each request's access
+check is now one query, not two — `touchSession` reads the caller's membership
+of the cookie's group in the same query as the session (`LEFT JOIN`), and
+`requireCollectionMembership` uses that answer (`req.groupAccess`), querying
+only when it wasn't read. **Still open:** the single `/api/summary` below.
 
 Three intervals — notifications 60 s, cart 60 s, loans 30 s — each costing a
 session lookup plus a membership check plus the payload query. They keep firing

@@ -39,6 +39,9 @@ a {
   text-decoration: none;
 }
 a:hover { color: #e0be6d; }
+/* A link in the middle of a sentence is underlined too: colour alone doesn't
+   set it apart for everyone (WCAG 1.4.1). */
+p a { text-decoration: underline; text-underline-offset: 2px; }
 
 input, textarea, select {
   background: var(--bg-input);

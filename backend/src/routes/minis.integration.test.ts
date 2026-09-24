@@ -6,6 +6,7 @@ import { createApp } from '../app';
 import { pool } from '../db/connection';
 import { authCookie } from '../test/helpers';
 import { createTestSession } from '../test/dbHelpers';
+import { BROWSE_PAGE_SIZE } from './minis';
 
 // These tests hit a real MariaDB (see ../../../docker-compose.test.yml) instead
 // of a mocked pool, so they catch SQL that only breaks against a real server —
@@ -238,6 +239,96 @@ describe('GET /api/minis — sort, owner filter, and available-only (real databa
     const res = await request(app).get(`/api/minis?owner=${bruno.userId}&tag=dragon&sort=name`).set('Cookie', cookie);
 
     expect(res.body.map((m: { name: string }) => m.name)).toEqual(['Bruno Dragon']);
+  });
+});
+
+describe('GET /api/minis — paging (real database)', () => {
+  type Listed = { id: number; name: string };
+
+  // Inserted in one statement, so most share a created_at second — the case
+  // where only the id keeps the order stable from one page to the next.
+  async function addMinis(owner: { userId: number; collectionId: number }, names: string[], price = (i: number) => i % 7): Promise<void> {
+    const values = names.map(() => '(?, ?, ?, ?)').join(', ');
+    await pool.execute(
+      `INSERT INTO minis (name, owner_id, collection_id, price) VALUES ${values}`,
+      names.flatMap((name, i) => [name, owner.userId, owner.collectionId, price(i)])
+    );
+  }
+
+  async function everyPage(cookie: string, query: string): Promise<Listed[][]> {
+    const pages: Listed[][] = [];
+    let after = '';
+    for (;;) {
+      const res = await request(app).get(`/api/minis?${query}${after}`).set('Cookie', cookie);
+      expect(res.status).toBe(200);
+      pages.push(res.body as Listed[]);
+      if (res.body.length < BROWSE_PAGE_SIZE) return pages;
+      after = `&after=${(res.body as Listed[]).at(-1)!.id}`;
+      expect(pages.length).toBeLessThan(10); // a cursor that doesn't move would loop forever
+    }
+  }
+
+  it.each(['sort=newest', 'sort=name', 'sort=price'])('pages through the whole collection once each, in order (%s)', async (sort) => {
+    const owner = await createTestUser();
+    const cookie = authCookie({ userId: owner.userId, username: 'owner', role: 'user', collectionId: owner.collectionId });
+    // Some names repeat, and prices repeat every 7 — ties the id has to break.
+    const names = Array.from({ length: BROWSE_PAGE_SIZE + 12 }, (_, i) => `Mini ${String(i % 40).padStart(2, '0')}`);
+    await addMinis(owner, names);
+
+    const pages = await everyPage(cookie, sort);
+    const seen = pages.flat();
+
+    expect(pages.map(page => page.length)).toEqual([BROWSE_PAGE_SIZE, 12]);
+    expect(new Set(seen.map(m => m.id)).size).toBe(names.length); // nothing twice, nothing missed
+
+    // One request for everything, in the same order, to compare against.
+    const [all] = await pool.query<RowDataPacket[]>(
+      `SELECT id FROM minis WHERE collection_id = ? ORDER BY ${
+        sort === 'sort=newest' ? 'created_at DESC, id DESC' : sort === 'sort=name' ? 'name, id' : 'price, id'
+      }`,
+      [owner.collectionId]
+    );
+    expect(seen.map(m => m.id)).toEqual(all.map(row => Number(row.id)));
+  });
+
+  it('pages through search results too', async () => {
+    const owner = await createTestUser();
+    const cookie = authCookie({ userId: owner.userId, username: 'owner', role: 'user', collectionId: owner.collectionId });
+    await addMinis(owner, Array.from({ length: BROWSE_PAGE_SIZE + 3 }, (_, i) => `Wolf ${i}`));
+    await addMinis(owner, Array.from({ length: 20 }, (_, i) => `Beholder ${i}`));
+
+    const pages = await everyPage(cookie, 'q=wolf');
+
+    expect(pages.map(page => page.length)).toEqual([BROWSE_PAGE_SIZE, 3]);
+    expect(pages.flat().every(m => m.name.startsWith('Wolf'))).toBe(true);
+  });
+
+  it('keeps filters applied on later pages', async () => {
+    const owner = await createTestUser();
+    const cookie = authCookie({ userId: owner.userId, username: 'owner', role: 'user', collectionId: owner.collectionId });
+    await addMinis(owner, Array.from({ length: BROWSE_PAGE_SIZE + 5 }, (_, i) => `Mini ${i}`));
+    const [ids] = await pool.query<RowDataPacket[]>('SELECT id FROM minis ORDER BY id LIMIT 3');
+    await pool.execute('UPDATE minis SET on_quest_since = NOW() WHERE id IN (?, ?, ?)', ids.map(row => Number(row.id)));
+
+    const pages = await everyPage(cookie, 'available=1');
+
+    expect(pages.flat()).toHaveLength(BROWSE_PAGE_SIZE + 2);
+  });
+
+  // The cursor is looked up inside the caller's own group, so another group's
+  // mini id can't be used to learn where it would sort among these.
+  it('gives an empty page for a cursor from another group', async () => {
+    const owner = await createTestUser();
+    const outsider = await createTestUser({ username: 'outsider', email: 'outsider@example.com' });
+    const cookie = authCookie({ userId: owner.userId, username: 'owner', role: 'user', collectionId: owner.collectionId });
+    await addMinis(owner, ['Wolf', 'Bear']);
+    await addMinis(outsider, ['Their Mini']);
+    const [[theirs]] = await pool.query<RowDataPacket[]>('SELECT id FROM minis WHERE collection_id = ?', [outsider.collectionId]);
+
+    const res = await request(app).get(`/api/minis?after=${Number(theirs.id)}`).set('Cookie', cookie);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual([]);
   });
 });
 

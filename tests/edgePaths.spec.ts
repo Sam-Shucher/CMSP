@@ -1,5 +1,6 @@
 import { test, expect, createMini, requestMini, apiCall } from './support/fixtures';
 import { Page } from '@playwright/test';
+import { PASSWORD, emailOf } from './support/seed.cjs';
 
 // The unlikely paths: a second tab, a page left open while someone else acts,
 // a double-click, the back button. None of these is how the app is meant to be
@@ -17,22 +18,37 @@ async function groupId(page: Page, name: string): Promise<number> {
 
 test('a second tab switching groups stops this tab acting in the old one, and says why', async ({ as }) => {
   const olivia = await as('olivia');
-  await createMini(olivia, 'Dire Wolf');
+  const miniId = await createMini(olivia, 'Dire Wolf');
 
   // Ada belongs to Chicago and dojo. Two tabs, one sign-in.
   const tabA = await as('ada');
   await tabA.goto('/');
   await tabA.getByRole('button', { name: /^Chicago/ }).click();
   await expect(tabA.getByText('Dire Wolf')).toBeVisible();
+  const chicago = await groupId(tabA, 'Chicago');
 
   const tabB = await tabA.context().newPage();
   await tabB.goto('/');
   await apiCall(tabB, 'POST', '/api/auth/select-collection', { collectionId: await groupId(tabB, 'dojo') });
 
-  // Tab A still shows Chicago, and tries to borrow from it.
-  await tabA.getByText('Dire Wolf').click();
-  await tabA.getByRole('button', { name: 'Add to cart' }).click();
+  // Tab A still shows Chicago. A borrow sent from it, as the app sends it —
+  // saying which group the page is showing — is refused.
+  const borrow = await tabA.evaluate(async ({ miniId, chicago }) => {
+    const res = await fetch('/api/cart', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json', 'X-Collection-Id': String(chicago) },
+      body: JSON.stringify({ miniId }),
+    });
+    return { status: res.status, body: (await res.json()) as { code?: string } };
+  }, { miniId, chicago });
+  expect(borrow).toEqual({ status: 409, body: expect.objectContaining({ code: 'group_changed' }) });
 
+  // The tab itself catches up at its next request — whichever comes first:
+  // the cart and bell checking the moment it's back in front, or the next
+  // page opened — and says why the page changed under you.
+  await tabA.bringToFront();
+  await tabA.getByRole('link', { name: 'Loans', exact: true }).click();
   await expect(tabA.getByRole('status').filter({ hasText: 'You switched to dojo in another tab' })).toBeVisible();
   // Nothing landed in either group's cart.
   expect((await apiCall<unknown[]>(tabA, 'GET', '/api/cart')).body).toEqual([]);
@@ -90,8 +106,16 @@ test('double-clicking Checkout sends each request once', async ({ as }) => {
   expect(loans).toHaveLength(1);
 });
 
-test('the back button after signing out shows the sign-in page, not the last one', async ({ as }) => {
-  const bruno = await as('bruno');
+// Signs in afresh rather than using Bruno's saved session: signing out ends
+// the session it's on, and every later test starts from the saved one.
+test('the back button after signing out shows the sign-in page, not the last one', async ({ guest }) => {
+  const bruno = await guest();
+  await bruno.goto('/login');
+  await bruno.getByLabel('Email').fill(emailOf('bruno'));
+  await bruno.getByLabel('Password').fill(PASSWORD);
+  await bruno.getByRole('button', { name: 'Sign In' }).click();
+  await expect(bruno.getByRole('heading', { name: 'The Collection' })).toBeVisible();
+
   await bruno.goto('/loans');
   await expect(bruno.getByRole('heading', { name: /^loans$/i })).toBeVisible();
 

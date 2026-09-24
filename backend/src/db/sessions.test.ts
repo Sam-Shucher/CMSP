@@ -48,30 +48,62 @@ describe('createSession', () => {
 
 describe('touchSession', () => {
   it('is valid only for a session that belongs to the user, is not revoked, not expired, and not idle', async () => {
-    execute.mockResolvedValueOnce([[{ needs_touch: 0 }]]);
+    execute.mockResolvedValueOnce([[{ needs_touch: 0, must_change_password: 0 }]]);
 
-    expect(await touchSession('abc', 7)).toBe(true);
+    expect(await touchSession('abc', 7)).toEqual({ mustChangePassword: false });
     const [sql, params] = execute.mock.calls[0];
-    expect(params).toEqual(['abc', 7, SESSION_IDLE_DAYS]);
+    // The first placeholder is the group (none here) — see the tests below.
+    expect(params).toEqual([null, 'abc', 7, SESSION_IDLE_DAYS]);
     expect(sql).toMatch(/user_id = \?/);
     expect(sql).toMatch(/revoked_at IS NULL/);
     expect(sql).toMatch(/expires_at > NOW\(\)/);
     expect(sql).toMatch(/last_seen_at > NOW\(\) - INTERVAL \? DAY/);
   });
 
+  // Read in the same query, so enforcing it costs nothing extra per request.
+  it('says when the account is still on a temporary password', async () => {
+    execute.mockResolvedValueOnce([[{ needs_touch: 0, must_change_password: 1 }]]);
+
+    expect(await touchSession('abc', 7)).toEqual({ mustChangePassword: true });
+    expect(execute).toHaveBeenCalledTimes(1);
+  });
+
+  // Every collection-scoped request needs both answers; asking for them in one
+  // query halves the database round trips per API call on the Pi.
+  it('reads their place in the group the cookie names, in the same query', async () => {
+    execute.mockResolvedValueOnce([[{ needs_touch: 0, must_change_password: 0, member_of: 5, role: 'admin', show_prices: 0 }]]);
+
+    expect(await touchSession('abc', 7, 5)).toEqual({
+      mustChangePassword: false,
+      membership: { role: 'admin', showPrices: false },
+    });
+    expect(execute).toHaveBeenCalledTimes(1);
+    const [sql, params] = execute.mock.calls[0];
+    expect(sql).toMatch(/LEFT JOIN collection_memberships/);
+    expect(params).toEqual([5, 'abc', 7, SESSION_IDLE_DAYS]);
+  });
+
+  // A live session for someone who has since been removed from that group:
+  // still signed in, but no longer a member there.
+  it('says so when they are not (or no longer) in that group', async () => {
+    execute.mockResolvedValueOnce([[{ needs_touch: 0, must_change_password: 0, member_of: null, role: null, show_prices: null }]]);
+
+    expect(await touchSession('abc', 7, 5)).toEqual({ mustChangePassword: false, membership: null });
+  });
+
   it('is invalid when no such live session exists', async () => {
     execute.mockResolvedValueOnce([[]]);
 
-    expect(await touchSession('abc', 7)).toBe(false);
+    expect(await touchSession('abc', 7)).toBeNull();
     expect(execute).toHaveBeenCalledTimes(1);
   });
 
   it('records activity, but at most every few minutes rather than on every request', async () => {
-    execute.mockResolvedValueOnce([[{ needs_touch: 1 }]]).mockResolvedValueOnce([{}]);
-    expect(await touchSession('abc', 7)).toBe(true);
+    execute.mockResolvedValueOnce([[{ needs_touch: 1, must_change_password: 0 }]]).mockResolvedValueOnce([{}]);
+    expect(await touchSession('abc', 7)).toEqual({ mustChangePassword: false });
     expect(execute).toHaveBeenLastCalledWith(expect.stringContaining('UPDATE sessions SET last_seen_at = NOW()'), ['abc']);
 
-    execute.mockReset().mockResolvedValueOnce([[{ needs_touch: 0 }]]);
+    execute.mockReset().mockResolvedValueOnce([[{ needs_touch: 0, must_change_password: 0 }]]);
     await touchSession('abc', 7);
     expect(execute).toHaveBeenCalledTimes(1);
   });

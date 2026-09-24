@@ -69,7 +69,7 @@ router.post('/', route(async (req, res) => {
 
   const mini = await firstRow<{ owner_id: number; active_loan_status: string | null; on_quest_since: Date | null; condition_flag: string | null }>(
     `SELECT m.owner_id, ${activeLoanStatusSql('m')} AS active_loan_status, m.on_quest_since, m.condition_flag
-     FROM minis m WHERE m.id = ? AND m.collection_id = ?`,
+     FROM minis m WHERE m.id = ? AND m.collection_id = ? AND m.archived_at IS NULL`,
     [miniId, req.collectionId!]
   );
 
@@ -125,7 +125,7 @@ router.post('/checkout', route(async (req, res) => {
        SELECT m.id, m.collection_id, ?, m.owner_id, 'negotiating'
        FROM minis m
        WHERE m.id = ? AND m.collection_id = ? AND m.owner_id <> ?
-         AND m.on_quest_since IS NULL
+         AND m.on_quest_since IS NULL AND m.condition_flag IS NULL AND m.archived_at IS NULL
          AND NOT EXISTS (
            SELECT 1 FROM loans l WHERE l.mini_id = m.id AND l.status IN ('negotiating', 'adventuring')
          )`,

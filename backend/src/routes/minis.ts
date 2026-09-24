@@ -1,8 +1,8 @@
 import { Router, Response } from 'express';
-import { rows, firstRow, firstValue, change, insert } from '../db/query';
+import { rows, firstRow, firstValue, change, insert, inTransaction, Db } from '../db/query';
 import { requireAuth } from '../middleware/requireAuth';
 import { rateLimit } from '../middleware/rateLimit';
-import { route, idFrom } from '../utils/route';
+import { route, idFrom, ownerOrAdmin } from '../utils/route';
 import { requireCollectionMembership, CollectionRequest } from '../middleware/requireCollectionMembership';
 import { matchesSearch } from '../utils/search';
 import { activeLoanStatusSql, miniStatusFrom } from '../utils/miniStatus';
@@ -13,7 +13,7 @@ import {
   photoUpload, handleUploadError, verifyImageContents, discardUploadsIfRejected,
   uploadPath, deleteUpload, MAX_PHOTO_BYTES,
 } from '../middleware/uploads';
-import { promoteNextHold, announceMiniRemoved } from '../services/holds';
+import { promoteNextHold, removalNotice, sendRemovalNotice } from '../services/holds';
 import { bookingBlockingQuest } from '../services/bookings';
 import { bookingBlocksMessage, readableDay } from '../utils/bookingRules';
 import { notify } from '../db/notifications';
@@ -182,39 +182,42 @@ function parseMiniFields(body: Record<string, unknown>, showPrices: boolean): Ch
 // Replaces all of a mini's tags with the given (already validated) list —
 // shared by POST / and PATCH /:id so the upsert logic only lives in one place.
 // Three statements whatever the number of tags: clear, add any new tag names,
-// then link them all at once.
-async function setTags(miniId: number, tagNames: string[]): Promise<void> {
-  await change('DELETE FROM mini_tags WHERE mini_id = ?', [miniId]);
+// then link them all at once. Run on the caller's transaction (see POST /).
+async function setTags(miniId: number, tagNames: string[], db: Db): Promise<void> {
+  await change('DELETE FROM mini_tags WHERE mini_id = ?', [miniId], db);
   if (tagNames.length === 0) return;
 
   // INSERT IGNORE skips names that already exist (no duplicate-key error).
   await change(
     `INSERT IGNORE INTO tags (name) VALUES ${tagNames.map(() => '(?)').join(', ')}`,
-    tagNames
+    tagNames,
+    db
   );
 
   const placeholders = tagNames.map(() => '?').join(', ');
-  const tags = await rows<TagRow>(`SELECT id FROM tags WHERE name IN (${placeholders})`, tagNames);
+  const tags = await rows<TagRow>(`SELECT id FROM tags WHERE name IN (${placeholders})`, tagNames, db);
   if (tags.length === 0) return;
 
   await change(
     `INSERT IGNORE INTO mini_tags (mini_id, tag_id) VALUES ${tags.map(() => '(?, ?)').join(', ')}`,
-    tags.flatMap(tag => [miniId, tag.id])
+    tags.flatMap(tag => [miniId, tag.id]),
+    db
   );
 }
 
 // Replaces all of a mini's photos with keptPaths (existing images the caller
 // chose to keep, in order) followed by newFiles (freshly uploaded ones).
 // Shared by POST / and PATCH /:id, same pattern as setTags above.
-async function setImages(miniId: number, keptPaths: string[], newFiles: Express.Multer.File[]): Promise<void> {
-  await change('DELETE FROM mini_images WHERE mini_id = ?', [miniId]);
+async function setImages(miniId: number, keptPaths: string[], newFiles: Express.Multer.File[], db: Db): Promise<void> {
+  await change('DELETE FROM mini_images WHERE mini_id = ?', [miniId], db);
 
   const allPaths = [...keptPaths, ...newFiles.map(uploadPath)];
   if (allPaths.length === 0) return;
 
   await change(
     `INSERT INTO mini_images (mini_id, image_path, position) VALUES ${allPaths.map(() => '(?, ?, ?)').join(', ')}`,
-    allPaths.flatMap((imagePath, position) => [miniId, imagePath, position])
+    allPaths.flatMap((imagePath, position) => [miniId, imagePath, position]),
+    db
   );
 }
 
@@ -222,12 +225,14 @@ async function setImages(miniId: number, keptPaths: string[], newFiles: Express.
 // Routes
 // ---------------------------------------------------------------------------
 
-// GET /api/minis?q=search&tag=dragon&owner=5&available=1&sort=name
+// GET /api/minis?q=search&tag=dragon&owner=5&available=1&sort=name&after=42
 // Returns minis in the caller's active collection, optionally filtered by
 // name/description search, a tag, an owner, and available-only, sorted by
-// newest (default)/name/price. Minis in every other collection are
-// invisible here, full stop — the collection_id filter below is mandatory,
-// not optional like the rest.
+// newest (default)/name/price — one page (BROWSE_PAGE_SIZE) at a time: the
+// next page is the same query with after=<the last mini's id>. A page shorter
+// than that is the last. Minis in every other collection are invisible here,
+// full stop — the collection_id filter below is mandatory, not optional like
+// the rest.
 // Browsing reads the whole collection and fuzzy-matches it in this process, on
 // the Pi's one core — the most expensive thing a member can ask for. The search
 // box waits for a pause in the typing (SEARCH_DEBOUNCE_MS in the frontend), so
@@ -244,14 +249,32 @@ const browseLimit = rateLimit({
   message: () => 'Loading the collection too quickly — give it a moment and try again.',
 });
 
-// Fixed SQL fragments, keyed by the validated `sort` enum — never build this
-// from the request value itself.
-const ORDER_BY = {
-  newest: 'm.created_at DESC',
-  name: 'm.name ASC',
-  price: 'm.price ASC',
+// How many minis one browse request returns. Mirrored by frontend/src/limits.ts
+// (browsePage), which shows "Load more" after a full page. Five rows of the
+// widest grid.
+export const BROWSE_PAGE_SIZE = 60;
+
+// Fixed SQL fragments, keyed by the validated `sort` enum — never build these
+// from the request value itself. Every order ends on the id, so minis that tie
+// (added in the same second, same name, same price) keep the same order from
+// one page to the next. `after` carries on past a mini the previous page ended
+// on, by looking up where that mini sorts — inside this group only, so another
+// group's id matches nothing. Params: that mini's id, then the collection.
+const SORTS = {
+  newest: {
+    orderBy: 'm.created_at DESC, m.id DESC',
+    after: '(m.created_at, m.id) < (SELECT c.created_at, c.id FROM minis c WHERE c.id = ? AND c.collection_id = ?)',
+  },
+  name: {
+    orderBy: 'm.name ASC, m.id ASC',
+    after: '(m.name, m.id) > (SELECT c.name, c.id FROM minis c WHERE c.id = ? AND c.collection_id = ?)',
+  },
+  price: {
+    orderBy: 'm.price ASC, m.id ASC',
+    after: '(m.price, m.id) > (SELECT c.price, c.id FROM minis c WHERE c.id = ? AND c.collection_id = ?)',
+  },
 } as const;
-const SORT_VALUES = Object.keys(ORDER_BY) as (keyof typeof ORDER_BY)[];
+const SORT_VALUES = Object.keys(SORTS) as (keyof typeof SORTS)[];
 
 router.get('/', browseLimit, route(async (req, res) => {
   // Query strings can arrive as arrays (?q=a&q=b) or objects (?tag[x]=y), and
@@ -262,7 +285,8 @@ router.get('/', browseLimit, route(async (req, res) => {
   const sortCheck = optionalEnum(req.query.sort, 'Sort', SORT_VALUES);
   const ownerCheck = optionalId(req.query.owner, 'Owner');
   const availableCheck = optionalFlag(req.query.available, 'Available');
-  for (const check of [q, tagFilter, sortCheck, ownerCheck, availableCheck]) {
+  const afterCheck = optionalId(req.query.after, 'After');
+  for (const check of [q, tagFilter, sortCheck, ownerCheck, availableCheck, afterCheck]) {
     if (!check.ok) {
       res.status(400).json({ error: check.error });
       return;
@@ -271,12 +295,13 @@ router.get('/', browseLimit, route(async (req, res) => {
   const search = (q as { value: string | null }).value;
   // Saved tags are lowercase and compared exactly, so the filter is too.
   const tag = (tagFilter as { value: string | null }).value?.toLowerCase() ?? null;
-  const requestedSort = (sortCheck as { value: keyof typeof ORDER_BY | null }).value ?? 'newest';
+  const requestedSort = (sortCheck as { value: keyof typeof SORTS | null }).value ?? 'newest';
   // With prices off, sorting by them would still give away which is dearest;
   // a tab opened before the switch just gets the default order.
   const sort = requestedSort === 'price' && !req.showPrices ? 'newest' : requestedSort;
   const owner = (ownerCheck as { value: number | null }).value;
   const availableOnly = (availableCheck as { value: boolean }).value;
+  const after = (afterCheck as { value: number | null }).value;
 
   // The collection filter is always present; tag (a controlled pill, not
   // free text) stays an exact match in SQL. Free-text search (q) is
@@ -294,6 +319,10 @@ router.get('/', browseLimit, route(async (req, res) => {
     where.push('m.owner_id = ?');
     params.push(owner);
   }
+  if (after) {
+    where.push(SORTS[sort].after);
+    params.push(after, req.collectionId!);
+  }
 
   // "Available" has no stored column — it's the same derivation as
   // miniStatusFrom's available branch (utils/miniStatus.ts), applied here as
@@ -301,16 +330,21 @@ router.get('/', browseLimit, route(async (req, res) => {
   // the SELECT list, not a real column WHERE can filter on.
   const having = availableOnly ? 'HAVING active_loan_status IS NULL AND m.on_quest_since IS NULL' : '';
 
+  // A page at most. Search is the exception: its typo-tolerant matching runs
+  // below, not in SQL, so the database can't know where a page of matches
+  // ends — it reads on from the cursor and the page is cut from the matches.
+  const limit = search ? '' : `LIMIT ${BROWSE_PAGE_SIZE}`;
+
   // GROUP_CONCAT aggregates all of a mini's tag names into one comma-separated
   // string per row, so we don't get duplicate mini rows (one per tag)
   const found = await rows<MiniRow>(
-    `${MINI_SELECT} WHERE ${where.join(' AND ')} GROUP BY m.id ${having} ORDER BY ${ORDER_BY[sort]}`,
+    `${MINI_SELECT} WHERE ${where.join(' AND ')} GROUP BY m.id ${having} ORDER BY ${SORTS[sort].orderBy} ${limit}`.trimEnd(),
     params
   );
 
   let minis = found.map(row => serializeMini(row, req.showPrices!));
   if (search) {
-    minis = minis.filter(m => matchesSearch([m.name, m.description, m.tags], search));
+    minis = minis.filter(m => matchesSearch([m.name, m.description, m.tags], search)).slice(0, BROWSE_PAGE_SIZE);
   }
 
   res.json(minis);
@@ -384,9 +418,9 @@ router.get('/:id', route(async (req, res) => {
 
 interface HistoryRow {
   id: number;
-  borrower_id: number;
-  borrower_username: string;
-  borrower_name: string;
+  borrower_id: number | null;       // null once their account has been deleted,
+  borrower_username: string | null; // and so is this —
+  borrower_name: string;            // but not this: it was saved as it went
   handed_off_at: Date;
   returned_at: Date | null;
   status: string;
@@ -409,9 +443,7 @@ router.get('/:id/history', route(async (req, res) => {
     return;
   }
 
-  const isOwner = owned.owner_id === req.user!.userId;
-  const isAdmin = req.user!.role === 'admin';
-  if (!isOwner && !isAdmin) {
+  if (!ownerOrAdmin(req, owned.owner_id)) {
     res.status(403).json({ error: 'Only the owner can see this mini\'s lending history' });
     return;
   }
@@ -419,10 +451,11 @@ router.get('/:id/history', route(async (req, res) => {
   // handed_off_at IS NOT NULL rules out a request that was cancelled or never
   // got past negotiating — nothing happened yet, so it isn't history.
   const history = await rows<HistoryRow>(
-    `SELECT l.id, l.borrower_id, u.username AS borrower_username, u.display_name AS borrower_name,
+    `SELECT l.id, l.borrower_id, u.username AS borrower_username,
+            COALESCE(u.display_name, l.removed_borrower_name) AS borrower_name,
             l.handed_off_at, l.returned_at, l.status
      FROM loans l
-     JOIN users u ON u.id = l.borrower_id
+     LEFT JOIN users u ON u.id = l.borrower_id
      WHERE l.mini_id = ? AND l.collection_id = ? AND l.handed_off_at IS NOT NULL
      ORDER BY l.handed_off_at DESC`,
     [miniId, req.collectionId!]
@@ -458,16 +491,22 @@ router.post('/', discardUploadsIfRejected, uploadImages, uploadErrors, verifyIma
   }
   const { name, description, tags, price } = fields.value;
 
-  // Insert the mini itself — req.user! is safe here because requireAuth ran first
-  const created = await insert(
-    'INSERT INTO minis (name, description, owner_id, collection_id, price) VALUES (?, ?, ?, ?, ?)',
-    [name, description, req.user!.userId, req.collectionId!, price ?? 0]
-  );
+  // The mini, its tags and its photos land together or not at all: a failure
+  // part-way would otherwise leave a mini whose photos were never recorded,
+  // while the error reply deletes their files (discardUploadsIfRejected).
+  // req.user! is safe here because requireAuth ran first.
+  const miniId = await inTransaction(async conn => {
+    const created = await insert(
+      'INSERT INTO minis (name, description, owner_id, collection_id, price) VALUES (?, ?, ?, ?, ?)',
+      [name, description, req.user!.userId, req.collectionId!, price ?? 0],
+      conn
+    );
+    await setTags(created.id, tags, conn);
+    await setImages(created.id, [], files, conn);
+    return created.id;
+  });
 
-  await setTags(created.id, tags);
-  await setImages(created.id, [], files);
-
-  res.status(201).json({ message: 'Mini added', miniId: created.id });
+  res.status(201).json({ message: 'Mini added', miniId });
 }));
 
 // PATCH /api/minis/:id
@@ -492,9 +531,7 @@ router.patch('/:id', discardUploadsIfRejected, uploadImages, uploadErrors, verif
     return;
   }
 
-  const isOwner = owned.owner_id === req.user!.userId;
-  const isAdmin = req.user!.role === 'admin';
-  if (!isOwner && !isAdmin) {
+  if (!ownerOrAdmin(req, owned.owner_id)) {
     res.status(403).json({ error: 'You can only edit your own minis' });
     return;
   }
@@ -542,19 +579,23 @@ router.patch('/:id', discardUploadsIfRejected, uploadImages, uploadErrors, verif
   // up their files from disk once the DB is updated.
   const droppedPaths = currentPaths.filter(p => !keptPaths.includes(p));
 
-  // With prices off the stored price is left exactly as it was, so turning
-  // them back on brings it back.
-  if (price === null) {
-    await change('UPDATE minis SET name = ?, description = ? WHERE id = ?', [name, description, miniId]);
-  } else {
-    await change(
-      'UPDATE minis SET name = ?, description = ?, price = ? WHERE id = ?',
-      [name, description, price, miniId]
-    );
-  }
-
-  await setTags(miniId, tags);
-  await setImages(miniId, keptPaths, newFiles);
+  // All or nothing, as in POST / — and a dropped photo's file is only deleted
+  // below, once the change that drops it has been committed.
+  await inTransaction(async conn => {
+    // With prices off the stored price is left exactly as it was, so turning
+    // them back on brings it back.
+    if (price === null) {
+      await change('UPDATE minis SET name = ?, description = ? WHERE id = ?', [name, description, miniId], conn);
+    } else {
+      await change(
+        'UPDATE minis SET name = ?, description = ?, price = ? WHERE id = ?',
+        [name, description, price, miniId],
+        conn
+      );
+    }
+    await setTags(miniId, tags, conn);
+    await setImages(miniId, keptPaths, newFiles, conn);
+  });
 
   for (const droppedPath of droppedPaths) {
     deleteUpload(droppedPath); // best-effort cleanup; ignore errors
@@ -581,9 +622,7 @@ router.post('/:id/clear-condition', route(async (req, res) => {
     return;
   }
 
-  const isOwner = mini.owner_id === req.user!.userId;
-  const isAdmin = req.user!.role === 'admin';
-  if (!isOwner && !isAdmin) {
+  if (!ownerOrAdmin(req, mini.owner_id)) {
     res.status(403).json({ error: 'You can only clear the condition on your own minis' });
     return;
   }
@@ -625,9 +664,7 @@ router.post('/:id/transfer', route(async (req, res) => {
     return;
   }
 
-  const isOwner = mini.owner_id === req.user!.userId;
-  const isAdmin = req.user!.role === 'admin';
-  if (!isOwner && !isAdmin) {
+  if (!ownerOrAdmin(req, mini.owner_id)) {
     res.status(403).json({ error: 'You can only transfer your own minis' });
     return;
   }
@@ -828,9 +865,7 @@ router.delete('/:id', route(async (req, res) => {
     return;
   }
 
-  const isOwner = mini.owner_id === req.user!.userId;
-  const isAdmin = req.user!.role === 'admin';
-  if (!isOwner && !isAdmin) {
+  if (!ownerOrAdmin(req, mini.owner_id)) {
     res.status(403).json({ error: 'You can only delete your own minis' });
     return;
   }
@@ -843,9 +878,29 @@ router.delete('/:id', route(async (req, res) => {
 
   const images = await rows<ImagePathRow>('SELECT image_path FROM mini_images WHERE mini_id = ?', [miniId]);
 
-  // Tell anyone in line or on the notify list before their entries vanish with it.
-  await announceMiniRemoved(Number(miniId));
-  await change('DELETE FROM minis WHERE id = ?', [miniId]);
+  // Checked again with the mini locked: someone could check it out in the
+  // instant since the lookup above, and deleting would cascade their fresh
+  // request away. Checkout, holds and bookings all need this same row, so
+  // nothing new can land on the mini until the delete is done.
+  const outcome = await inTransaction(async conn => {
+    const locked = await firstRow<{ active: number }>(
+      `SELECT (SELECT COUNT(*) FROM loans l WHERE l.mini_id = m.id AND l.status IN ('negotiating', 'adventuring')) AS active
+       FROM minis m WHERE m.id = ? FOR UPDATE`,
+      [miniId],
+      conn
+    );
+    if (!locked || Number(locked.active) > 0) return { deleted: false as const };
+
+    // Who was in line or on the notify list, read before their entries vanish with it.
+    const notice = await removalNotice(miniId, conn);
+    await change('DELETE FROM minis WHERE id = ?', [miniId], conn);
+    return { deleted: true as const, notice };
+  });
+  if (!outcome.deleted) {
+    res.status(409).json({ error: 'Someone just requested this mini — finish or cancel that request first' });
+    return;
+  }
+  await sendRemovalNotice(outcome.notice);
 
   for (const { image_path } of images) {
     deleteUpload(image_path); // best-effort cleanup

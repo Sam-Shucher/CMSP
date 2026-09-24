@@ -4,6 +4,7 @@ import { MemoryRouter } from 'react-router-dom';
 import CartLink, { POLL_INTERVAL_MS } from './CartLink';
 import { CART_CHANGED_EVENT } from '../api/client';
 import { jsonResponse } from '../test/apiMock';
+import { setTabVisibility, resetTabVisibility } from '../test/visibility';
 
 // One cart row per mini — the badge only cares how many there are.
 function cartOf(count: number): { miniId: number; name: string; image: null; ownerId: number }[] {
@@ -27,6 +28,7 @@ function renderCartLink(): void {
 
 afterEach(() => {
   vi.useRealTimers();
+  resetTabVisibility();
 });
 
 describe('CartLink — the Cart link in the nav', () => {
@@ -101,6 +103,28 @@ describe('CartLink — the Cart link in the nav', () => {
 
     await act(async () => { await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS); });
 
+    expect(screen.getByTestId('cart-count')).toHaveTextContent('2');
+  });
+
+  // A background tab asked the Pi once a minute, all day, for a count nobody
+  // could see.
+  it('does not check while the tab is hidden, and checks at once when it is back', async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal('fetch', serveCarts(0, 2));
+    renderCartLink();
+    await vi.advanceTimersByTimeAsync(0);
+    const calls = (): number => (fetch as ReturnType<typeof vi.fn>).mock.calls.length;
+    expect(calls()).toBe(1);
+
+    act(() => { setTabVisibility('hidden'); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS * 5); });
+    expect(calls()).toBe(1);
+
+    await act(async () => {
+      setTabVisibility('visible');
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(calls()).toBe(2);
     expect(screen.getByTestId('cart-count')).toHaveTextContent('2');
   });
 

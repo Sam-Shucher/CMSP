@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import { api, Mini, MiniSet, SetCartResult, CART_CHANGED_EVENT } from '../api/client';
 import { useAuth } from '../App';
 import MiniStatusBadge from '../components/MiniStatusBadge';
-import { LIMITS } from '../limits';
+import { LIMITS, PAGE_SIZE } from '../limits';
 
 const cardStyle: React.CSSProperties = {
   background: '#252219', border: '1px solid #3d3629', borderRadius: '8px',
@@ -14,6 +14,20 @@ function reasonText(reason: SetCartResult['skipped'][number]['reason']): string 
   if (reason === 'own') return "that's your own mini";
   if (reason === 'already_in_cart') return 'already in your cart';
   return 'not available right now';
+}
+
+// All of your own minis — the ones a set can be made from. The browse list
+// comes a page at a time, so this keeps asking, carrying on after the last one,
+// until a page comes back short. Only yours are asked for, so it's usually one.
+async function fetchOwnMinis(userId: number): Promise<Mini[]> {
+  const mine: Mini[] = [];
+  for (;;) {
+    const params = new URLSearchParams({ owner: String(userId) });
+    if (mine.length > 0) params.set('after', String(mine[mine.length - 1].id));
+    const page = await api<Mini[]>(`/api/minis?${params.toString()}`);
+    mine.push(...page);
+    if (page.length < PAGE_SIZE.browsePage) return mine;
+  }
 }
 
 // A named group of one owner's own minis — a boxed army, a Kill Team —
@@ -31,10 +45,10 @@ export default function SetsPage(): React.ReactElement {
     try {
       const [setsRes, minisRes] = await Promise.all([
         api<MiniSet[]>('/api/sets'),
-        api<Mini[]>('/api/minis'),
+        fetchOwnMinis(user!.userId),
       ]);
       setSets(setsRes);
-      setMyMinis(minisRes.filter((m: Mini) => m.owner_id === user!.userId));
+      setMyMinis(minisRes);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Failed to load sets');
     } finally {

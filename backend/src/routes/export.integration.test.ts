@@ -8,7 +8,7 @@ import { pool } from '../db/connection';
 import {
   assertDatabaseReachable, resetDatabase, createCollection, createUser, createMini, joinCollection, TestUser,
 } from '../test/dbHelpers';
-import { readZip } from '../test/readZip';
+import { readZip, binaryBody } from '../test/readZip';
 
 // "Export my minis" against the real database: the queries really do stop at
 // your own minis, in the group you're in, leaving out archived ones — and the
@@ -41,14 +41,8 @@ beforeEach(async () => {
   fs.writeFileSync(path.join(process.env.UPLOADS_DIR!, PHOTO_FILE), PHOTO_BYTES);
 });
 
-function binary(res: NodeJS.ReadableStream, done: (err: Error | null, body: Buffer) => void): void {
-  const chunks: Buffer[] = [];
-  res.on('data', (chunk: Buffer) => chunks.push(chunk));
-  res.on('end', () => done(null, Buffer.concat(chunks)));
-}
-
 async function exportFor(user: TestUser): Promise<{ names: string[]; csv: string; json: { minis: Record<string, unknown>[] } }> {
-  const res = await request(app).get('/api/export').set('Cookie', user.cookie).buffer(true).parse(binary);
+  const res = await request(app).get('/api/export').set('Cookie', user.cookie).buffer(true).parse(binaryBody);
   expect(res.status).toBe(200);
   const entries = readZip(res.body as Buffer);
   const text = (name: string): string => entries.find(e => e.name === name)!.data.toString('utf8');

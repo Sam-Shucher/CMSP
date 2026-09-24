@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { rows, firstRow, change, insert } from '../db/query';
 import { requireAuth } from '../middleware/requireAuth';
-import { route, idFrom } from '../utils/route';
+import { route, idFrom, ownerOrAdmin } from '../utils/route';
 import { requireCollectionMembership } from '../middleware/requireCollectionMembership';
 import { requiredText, idList, LIMITS } from '../utils/inputs';
 import { activeLoanStatusSql } from '../utils/miniStatus';
@@ -134,9 +134,7 @@ router.patch('/:id', route(async (req, res) => {
     res.status(404).json({ error: 'Set not found' });
     return;
   }
-  const isOwner = set.owner_id === req.user!.userId;
-  const isAdmin = req.user!.role === 'admin';
-  if (!isOwner && !isAdmin) {
+  if (!ownerOrAdmin(req, set.owner_id)) {
     res.status(403).json({ error: 'Only the owner can change this set' });
     return;
   }
@@ -219,9 +217,7 @@ router.delete('/:id', route(async (req, res) => {
     res.status(404).json({ error: 'Set not found' });
     return;
   }
-  const isOwner = set.owner_id === req.user!.userId;
-  const isAdmin = req.user!.role === 'admin';
-  if (!isOwner && !isAdmin) {
+  if (!ownerOrAdmin(req, set.owner_id)) {
     res.status(403).json({ error: 'Only the owner can delete this set' });
     return;
   }

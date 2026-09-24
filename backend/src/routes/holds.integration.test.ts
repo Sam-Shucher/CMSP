@@ -156,6 +156,16 @@ describe('placing a hold', () => {
     expect((await placeHold(alice, miniId)).status).toBe(409);
   });
 
+  // Removing a member archives their minis, even one they had out on a quest
+  // (a quest doesn't block removal) — it's parked, not waiting to come back.
+  it('can\'t be done to an archived mini, even one still marked on a quest', async () => {
+    const miniId = await createMini(owner, 'Dire Wolf');
+    await request(app).post(`/api/minis/${miniId}/take-out`).set('Cookie', owner.cookie).send({});
+    await pool.execute('UPDATE minis SET archived_at = NOW() WHERE id = ?', [miniId]);
+
+    expect((await placeHold(alice, miniId)).status).toBe(404);
+  });
+
   it('can\'t be done to another collection\'s mini, even by guessing its id', async () => {
     const dojo = await createCollection('dojo');
     const outsider = await createUser('ninja', dojo);

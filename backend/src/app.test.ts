@@ -77,6 +77,7 @@ describe('createApp in production', () => {
 
     expect(res.status).toBe(404);
     expect(res.text).not.toContain('MINI LIBRARY SPA');
+    expect(res.body).toEqual({ error: 'Not found' });
   });
 
   it('never answers an upload URL with the web page', async () => {
@@ -89,6 +90,32 @@ describe('createApp in production', () => {
     const res = await request(productionApp()).get('/api/loans');
 
     expect(res.status).toBe(401);
+  });
+});
+
+// The app reads every API reply as JSON (api/client.ts). Express's own 404 is
+// an HTML "Cannot GET /api/..." page, which the app can't show and which
+// echoes the path back.
+describe('an API URL nothing answers', () => {
+  it.each([
+    ['get', '/api/does-not-exist'],
+    ['post', '/api/minis-typo'],
+    ['delete', '/api/'],
+  ] as const)('%s %s is a JSON 404', async (method, url) => {
+    const res = await request(createApp())[method](url);
+
+    expect(res.status).toBe(404);
+    expect(res.headers['content-type']).toMatch(/application\/json/);
+    expect(res.body).toEqual({ error: 'Not found' });
+  });
+
+  it('is a JSON 404 inside a signed-in router too, after its own checks', async () => {
+    execute.mockResolvedValueOnce([[{ role: 'user' }]]); // membership
+
+    const res = await request(createApp()).get('/api/minis/1/no-such-thing').set('Cookie', authCookie(MEMBER));
+
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual({ error: 'Not found' });
   });
 });
 

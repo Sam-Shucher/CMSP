@@ -52,7 +52,7 @@ type PendingRestore = { miniId: number; miniName: string; newOwnerId: number; ne
 // shown to anyone but admins, and never a ranking (see BACKLOG.md's
 // reasoning against public reliability scores).
 type LoanIncident = {
-  borrowerId: number;
+  borrowerId: number | null; // null once their account has been deleted (the name is kept)
   borrowerName: string;
   lostCount: number;
   woundedCount: number;
@@ -492,8 +492,11 @@ export default function AdminPage(): React.ReactElement {
             </thead>
             <tbody>
               {loanIncidents.map((incident: LoanIncident) => (
-                <tr key={incident.borrowerId} style={{ borderBottom: '1px solid #3d3629' }}>
-                  <td style={tdStyle}>{incident.borrowerName}</td>
+                <tr key={incident.borrowerId ?? `removed:${incident.borrowerName}`} style={{ borderBottom: '1px solid #3d3629' }}>
+                  <td style={tdStyle}>
+                    {incident.borrowerName}
+                    {incident.borrowerId === null && <span style={{ color: '#8a7d6a' }}> (no longer a member)</span>}
+                  </td>
                   <td style={tdStyle}>{incident.lostCount}</td>
                   <td style={tdStyle}>{incident.woundedCount}</td>
                 </tr>

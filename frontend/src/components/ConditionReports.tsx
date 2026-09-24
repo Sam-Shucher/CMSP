@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { api, ConditionPhase, ConditionReport } from '../api/client';
 import { LIMITS } from '../limits';
+import { shrinkPhotos } from '../utils/photoFiles';
 
 // What a mini looked like at each end of a loan, so "the spear was already
 // bent" is a fact instead of an argument. Both sides file their own, and
@@ -59,7 +60,8 @@ export default function ConditionReports({ loanId, reportCount, openPhases, onRe
       const form = new FormData();
       form.append('phase', phase);
       if (note.trim()) form.append('note', note.trim());
-      for (const photo of photos) form.append('photos', photo);
+      // Shrunk to the size the app shows first — a handoff is often on a phone, on cellular.
+      for (const photo of await shrinkPhotos(photos)) form.append('photos', photo);
 
       setReports(await api<ConditionReport[]>(`/api/loans/${loanId}/condition`, { method: 'POST', body: form }));
       setNote('');

@@ -101,6 +101,25 @@ describe('schema.sql vs baseline + migrations', () => {
     expect(upgradedFks).toEqual(freshFks);
   });
 
+  // Same keys but a different ON DELETE would pass the check above and still
+  // behave differently: loans kept on one install, silently deleted on another.
+  it('produces the same ON DELETE behaviour for every foreign key', async () => {
+    const ruleQuery = `
+      SELECT kcu.TABLE_NAME, kcu.COLUMN_NAME, rc.DELETE_RULE
+      FROM information_schema.KEY_COLUMN_USAGE kcu
+      JOIN information_schema.REFERENTIAL_CONSTRAINTS rc
+        ON rc.CONSTRAINT_SCHEMA = kcu.CONSTRAINT_SCHEMA AND rc.CONSTRAINT_NAME = kcu.CONSTRAINT_NAME
+       AND rc.TABLE_NAME = kcu.TABLE_NAME
+      WHERE kcu.TABLE_SCHEMA = ? AND kcu.REFERENCED_TABLE_NAME IS NOT NULL
+      ORDER BY kcu.TABLE_NAME, kcu.COLUMN_NAME
+    `;
+
+    const [freshRules] = await connection.query(ruleQuery, [FRESH_DB]);
+    const [upgradedRules] = await connection.query(ruleQuery, [UPGRADED_DB]);
+
+    expect(upgradedRules).toEqual(freshRules);
+  });
+
   // An index added to schema.sql alone would never reach the Pi — the same
   // trap as a column, and just as invisible, because everything still works,
   // only slower and slower as the collection grows.

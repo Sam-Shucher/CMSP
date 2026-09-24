@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { firstRow, change } from '../db/query';
-import { requireAuth } from '../middleware/requireAuth';
+import { requireAuth, requireAuthAllowingTemporaryPassword } from '../middleware/requireAuth';
 import { route } from '../utils/route';
 import { requiredText, optionalText, LIMITS } from '../utils/inputs';
 import { validatePassword } from '../utils/validation';
@@ -55,7 +55,7 @@ router.patch('/me', requireAuth, route(async (req, res) => {
 // gave you a temporary one and the app is insisting. Knowing the current
 // password is required, so someone who walks up to an unlocked screen can't
 // take the account over.
-router.patch('/me/password', requireAuth, route(async (req, res) => {
+router.patch('/me/password', requireAuthAllowingTemporaryPassword, route(async (req, res) => {
   const { currentPassword, newPassword } = (req.body ?? {}) as Record<string, unknown>;
   if (typeof currentPassword !== 'string' || typeof newPassword !== 'string') {
     res.status(400).json({ error: 'Your current and new passwords are both required' });

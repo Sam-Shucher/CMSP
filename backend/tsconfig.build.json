@@ -1,0 +1,8 @@
+{
+  // The production build (npm run build, which scripts/rpi-update.sh runs on
+  // the Pi): the app only. Tests are type-checked by the editor, lint and
+  // `tsc --noEmit` against tsconfig.json; compiling them here only made the
+  // Pi's build slower and let a test-only type error stop a deploy.
+  "extends": "./tsconfig.json",
+  "exclude": ["node_modules", "dist", "src/**/*.test.ts", "src/test/**"]
+}

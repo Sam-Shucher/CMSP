@@ -9,6 +9,7 @@ vi.mock('./db/connection', () => ({
 }));
 
 import { pool } from './db/connection';
+import { touchSession } from './db/sessions';
 import { createApp } from './app';
 
 // "What if someone who isn't an admin just types /api/admin/users into their
@@ -66,6 +67,13 @@ const PUBLIC = new Set([
   'GET /api/health/', // the router's own '/' under the /api/health mount
 ]);
 const PROTECTED = ALL.filter(e => !PUBLIC.has(label(e)));
+// All someone on a temporary password an admin gave them may do: learn who
+// they are and which groups they're in, pick one, sign out everywhere, and
+// choose a new password. Everything else waits until they have.
+const TEMPORARY_PASSWORD_OK = new Set([
+  'GET /api/auth/me', 'GET /api/auth/collections', 'POST /api/auth/select-collection',
+  'POST /api/auth/logout-all', 'PATCH /api/users/me/password',
+]);
 const ADMIN_ONLY = ALL.filter(e => e.path.startsWith('/api/admin'));
 const COLLECTION_SCOPED = ALL.filter(e => /^\/api\/(minis|cart|loans|admin|holds|bookings|notifications|export)/.test(e.path));
 
@@ -121,6 +129,25 @@ describe('forged login cookie (signed with a guessed secret, claiming admin)', (
 
     expect(res.status).toBe(401);
     expect(execute).not.toHaveBeenCalled();
+  });
+});
+
+describe('signed in with a temporary password not yet replaced', () => {
+  const member = authCookie({ userId: 2, username: 'grunt', role: 'user', collectionId: 5 });
+
+  it.each(PROTECTED.filter(e => !TEMPORARY_PASSWORD_OK.has(label(e))).map(e => [label(e), e] as const))(
+    '%s → 403, touching nothing', async (_l, e) => {
+      vi.mocked(touchSession).mockResolvedValueOnce({ mustChangePassword: true });
+
+      const res = await send(e, member);
+
+      expect(res.status).toBe(403);
+      expect(res.body.code).toBe('password_change_required');
+      expect(execute).not.toHaveBeenCalled();
+    });
+
+  it('the routes it may use are all real ones', () => {
+    expect(ALL.map(label)).toEqual(expect.arrayContaining([...TEMPORARY_PASSWORD_OK]));
   });
 });
 

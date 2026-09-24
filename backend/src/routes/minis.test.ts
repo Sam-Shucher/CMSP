@@ -6,15 +6,27 @@ import { authCookie } from '../test/helpers';
 import { uploadsDir } from '../config';
 
 // Mock the DB layer entirely — these are route/permission tests, not DB integration tests.
-vi.mock('../db/connection', () => ({
-  pool: { execute: vi.fn() },
-}));
+// A transaction runs on one connection from the pool; here that connection
+// shares the pool's execute mock, so a route's statements come out of the same
+// one-at-a-time sequence whether or not they're inside a transaction.
+vi.mock('../db/connection', () => {
+  const execute = vi.fn();
+  const connection = {
+    execute,
+    beginTransaction: async () => {},
+    commit: async () => {},
+    rollback: async () => {},
+    release: () => {},
+  };
+  return { pool: { execute, getConnection: async () => connection } };
+});
 
 import { pool } from '../db/connection';
 import { createApp } from '../app';
-import { BROWSE_MAX_PER_MINUTE } from './minis';
+import { BROWSE_MAX_PER_MINUTE, BROWSE_PAGE_SIZE } from './minis';
 import { notify } from '../db/notifications'; // stubbed by unitSetup.ts — asserted directly, not via execute
 import { bookingBlockingQuest } from '../services/bookings'; // stubbed by unitSetup.ts: no bookings unless a test says so
+import { sendRemovalNotice } from '../services/holds'; // stubbed by unitSetup.ts
 import { todayInApp, addDays } from '../utils/appTime';
 
 const app = createApp();
@@ -672,6 +684,77 @@ describe('GET /api/minis — sort', () => {
 
     expect(res.status).toBe(400);
     expect(execute).toHaveBeenCalledTimes(1); // membership only
+  });
+});
+
+// A page at a time, so a big collection isn't one ~1 MB response. Each page
+// carries on after the last mini the page before showed (?after=<its id>) —
+// in whatever order was asked for, so the next page picks up exactly there.
+describe('GET /api/minis — paging', () => {
+  it('asks the database for one page at most', async () => {
+    execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED).mockResolvedValueOnce([[]]);
+
+    await request(app).get('/api/minis').set('Cookie', authCookie(OWNER));
+
+    expect(execute).toHaveBeenLastCalledWith(expect.stringMatching(new RegExp(`LIMIT ${BROWSE_PAGE_SIZE}$`)), [COLLECTION_A]);
+  });
+
+  // Without the id, two minis added in the same second could swap places
+  // between one page and the next — one shown twice, the other never.
+  it('breaks ties on the id, so the order is the same on every page', async () => {
+    execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED).mockResolvedValueOnce([[]]);
+
+    await request(app).get('/api/minis').set('Cookie', authCookie(OWNER));
+
+    expect(execute).toHaveBeenLastCalledWith(expect.stringContaining('ORDER BY m.created_at DESC, m.id DESC'), [COLLECTION_A]);
+  });
+
+  it.each([
+    ['newest', '(m.created_at, m.id) < (SELECT'],
+    ['name', '(m.name, m.id) > (SELECT'],
+    ['price', '(m.price, m.id) > (SELECT'],
+  ])('carries on after a given mini when sorted by %s', async (sort, expectedSql) => {
+    execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED).mockResolvedValueOnce([[]]);
+
+    const res = await request(app).get(`/api/minis?sort=${sort}&after=42`).set('Cookie', authCookie(OWNER));
+
+    expect(res.status).toBe(200);
+    // The mini it carries on after is looked up inside this group only — an
+    // id from another group matches nothing, so the page is simply empty.
+    expect(execute).toHaveBeenLastCalledWith(expect.stringContaining(expectedSql), [COLLECTION_A, 42, COLLECTION_A]);
+  });
+
+  it.each(['abc', '0', '-3', '1.5'])('rejects after=%s with 400', async (after) => {
+    execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED);
+
+    const res = await request(app).get(`/api/minis?after=${after}`).set('Cookie', authCookie(OWNER));
+
+    expect(res.status).toBe(400);
+    expect(execute).toHaveBeenCalledTimes(1); // membership only
+  });
+
+  it('rejects an after that arrives as a list', async () => {
+    execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED);
+
+    const res = await request(app).get('/api/minis?after=1&after=2').set('Cookie', authCookie(OWNER));
+
+    expect(res.status).toBe(400);
+  });
+
+  // Typo-tolerant search runs here, after the query, so the database can't
+  // stop at a page: it reads on from the cursor and the page is cut from the
+  // matches — otherwise a page could come back short while more matches wait.
+  it('cuts a page of search results from the matches, not from the rows read', async () => {
+    const matching = Array.from({ length: BROWSE_PAGE_SIZE + 5 }, (_, i) => miniRow({ id: 1000 - i, name: `Wolf ${i}` }));
+    const others = Array.from({ length: 10 }, (_, i) => miniRow({ id: 500 - i, name: `Goblin ${i}` }));
+    execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED).mockResolvedValueOnce([[...others, ...matching]]);
+
+    const res = await request(app).get('/api/minis?q=wolf').set('Cookie', authCookie(OWNER));
+
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveLength(BROWSE_PAGE_SIZE);
+    expect(res.body.every((m: { name: string }) => m.name.startsWith('Wolf'))).toBe(true);
+    expect(execute).toHaveBeenLastCalledWith(expect.not.stringMatching(new RegExp(`LIMIT ${BROWSE_PAGE_SIZE}$`)), [COLLECTION_A]);
   });
 });
 
@@ -1499,6 +1582,7 @@ describe('DELETE /api/minis/:id', () => {
       .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
       .mockResolvedValueOnce([[{ owner_id: 1 }]])            // ownership lookup
       .mockResolvedValueOnce([[{ image_path: '/uploads/a.png' }]]) // images to clean up
+      .mockResolvedValueOnce([[{ active: 0 }]])               // still free, now locked
       .mockResolvedValueOnce([{}]);                           // DELETE FROM minis
 
     const res = await request(app)
@@ -1507,6 +1591,25 @@ describe('DELETE /api/minis/:id', () => {
 
     expect(res.status).toBe(200);
     expect(execute).toHaveBeenCalledWith(expect.stringContaining('DELETE FROM minis'), [42]);
+  });
+
+  // The lookup said it was free, but someone checked it out in the instant
+  // since: deleting now would cascade their request away without a word.
+  it('re-checks with the mini locked, and refuses if a request landed in between', async () => {
+    vi.mocked(sendRemovalNotice).mockClear();
+    execute
+      .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
+      .mockResolvedValueOnce([[{ owner_id: 1, active_loan_status: null }]])
+      .mockResolvedValueOnce([[]])
+      .mockResolvedValueOnce([[{ active: 1 }]]);
+
+    const res = await request(app).delete('/api/minis/42').set('Cookie', authCookie(OWNER));
+
+    expect(res.status).toBe(409);
+    const lockedCheck = execute.mock.calls.find(([sql]) => String(sql).includes('FOR UPDATE'))!;
+    expect(lockedCheck[0]).toMatch(/status IN \('negotiating', 'adventuring'\)/);
+    expect(execute).not.toHaveBeenCalledWith(expect.stringContaining('DELETE FROM minis'), expect.anything());
+    expect(sendRemovalNotice).not.toHaveBeenCalled(); // nobody is told it's gone
   });
 
   it('does not let a demoted admin (old "admin" cookie) delete someone else\'s mini', async () => {
@@ -1523,6 +1626,7 @@ describe('DELETE /api/minis/:id', () => {
       .mockResolvedValueOnce(ADMIN_MEMBERSHIP)
       .mockResolvedValueOnce([[{ owner_id: 1 }]])
       .mockResolvedValueOnce([[]])
+      .mockResolvedValueOnce([[{ active: 0 }]])
       .mockResolvedValueOnce([{}]);
 
     const res = await request(app)

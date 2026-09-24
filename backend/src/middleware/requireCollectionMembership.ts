@@ -1,6 +1,19 @@
 import { Response, NextFunction } from 'express';
 import { firstRow } from '../db/query';
 import { AuthRequest } from './requireAuth';
+import { GroupAccess, GroupAccessRow, groupAccessFrom } from '../utils/groupAccess';
+
+// The group's own settings come along with the membership, so the routes
+// behind this never need a second query to learn them.
+async function loadMembership(userId: number, collectionId: number): Promise<GroupAccess | null> {
+  const row = await firstRow<GroupAccessRow>(
+    `SELECT cm.role, c.show_prices
+     FROM collection_memberships cm JOIN collections c ON c.id = cm.collection_id
+     WHERE cm.user_id = ? AND cm.collection_id = ?`,
+    [userId, collectionId]
+  );
+  return row ? groupAccessFrom(row) : null;
+}
 
 export interface CollectionRequest extends AuthRequest {
   // Set by this middleware once membership is confirmed. Optional in the
@@ -45,14 +58,11 @@ export async function requireCollectionMembership(
   }
 
   try {
-    // The group's own settings come along with the membership, so the routes
-    // behind this never need a second query to learn them.
-    const membership = await firstRow<{ role: string | null; show_prices: number | null }>(
-      `SELECT cm.role, c.show_prices
-       FROM collection_memberships cm JOIN collections c ON c.id = cm.collection_id
-       WHERE cm.user_id = ? AND cm.collection_id = ?`,
-      [req.user!.userId, collectionId]
-    );
+    // requireAuth has usually read this already, in the same query as the
+    // session (db/sessions.ts) — it's the same request, so it's just as fresh.
+    // Only when it hasn't is the database asked here.
+    const preloaded = req.groupAccess?.collectionId === collectionId ? req.groupAccess.membership : undefined;
+    const membership = preloaded !== undefined ? preloaded : await loadMembership(req.user!.userId, collectionId);
 
     if (!membership) {
       res.status(403).json({ error: 'You are not a member of this collection' });
@@ -63,11 +73,10 @@ export async function requireCollectionMembership(
     // downstream — requireAdmin, the admin override on editing someone else's
     // mini — uses this, so being an admin elsewhere grants nothing here, and a
     // demotion takes effect on the very next request.
-    req.user!.role = membership.role === 'admin' ? 'admin' : 'user';
+    req.user!.role = membership.role;
 
     (req as CollectionRequest).collectionId = collectionId;
-    // Shown unless the group has turned them off — the column's default.
-    (req as CollectionRequest).showPrices = membership.show_prices !== 0;
+    (req as CollectionRequest).showPrices = membership.showPrices;
     next();
   } catch (err: unknown) {
     console.error(err);

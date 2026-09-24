@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import ImageDropzone from './ImageDropzone';
-import { photoProblem } from '../utils/photoFiles';
+import { preparePhotos } from '../utils/photoFiles';
 import { LIMITS } from '../limits';
 
 const MAX_IMAGES = LIMITS.photosPerMini;
@@ -51,7 +51,8 @@ export default function MultiImagePicker({ existingPaths, onChange }: MultiImage
   }
 
   async function addFiles(files: File[]): Promise<void> {
-    const checked = await Promise.all(files.map(async file => ({ file, problem: await photoProblem(file) })));
+    // Shrunk to the size the app shows, then checked (utils/photoFiles.ts).
+    const checked = await preparePhotos(files);
 
     const messages: string[] = [];
     const accepted: NewPhoto[] = [];

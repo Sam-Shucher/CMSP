@@ -82,6 +82,13 @@ export function createApp(options: { frontendDist?: string; uploadsDir?: string 
   app.use('/api/export', exportRouter); // /api/export (a member's own minis as a .zip: CSV, JSON, photos)
   app.use('/api/health', healthRouter); // /api/health (public: up/down for a probe)
 
+  // An /api URL none of the above answered. Every API reply is JSON — the app
+  // reads them all that way (frontend api/client.ts) — so this is too, rather
+  // than Express's HTML "Cannot GET ..." page, which also echoes the path.
+  app.use('/api', (_req, res) => {
+    res.status(404).json({ error: 'Not found' });
+  });
+
   // In production the backend also serves the built React app, so the whole
   // site runs on a single port. During development the Vite dev server handles
   // the frontend instead (with its /api proxy pointing here).

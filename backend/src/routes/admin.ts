@@ -168,7 +168,13 @@ router.patch('/users/:id/role', route(async (req, res) => {
 // hands the admin a temporary password to pass on in person or by text — the
 // member's phone number is right there in the table. It's shown once and
 // never stored in the clear; their sessions end immediately, and the app
-// makes them choose a new password before doing anything else.
+// (and the API — middleware/requireAuth.ts) makes them choose a new password
+// before doing anything else.
+//
+// A password is the whole account's, not one group's: whoever holds the
+// temporary one can sign in as them everywhere. So it's only allowed when this
+// admin also runs every other group the person is in — otherwise an admin of
+// one group could become someone who's an admin of another.
 router.post('/users/:id/reset-password', route(async (req, res) => {
   const userId = idFrom(req.params.id);
   if (userId === req.user!.userId) {
@@ -176,14 +182,25 @@ router.post('/users/:id/reset-password', route(async (req, res) => {
     return;
   }
 
-  const member = userId === null ? null : await firstRow<{ display_name: string; phone: string | null }>(
-    `SELECT u.display_name, u.phone FROM users u
+  const member = userId === null ? null : await firstRow<{ display_name: string; phone: string | null; groups_not_run: number }>(
+    `SELECT u.display_name, u.phone,
+            (SELECT COUNT(*) FROM collection_memberships theirs
+             LEFT JOIN collection_memberships mine
+               ON mine.collection_id = theirs.collection_id AND mine.user_id = ? AND mine.role = 'admin'
+             WHERE theirs.user_id = u.id AND mine.user_id IS NULL) AS groups_not_run
+     FROM users u
      JOIN collection_memberships cm ON cm.user_id = u.id
      WHERE u.id = ? AND cm.collection_id = ?`,
-    [userId, req.collectionId!]
+    [req.user!.userId, userId, req.collectionId!]
   );
   if (!member || userId === null) {
     res.status(404).json({ error: 'User not found in this collection' });
+    return;
+  }
+  if (Number(member.groups_not_run) > 0) {
+    res.status(403).json({
+      error: `${member.display_name} is also in a group you're not an admin of, so their password can only be reset by someone who's an admin of all their groups.`,
+    });
     return;
   }
 
@@ -306,6 +323,8 @@ router.get('/archived-minis', route(async (req, res) => {
 // owner is the mini's ORIGINAL owner (re-invited during the window), it stays
 // in whatever set it was part of; anyone else gets it without one — same
 // reasoning as POST /api/minis/:id/transfer (a set is one owner's own minis).
+// Any quest it was on when its owner was removed ends here: nobody restoring
+// it took it anywhere, and a quest left running would keep it unborrowable.
 router.post('/archived-minis/:id/restore', route(async (req, res) => {
   const miniId = idFrom(req.params.id);
   const mini = miniId === null ? null : await firstRow<{ owner_id: number; set_id: number | null; name: string }>(
@@ -336,7 +355,8 @@ router.post('/archived-minis/:id/restore', route(async (req, res) => {
 
   const keepSet = newOwnerId === mini.owner_id;
   const restored = await change(
-    'UPDATE minis SET owner_id = ?, archived_at = NULL, set_id = ? WHERE id = ? AND collection_id = ? AND archived_at IS NOT NULL',
+    `UPDATE minis SET owner_id = ?, archived_at = NULL, set_id = ?, on_quest_since = NULL, on_quest_until = NULL
+     WHERE id = ? AND collection_id = ? AND archived_at IS NOT NULL`,
     [newOwnerId, keepSet ? mini.set_id : null, miniId, req.collectionId!]
   );
   if (restored === 0) {
@@ -358,7 +378,7 @@ router.post('/archived-minis/:id/restore', route(async (req, res) => {
 }));
 
 interface LoanIncidentRow {
-  borrower_id: number;
+  borrower_id: number | null; // null once their account has been deleted
   borrower_name: string;
   lost_count: number;
   wounded_count: number;
@@ -369,14 +389,16 @@ interface LoanIncidentRow {
 // collection — never shown to anyone but admins, and never a ranking (see
 // BACKLOG.md's reasoning against public reliability scores). The point is
 // only to make a repeated pattern visible to the people running the group.
+// Someone whose account has since been deleted still counts, under the name
+// saved when it was (services/membership.ts) — being removed doesn't wipe it.
 router.get('/loan-incidents', route(async (req, res) => {
   const incidents = await rows<LoanIncidentRow>(
-    `SELECT b.id AS borrower_id, b.display_name AS borrower_name,
+    `SELECT l.borrower_id, COALESCE(b.display_name, l.removed_borrower_name) AS borrower_name,
             SUM(l.status = 'lost') AS lost_count,
             SUM(l.status = 'critically_wounded') AS wounded_count
-     FROM loans l JOIN users b ON b.id = l.borrower_id
+     FROM loans l LEFT JOIN users b ON b.id = l.borrower_id
      WHERE l.collection_id = ? AND l.status IN ('lost', 'critically_wounded')
-     GROUP BY b.id, b.display_name
+     GROUP BY l.borrower_id, COALESCE(b.display_name, l.removed_borrower_name)
      ORDER BY (SUM(l.status = 'lost') + SUM(l.status = 'critically_wounded')) DESC`,
     [req.collectionId!]
   );

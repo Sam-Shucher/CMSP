@@ -5,6 +5,7 @@ import { MemoryRouter } from 'react-router-dom';
 import LoansPage from './LoansPage';
 import { Loan, LOANS_CHANGED_EVENT } from '../api/client';
 import { jsonResponse, urlOf} from '../test/apiMock';
+import { PAGE_SIZE } from '../limits';
 
 const ALICE = { id: 10, username: 'alice', displayName: 'Alice' };
 const BOB = { id: 20, username: 'bob', displayName: 'Bob' };
@@ -404,5 +405,97 @@ describe('LoansPage', () => {
     renderLoans();
 
     expect(await screen.findByText(/server error/i)).toBeInTheDocument();
+  });
+});
+
+// The list the page polls holds every open loan but only the latest page of
+// finished ones; older history is fetched a page at a time, when asked for.
+describe('LoansPage — older history', () => {
+  const PAGE = PAGE_SIZE.loanHistoryPage;
+
+  beforeEach(() => {
+    nextId = 1;
+    vi.stubGlobal('fetch', vi.fn());
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  // Finished loans, newest first: the first made is the newest.
+  function finished(count: number, label: string): Loan[] {
+    return Array.from({ length: count }, (_, i) => makeLoan({
+      miniName: `${label} ${i + 1}`, status: 'returned', stage: 'returned',
+      createdAt: new Date(Date.UTC(2026, 8, 1) - (nextId * 60_000)).toISOString(),
+    }));
+  }
+
+  function mockHistory(recent: Loan[], older: Loan[]): void {
+    vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL) => {
+      const url = urlOf(input);
+      if (url === '/api/loans') return jsonResponse(recent);
+      if (url.startsWith('/api/loans/history?before=')) {
+        return jsonResponse(url.endsWith(`=${recent.at(-1)!.id}`) ? older : []);
+      }
+      return jsonResponse({});
+    });
+  }
+
+  function historyUrls(): string[] {
+    return vi.mocked(fetch).mock.calls.map(([u]) => urlOf(u)).filter(u => u.startsWith('/api/loans/history'));
+  }
+
+  it('offers nothing more when the history is shorter than a page', async () => {
+    mockHistory(finished(PAGE - 1, 'Recent'), []);
+    renderLoans();
+    await screen.findByText('Recent 1');
+
+    expect(screen.queryByRole('button', { name: /show older/i })).not.toBeInTheDocument();
+  });
+
+  it('after a full page, fetches the older loans from the oldest shown, and adds them below', async () => {
+    const recent = finished(PAGE, 'Recent');
+    mockHistory(recent, finished(2, 'Older'));
+    renderLoans();
+    await screen.findByText('Recent 1');
+
+    await userEvent.click(screen.getByRole('button', { name: /show older/i }));
+
+    const history = screen.getByRole('region', { name: /history/i });
+    expect(await within(history).findByText('Older 2')).toBeInTheDocument();
+    expect(historyUrls()).toEqual([`/api/loans/history?before=${recent.at(-1)!.id}`]);
+    const names = within(history).getAllByText(/^(Recent|Older) \d+$/).map(el => el.textContent);
+    expect(names.slice(-3)).toEqual([`Recent ${PAGE}`, 'Older 1', 'Older 2']);
+    // A short page was the end of it.
+    expect(screen.queryByRole('button', { name: /show older/i })).not.toBeInTheDocument();
+  });
+
+  // The page keeps polling; the older loans it was shown shouldn't vanish
+  // each time the list refreshes.
+  it('keeps the older loans through the next check for changes', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    mockHistory(finished(PAGE, 'Recent'), finished(2, 'Older'));
+    renderLoans();
+    await screen.findByText('Recent 1');
+    await userEvent.click(screen.getByRole('button', { name: /show older/i }));
+    await screen.findByText('Older 2');
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+
+    expect(screen.getByText('Older 2')).toBeInTheDocument();
+    expect(screen.getByText('Recent 1')).toBeInTheDocument();
+  });
+
+  it("says so when the older loans can't be loaded, and lets you try again", async () => {
+    mockHistory(finished(PAGE, 'Recent'), []);
+    renderLoans();
+    await screen.findByText('Recent 1');
+    vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL) =>
+      urlOf(input).startsWith('/api/loans/history') ? jsonResponse({ error: 'Server error' }, { ok: false }) : jsonResponse([]));
+
+    await userEvent.click(screen.getByRole('button', { name: /show older/i }));
+
+    expect(await screen.findByText('Server error')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /show older/i })).toBeInTheDocument();
   });
 });

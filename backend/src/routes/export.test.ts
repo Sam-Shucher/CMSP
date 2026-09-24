@@ -3,7 +3,7 @@ import request from 'supertest';
 import fs from 'fs';
 import path from 'path';
 import { authCookie } from '../test/helpers';
-import { readZip } from '../test/readZip';
+import { readZip, binaryBody } from '../test/readZip';
 
 // Route logic for "Export my minis" with the database mocked: what goes in the
 // zip and under what names, the group check on the link, and the limit. The
@@ -57,14 +57,8 @@ function mockExport(
     .mockResolvedValueOnce([loans]);
 }
 
-function binary(res: NodeJS.ReadableStream, done: (err: Error | null, body: Buffer) => void): void {
-  const chunks: Buffer[] = [];
-  res.on('data', (chunk: Buffer) => chunks.push(chunk));
-  res.on('end', () => done(null, Buffer.concat(chunks)));
-}
-
 function download(query = '') {
-  return request(app).get(`/api/export${query}`).set('Cookie', authCookie(OWNER)).buffer(true).parse(binary);
+  return request(app).get(`/api/export${query}`).set('Cookie', authCookie(OWNER)).buffer(true).parse(binaryBody);
 }
 
 function entry(zip: Buffer, name: string): string {

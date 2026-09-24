@@ -29,6 +29,7 @@ vi.mock('../db/connection', () => {
 
 import { pool } from '../db/connection';
 import { createApp } from '../app';
+import { LOAN_HISTORY_PAGE_SIZE } from './loans';
 
 const app = createApp();
 const execute = pool.execute as unknown as ReturnType<typeof vi.fn>;
@@ -72,6 +73,9 @@ function loanRow(overrides: Record<string, unknown> = {}) {
 }
 
 const NO_ROWS_CHANGED = [{ affectedRows: 0 }];
+// The mini's row, locked by the handoff and by an extension before they read
+// the calendar and the hold line (SELECT ... FOR UPDATE).
+const MINI_LOCKED = [[{ id: 42 }]];
 
 beforeEach(() => {
   execute.mockReset();
@@ -90,8 +94,9 @@ describe('loans — someone else changed the loan at the same moment', () => {
     const row = loanRow(_action === 'approving' ? { borrower_approved: 0 } : {});
     execute
       .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
-      .mockResolvedValueOnce([[row]])        // loan as read
-      .mockResolvedValueOnce(NO_ROWS_CHANGED); // ...but it changed before the UPDATE landed
+      .mockResolvedValueOnce([[row]]);       // loan as read
+    if (_action === 'confirming the handoff') execute.mockResolvedValueOnce(MINI_LOCKED);
+    execute.mockResolvedValueOnce(NO_ROWS_CHANGED); // ...but it changed before the UPDATE landed
 
     const res = await send();
 
@@ -127,6 +132,7 @@ describe('loans — someone else changed the loan at the same moment', () => {
     execute
       .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
       .mockResolvedValueOnce([[loanRow()]])
+      .mockResolvedValueOnce(MINI_LOCKED)
       .mockResolvedValueOnce(NO_ROWS_CHANGED);
 
     await request(app).post('/api/loans/5/handoff').set('Cookie', authCookie(OWNER));
@@ -150,6 +156,7 @@ describe('POST /api/loans/:id/extend', () => {
     execute
       .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
       .mockResolvedValueOnce([[loanRow(OUT)]])
+      .mockResolvedValueOnce(MINI_LOCKED)
       .mockResolvedValueOnce(NOBODY_WAITING)
       .mockResolvedValueOnce(ONE_ROW_CHANGED)
       .mockResolvedValueOnce([[loanRow({ ...OUT, duration_days: 21, due_at: new Date('2026-10-22T18:00:00.000Z') })]]);
@@ -167,6 +174,7 @@ describe('POST /api/loans/:id/extend', () => {
     execute
       .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
       .mockResolvedValueOnce([[loanRow(OUT)]])
+      .mockResolvedValueOnce(MINI_LOCKED)
       .mockResolvedValueOnce(ONE_WAITING);
 
     const res = await request(app).post('/api/loans/5/extend').set('Cookie', authCookie(BORROWER)).send({ extraDays: 7 });
@@ -180,6 +188,7 @@ describe('POST /api/loans/:id/extend', () => {
     execute
       .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
       .mockResolvedValueOnce([[loanRow(OUT)]])
+      .mockResolvedValueOnce(MINI_LOCKED)
       .mockResolvedValueOnce(NOBODY_WAITING)
       .mockResolvedValueOnce(ONE_ROW_CHANGED)
       .mockResolvedValueOnce([[loanRow({ ...OUT, duration_days: 21 })]]);
@@ -203,13 +212,13 @@ describe('POST /api/loans/:id/extend', () => {
   it('refuses going past the three months, before asking about holds', async () => {
     execute
       .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
-      .mockResolvedValueOnce([[loanRow({ ...OUT, duration_days: 85 })]])
-      .mockResolvedValueOnce(NOBODY_WAITING);
+      .mockResolvedValueOnce([[loanRow({ ...OUT, duration_days: 85 })]]);
 
     const res = await request(app).post('/api/loans/5/extend').set('Cookie', authCookie(BORROWER)).send({ extraDays: 10 });
 
     expect(res.status).toBe(400);
     expect(res.body.error).toMatch(/5 more days/);
+    expect(execute.mock.calls.some(([sql]) => String(sql).includes('FROM holds'))).toBe(false);
     expect(execute.mock.calls.some(([sql]) => String(sql).includes('UPDATE loans'))).toBe(false);
   });
 
@@ -217,6 +226,7 @@ describe('POST /api/loans/:id/extend', () => {
     execute
       .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
       .mockResolvedValueOnce([[loanRow(OUT)]])
+      .mockResolvedValueOnce(MINI_LOCKED)
       .mockResolvedValueOnce(NOBODY_WAITING)
       .mockResolvedValueOnce(NO_ROWS_CHANGED);
 
@@ -238,7 +248,8 @@ describe('a booking blocks a loan that would still be out on its first day', () 
     vi.mocked(bookingBlocking).mockResolvedValue(CLAIMED);
     execute
       .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
-      .mockResolvedValueOnce([[loanRow(AGREED)]]);
+      .mockResolvedValueOnce([[loanRow(AGREED)]])
+      .mockResolvedValueOnce(MINI_LOCKED);
 
     const res = await request(app).post('/api/loans/5/handoff').set('Cookie', authCookie(OWNER));
 
@@ -252,13 +263,19 @@ describe('a booking blocks a loan that would still be out on its first day', () 
     execute
       .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
       .mockResolvedValueOnce([[loanRow(AGREED)]])
+      .mockResolvedValueOnce(MINI_LOCKED)
       .mockResolvedValueOnce([{ affectedRows: 1 }])
       .mockResolvedValueOnce([[loanRow({ status: 'adventuring' })]]);
 
     await request(app).post('/api/loans/5/handoff').set('Cookie', authCookie(OWNER));
 
-    // 14 agreed days from the handoff, and the mini this loan is for.
-    expect(bookingBlocking).toHaveBeenCalledWith(42, expect.any(Date), BORROWER.userId);
+    // 14 agreed days from the handoff, and the mini this loan is for — read
+    // on the transaction that locked the mini (the last argument).
+    expect(bookingBlocking).toHaveBeenCalledWith(42, expect.any(Date), BORROWER.userId, expect.any(Date), expect.anything());
+    const lock = execute.mock.calls.findIndex(([sql]) => String(sql).includes('FROM minis WHERE id = ? FOR UPDATE'));
+    const update = execute.mock.calls.findIndex(([sql]) => String(sql).includes('UPDATE loans'));
+    expect(lock).toBeGreaterThan(-1);
+    expect(lock).toBeLessThan(update);
     const [, askedDueAt] = vi.mocked(bookingBlocking).mock.calls[0];
     expect(askedDueAt.getTime()).toBeGreaterThan(Date.now() + 13 * 24 * 60 * 60 * 1000);
   });
@@ -268,6 +285,7 @@ describe('a booking blocks a loan that would still be out on its first day', () 
     execute
       .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
       .mockResolvedValueOnce([[loanRow(OUT)]])
+      .mockResolvedValueOnce(MINI_LOCKED)
       .mockResolvedValueOnce([[{ waiting: 0 }]]);
 
     const res = await request(app).post('/api/loans/5/extend').set('Cookie', authCookie(BORROWER)).send({ extraDays: 7 });
@@ -281,6 +299,7 @@ describe('a booking blocks a loan that would still be out on its first day', () 
     execute
       .mockResolvedValueOnce(MEMBERSHIP_CONFIRMED)
       .mockResolvedValueOnce([[loanRow(AGREED)]])
+      .mockResolvedValueOnce(MINI_LOCKED)
       .mockResolvedValueOnce([{ affectedRows: 1 }])
       .mockResolvedValueOnce([[loanRow({ status: 'adventuring' })]]);
 
@@ -782,6 +801,64 @@ describe('loan messages', () => {
 
       expect(res.body[0]).toMatchObject({ messageCount: 2, messagesOpen: false });
     });
+  });
+});
+
+// The Loans page polls every 30 seconds, so the list it polls is bounded:
+// every open loan, but only the latest page of finished ones. Older history
+// comes from GET /api/loans/history, a page at a time, when asked for.
+describe('GET /api/loans — open loans plus recent history', () => {
+  it('reads every open loan but only the latest page of finished ones, in one query', async () => {
+    execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED).mockResolvedValueOnce([[]]);
+
+    await request(app).get('/api/loans').set('Cookie', authCookie(OWNER));
+
+    expect(execute).toHaveBeenCalledTimes(2); // membership, then the loans
+    const [sql, params] = execute.mock.calls[1];
+    expect(sql).toContain('UNION ALL');
+    expect(sql).toContain(`LIMIT ${LOAN_HISTORY_PAGE_SIZE}`);
+    expect(params).toEqual([10, OWNER.userId, OWNER.userId, 10, OWNER.userId, OWNER.userId]);
+  });
+});
+
+describe('GET /api/loans/history', () => {
+  it('carries on from the oldest finished loan the page already shows', async () => {
+    execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED).mockResolvedValueOnce([[loanRow({ id: 3, status: 'returned' })]]);
+
+    const res = await request(app).get('/api/loans/history?before=9').set('Cookie', authCookie(OWNER));
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject([{ id: 3, status: 'returned' }]);
+    const [sql, params] = execute.mock.calls[1];
+    expect(sql).toContain('(l.created_at, l.id) < (SELECT');
+    expect(sql).toContain(`LIMIT ${LOAN_HISTORY_PAGE_SIZE}`);
+    // The loan it carries on from must be one of the caller's own, in this
+    // group — otherwise its position would give away when someone else's
+    // loan was made.
+    expect(params).toEqual([10, OWNER.userId, OWNER.userId, 9, 10, OWNER.userId, OWNER.userId]);
+  });
+
+  it('never includes an open loan', async () => {
+    execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED).mockResolvedValueOnce([[]]);
+
+    await request(app).get('/api/loans/history?before=9').set('Cookie', authCookie(OWNER));
+
+    expect(execute.mock.calls[1][0]).toContain("l.status NOT IN ('negotiating', 'adventuring')");
+  });
+
+  it.each(['', 'abc', '0', '2.5'])('refuses before=%s with 400', async (before) => {
+    execute.mockResolvedValueOnce(MEMBERSHIP_CONFIRMED);
+
+    const res = await request(app).get(`/api/loans/history?before=${before}`).set('Cookie', authCookie(OWNER));
+
+    expect(res.status).toBe(400);
+    expect(execute).toHaveBeenCalledTimes(1); // membership only
+  });
+
+  it('requires login', async () => {
+    const res = await request(app).get('/api/loans/history?before=9');
+
+    expect(res.status).toBe(401);
   });
 });
 

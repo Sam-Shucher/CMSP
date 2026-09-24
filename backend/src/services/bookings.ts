@@ -1,6 +1,6 @@
 import { PoolConnection } from 'mysql2/promise';
 import { pool } from '../db/connection';
-import { rows, firstRow, change, insert, Db } from '../db/query';
+import { rows, firstRow, change, insert, inTransaction, Db } from '../db/query';
 import { notify } from '../db/notifications';
 import { messages } from '../utils/notificationMessages';
 import {
@@ -56,21 +56,6 @@ interface LockedBooking {
 
 interface ExistingBooking extends LockedBooking {
   holder_name: string;
-}
-
-async function inTransaction<T>(work: (conn: PoolConnection) => Promise<T>): Promise<T> {
-  const conn = await pool.getConnection();
-  try {
-    await conn.beginTransaction();
-    const result = await work(conn);
-    await conn.commit();
-    return result;
-  } catch (err) {
-    await conn.rollback();
-    throw err;
-  } finally {
-    conn.release();
-  }
 }
 
 async function lockMini(conn: PoolConnection, miniId: number, collectionId: number): Promise<LockedMini | null> {
@@ -384,17 +369,22 @@ export async function listMyBookings(
 // The rule a loan has to obey: the mini must be home before anyone else's
 // booked window begins. Returns the booking that stands in the way, if any, so
 // the refusal can name the date someone has to plan around.
+// Pass the connection of a transaction that has locked the mini row (as
+// routes/loans.ts's handoff and extend do): placeBooking takes the same lock,
+// so no booking can land between this answer and the loan being saved.
 export async function bookingBlocking(
   miniId: number,
   dueAt: Date,
   borrowerId: number,
-  now: Date = new Date()
+  now: Date = new Date(),
+  db?: Db
 ): Promise<{ startsOn: string; holderName: string } | null> {
   const upcoming = await rows<ExistingBooking>(
     `SELECT ${BOOKING_COLUMNS} FROM bookings b JOIN users u ON u.id = b.user_id
      WHERE b.mini_id = ? AND b.user_id <> ? AND b.started_at IS NULL AND b.ends_on >= ?
      ORDER BY b.starts_on`,
-    [miniId, borrowerId, todayInApp(now)]
+    [miniId, borrowerId, todayInApp(now)],
+    db
   );
 
   const clash = upcoming.find(booking => bookingBlocksLoan(dueAt, booking.starts_on));

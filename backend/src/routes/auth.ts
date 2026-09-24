@@ -1,8 +1,9 @@
-import { Router, Request, Response } from 'express';
+import { Router, Response } from 'express';
 import crypto from 'crypto';
 import jwt from 'jsonwebtoken';
 import { rows, firstRow, change, insert } from '../db/query';
-import { requireAuth, AuthRequest, JwtPayload } from '../middleware/requireAuth';
+import { requireAuthAllowingTemporaryPassword, JwtPayload } from '../middleware/requireAuth';
+import { route } from '../utils/route';
 import { validateUsername, validatePassword } from '../utils/validation';
 import { jwtSecret, SESSION_LIFETIME_DAYS } from '../config';
 import { rateLimit } from '../middleware/rateLimit';
@@ -90,7 +91,7 @@ function setAuthCookie(res: Response, payload: JwtPayload): void {
 // collection's invite list. Registering joins every collection whose invite
 // list contains the email — so someone pre-invited to two collections at
 // once only has to sign up once. New members start as regular users.
-router.post('/register', registerLimitByAddress, async (req: Request, res: Response): Promise<void> => {
+router.post('/register', registerLimitByAddress, route(async (req, res) => {
   const body = (req.body ?? {}) as Record<string, unknown>;
 
   if (!body.email || !body.username || !body.password) {
@@ -129,54 +130,49 @@ router.post('/register', registerLimitByAddress, async (req: Request, res: Respo
   const phone = (phoneCheck as { value: string | null }).value;
   const neighborhood = (neighborhoodCheck as { value: string | null }).value;
 
-  try {
-    const approved = await rows<MembershipRow>(
-      'SELECT collection_id FROM approved_emails WHERE email = ?',
-      [email]
-    );
-    if (approved.length === 0) {
-      res.status(403).json({ error: 'This email is not on the invite list. Ask an admin to add you.' });
-      return;
-    }
-
-    // Make sure nobody has already claimed this email or username
-    const existing = await firstRow<{ id: number }>(
-      'SELECT id FROM users WHERE email = ? OR username = ?',
-      [email, username]
-    );
-    if (existing) {
-      res.status(409).json({ error: 'Email or username already taken' });
-      return;
-    }
-
-    // Deliberately slow (see utils/passwords.ts): every guess against a stolen
-    // database costs an attacker the same work it costs us once here.
-    const passwordHash = await hashPassword(password);
-
-    const account = await insert(
-      'INSERT INTO users (email, username, password_hash, display_name, phone, neighborhood) VALUES (?, ?, ?, ?, ?, ?)',
-      [email, username, passwordHash, displayName, phone, neighborhood]
-    );
-    const userId = account.id;
-
-    // Join every collection that invited this email, in one statement.
-    await change(
-      `INSERT IGNORE INTO collection_memberships (user_id, collection_id) VALUES ${approved.map(() => '(?, ?)').join(', ')}`,
-      approved.flatMap(invite => [userId, invite.collection_id])
-    );
-
-    // Only auto-select a collection when there's exactly one — otherwise the
-    // frontend sends them to the picker before they can do anything else.
-    const collectionId = approved.length === 1 ? approved[0].collection_id : undefined;
-
-    const sid = await createSession(userId);
-    setAuthCookie(res, { sid, userId, username, collectionId });
-    res.status(201).json({ message: 'Account created', username, role: 'user', displayName, collectionId });
-  } catch (err: unknown) {
-    console.error(err);
-    res.status(500).json({ error: 'Server error' });
+  const approved = await rows<MembershipRow>(
+    'SELECT collection_id FROM approved_emails WHERE email = ?',
+    [email]
+  );
+  if (approved.length === 0) {
+    res.status(403).json({ error: 'This email is not on the invite list. Ask an admin to add you.' });
+    return;
   }
-});
+
+  // Make sure nobody has already claimed this email or username
+  const existing = await firstRow<{ id: number }>(
+    'SELECT id FROM users WHERE email = ? OR username = ?',
+    [email, username]
+  );
+  if (existing) {
+    res.status(409).json({ error: 'Email or username already taken' });
+    return;
+  }
+
+  // Deliberately slow (see utils/passwords.ts): every guess against a stolen
+  // database costs an attacker the same work it costs us once here.
+  const passwordHash = await hashPassword(password);
+
+  const account = await insert(
+    'INSERT INTO users (email, username, password_hash, display_name, phone, neighborhood) VALUES (?, ?, ?, ?, ?, ?)',
+    [email, username, passwordHash, displayName, phone, neighborhood]
+  );
+  const userId = account.id;
+
+  // Join every collection that invited this email, in one statement.
+  await change(
+    `INSERT IGNORE INTO collection_memberships (user_id, collection_id) VALUES ${approved.map(() => '(?, ?)').join(', ')}`,
+    approved.flatMap(invite => [userId, invite.collection_id])
+  );
+
+  // Only auto-select a collection when there's exactly one — otherwise the
+  // frontend sends them to the picker before they can do anything else.
+  const collectionId = approved.length === 1 ? approved[0].collection_id : undefined;
+
+  const sid = await createSession(userId);
+  setAuthCookie(res, { sid, userId, username, collectionId });
+  res.status(201).json({ message: 'Account created', username, role: 'user', displayName, collectionId });
+}));
 
 async function upgradeStoredHash(userId: number, password: string): Promise<void> {
   try {
@@ -188,7 +184,7 @@ async function upgradeStoredHash(userId: number, password: string): Promise<void
 
 // POST /api/auth/login
 // Verifies email + password, starts a server-side session, and issues the cookie.
-router.post('/login', loginLimitByAddress, loginLimitByAccount, async (req: Request, res: Response): Promise<void> => {
+router.post('/login', loginLimitByAddress, loginLimitByAccount, route(async (req, res) => {
   const { email, password } = (req.body ?? {}) as Record<string, unknown>;
 
   if (!email || !password) {
@@ -202,68 +198,63 @@ router.post('/login', loginLimitByAddress, loginLimitByAccount, async (req: Requ
     return;
   }
 
-  try {
-    const user = await firstRow<UserRow>(
-      `SELECT id, username, password_hash, display_name, must_change_password,
-              temp_password_expires_at < NOW() AS temp_password_expired
-       FROM users WHERE email = ?`,
-      [email.trim().toLowerCase()]
-    );
+  const user = await firstRow<UserRow>(
+    `SELECT id, username, password_hash, display_name, must_change_password,
+            temp_password_expires_at < NOW() AS temp_password_expired
+     FROM users WHERE email = ?`,
+    [email.trim().toLowerCase()]
+  );
 
-    // Always run exactly one full comparison — against the stand-in hash when
-    // the email has no account — so both cases take the same time.
-    const passwordMatches = await verifyPassword(password, user?.password_hash ?? await timingEqualizer());
-    if (!user || !passwordMatches) {
-      // Same error for "no such user" and "wrong password", so the message
-      // can't be used to find out which emails have accounts.
-      res.status(401).json({ error: 'Invalid email or password' });
-      return;
-    }
-
-    // The password is right, but if it's a temporary one an admin set, it may
-    // have run out — they need a fresh one rather than a way in.
-    if (Number(user.temp_password_expired) === 1) {
-      res.status(401).json({ error: 'That temporary password has expired — ask an admin to set a new one.' });
-      return;
-    }
-
-    const { id, username, display_name } = user;
-
-    // Enter the collection automatically only when there's exactly one;
-    // otherwise the app asks which one first.
-    const memberships = await rows<MembershipRow>(
-      'SELECT collection_id, role FROM collection_memberships WHERE user_id = ?',
-      [id]
-    );
-    const only = memberships.length === 1 ? memberships[0] : undefined;
-
-    const sid = await createSession(id);
-    setAuthCookie(res, { sid, userId: id, username, collectionId: only?.collection_id });
-    res.json({
-      message: 'Logged in',
-      username,
-      role: roleName(only?.role),
-      displayName: display_name,
-      collectionId: only?.collection_id,
-      // The app asks for a new password before letting them do anything else.
-      mustChangePassword: Boolean(user.must_change_password),
-    });
-
-    // Their password is right, so we hold it for the only moment we ever will:
-    // if it was stored at a weaker cost than we use now, upgrade it. After the
-    // reply, so nobody waits through a second hash, and best-effort — a failed
-    // upgrade is logged and simply retried at their next sign-in.
-    if (needsRehash(user.password_hash)) void upgradeStoredHash(id, password);
-  } catch (err: unknown) {
-    console.error(err);
-    res.status(500).json({ error: 'Server error' });
+  // Always run exactly one full comparison — against the stand-in hash when
+  // the email has no account — so both cases take the same time.
+  const passwordMatches = await verifyPassword(password, user?.password_hash ?? await timingEqualizer());
+  if (!user || !passwordMatches) {
+    // Same error for "no such user" and "wrong password", so the message
+    // can't be used to find out which emails have accounts.
+    res.status(401).json({ error: 'Invalid email or password' });
+    return;
   }
-});
+
+  // The password is right, but if it's a temporary one an admin set, it may
+  // have run out — they need a fresh one rather than a way in.
+  if (Number(user.temp_password_expired) === 1) {
+    res.status(401).json({ error: 'That temporary password has expired — ask an admin to set a new one.' });
+    return;
+  }
+
+  const { id, username, display_name } = user;
+
+  // Enter the collection automatically only when there's exactly one;
+  // otherwise the app asks which one first.
+  const memberships = await rows<MembershipRow>(
+    'SELECT collection_id, role FROM collection_memberships WHERE user_id = ?',
+    [id]
+  );
+  const only = memberships.length === 1 ? memberships[0] : undefined;
+
+  const sid = await createSession(id);
+  setAuthCookie(res, { sid, userId: id, username, collectionId: only?.collection_id });
+  res.json({
+    message: 'Logged in',
+    username,
+    role: roleName(only?.role),
+    displayName: display_name,
+    collectionId: only?.collection_id,
+    // The app asks for a new password before letting them do anything else.
+    mustChangePassword: Boolean(user.must_change_password),
+  });
+
+  // Their password is right, so we hold it for the only moment we ever will:
+  // if it was stored at a weaker cost than we use now, upgrade it. After the
+  // reply, so nobody waits through a second hash, and best-effort — a failed
+  // upgrade is logged and simply retried at their next sign-in.
+  if (needsRehash(user.password_hash)) void upgradeStoredHash(id, password);
+}));
 
 // POST /api/auth/logout
 // Ends this session on the server — so even a copy of the cookie stops
 // working — and clears the cookie. Always succeeds, even with a bad cookie.
-router.post('/logout', async (req: Request, res: Response): Promise<void> => {
+router.post('/logout', route(async (req, res) => {
   const cookies = req.cookies as Record<string, unknown> | undefined;
   const token = cookies?.token;
   if (typeof token === 'string') {
@@ -276,81 +267,66 @@ router.post('/logout', async (req: Request, res: Response): Promise<void> => {
   }
   res.clearCookie('token');
   res.json({ message: 'Logged out' });
-});
+}));
 
 // POST /api/auth/logout-all
 // "Log out everywhere": ends every session this user has, on every device.
-router.post('/logout-all', requireAuth, async (req: AuthRequest, res: Response): Promise<void> => {
-  try {
-    await revokeAllSessions(req.user!.userId);
-    res.clearCookie('token');
-    res.json({ message: 'Logged out everywhere' });
-  } catch (err: unknown) {
-    console.error(err);
-    res.status(500).json({ error: 'Server error' });
-  }
-});
+router.post('/logout-all', requireAuthAllowingTemporaryPassword, route(async (req, res) => {
+  await revokeAllSessions(req.user!.userId);
+  res.clearCookie('token');
+  res.json({ message: 'Logged out everywhere' });
+}));
 
 // GET /api/auth/me
 // Restores the logged-in state on page load: who you are, which collection
 // you're in, and your role IN that collection (read fresh from the database).
 // If you've been removed from that collection, it's dropped so the app sends
 // you back to the group picker; a deleted account is logged out.
-router.get('/me', requireAuth, async (req: AuthRequest, res: Response): Promise<void> => {
+router.get('/me', requireAuthAllowingTemporaryPassword, route(async (req, res) => {
   const { userId, collectionId } = req.user!;
-  try {
-    const me = await firstRow<{ username: string; collection_role: string | null; must_change_password: number }>(
-      `SELECT u.username, u.must_change_password, cm.role AS collection_role
-       FROM users u
-       LEFT JOIN collection_memberships cm ON cm.user_id = u.id AND cm.collection_id = ?
-       WHERE u.id = ?`,
-      [collectionId ?? null, userId]
-    );
-    if (!me) {
-      res.clearCookie('token');
-      res.status(401).json({ error: 'Invalid or expired session' });
-      return;
-    }
-    const stillMember = collectionId !== undefined && me.collection_role !== null;
-    res.json({
-      userId,
-      username: me.username,
-      role: stillMember ? roleName(me.collection_role) : 'user',
-      mustChangePassword: Boolean(me.must_change_password),
-      ...(stillMember ? { collectionId } : {}),
-    });
-  } catch (err: unknown) {
-    console.error(err);
-    res.status(500).json({ error: 'Server error' });
+  const me = await firstRow<{ username: string; collection_role: string | null; must_change_password: number }>(
+    `SELECT u.username, u.must_change_password, cm.role AS collection_role
+     FROM users u
+     LEFT JOIN collection_memberships cm ON cm.user_id = u.id AND cm.collection_id = ?
+     WHERE u.id = ?`,
+    [collectionId ?? null, userId]
+  );
+  if (!me) {
+    res.clearCookie('token');
+    res.status(401).json({ error: 'Invalid or expired session' });
+    return;
   }
-});
+  const stillMember = collectionId !== undefined && me.collection_role !== null;
+  res.json({
+    userId,
+    username: me.username,
+    role: stillMember ? roleName(me.collection_role) : 'user',
+    mustChangePassword: Boolean(me.must_change_password),
+    ...(stillMember ? { collectionId } : {}),
+  });
+}));
 
 // GET /api/auth/collections
 // The collections the current user belongs to, with their role in each —
 // used to render the group picker — and whether each shows prices, so the
 // app knows whether to offer a price field and a "sort by price".
-router.get('/collections', requireAuth, async (req: AuthRequest, res: Response): Promise<void> => {
-  try {
-    const mine = await rows<CollectionRow>(
-      `SELECT c.id, c.name, cm.role, c.show_prices FROM collections c
-       JOIN collection_memberships cm ON cm.collection_id = c.id
-       WHERE cm.user_id = ?
-       ORDER BY c.name`,
-      [req.user!.userId]
-    );
-    res.json(mine.map(c => ({ id: c.id, name: c.name, role: roleName(c.role), showPrices: c.show_prices !== 0 })));
-  } catch (err: unknown) {
-    console.error(err);
-    res.status(500).json({ error: 'Server error' });
-  }
-});
+router.get('/collections', requireAuthAllowingTemporaryPassword, route(async (req, res) => {
+  const mine = await rows<CollectionRow>(
+    `SELECT c.id, c.name, cm.role, c.show_prices FROM collections c
+     JOIN collection_memberships cm ON cm.collection_id = c.id
+     WHERE cm.user_id = ?
+     ORDER BY c.name`,
+    [req.user!.userId]
+  );
+  res.json(mine.map(c => ({ id: c.id, name: c.name, role: roleName(c.role), showPrices: c.show_prices !== 0 })));
+}));
 
 // POST /api/auth/select-collection
 // Switches the active collection. Re-verifies membership against the
 // database (never trusts the request body alone) before re-issuing the
 // cookie for the same session with the new collection, and reports the
 // user's role there so the app can show the right view.
-router.post('/select-collection', requireAuth, async (req: AuthRequest, res: Response): Promise<void> => {
+router.post('/select-collection', requireAuthAllowingTemporaryPassword, route(async (req, res) => {
   const idCheck = positiveId((req.body as { collectionId?: unknown } | undefined)?.collectionId);
   if (!idCheck.ok) {
     res.status(400).json({ error: 'collectionId is required' });
@@ -358,26 +334,21 @@ router.post('/select-collection', requireAuth, async (req: AuthRequest, res: Res
   }
   const collectionId = idCheck.value;
 
-  try {
-    const collection = await firstRow<CollectionRow>(
-      `SELECT c.id, c.name, cm.role FROM collections c
-       JOIN collection_memberships cm ON cm.collection_id = c.id
-       WHERE cm.user_id = ? AND c.id = ?`,
-      [req.user!.userId, collectionId]
-    );
+  const collection = await firstRow<CollectionRow>(
+    `SELECT c.id, c.name, cm.role FROM collections c
+     JOIN collection_memberships cm ON cm.collection_id = c.id
+     WHERE cm.user_id = ? AND c.id = ?`,
+    [req.user!.userId, collectionId]
+  );
 
-    if (!collection) {
-      res.status(403).json({ error: 'You are not a member of that collection' });
-      return;
-    }
-
-    const { sid, userId, username } = req.user!;
-    setAuthCookie(res, { sid, userId, username, collectionId: collection.id });
-    res.json({ userId, username, collectionId: collection.id, collectionName: collection.name, role: roleName(collection.role) });
-  } catch (err: unknown) {
-    console.error(err);
-    res.status(500).json({ error: 'Server error' });
+  if (!collection) {
+    res.status(403).json({ error: 'You are not a member of that collection' });
+    return;
   }
-});
+
+  const { sid, userId, username } = req.user!;
+  setAuthCookie(res, { sid, userId, username, collectionId: collection.id });
+  res.json({ userId, username, collectionId: collection.id, collectionName: collection.name, role: roleName(collection.role) });
+}));
 
 export default router;

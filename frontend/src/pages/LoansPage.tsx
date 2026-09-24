@@ -2,7 +2,8 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api, Loan, MyHolds, MyBooking, MyBookings, LOANS_CHANGED_EVENT } from '../api/client';
 import LoanCard from '../components/LoanCard';
-import { POLL_MS } from '../limits';
+import { POLL_MS, PAGE_SIZE } from '../limits';
+import { usePollWhileVisible } from '../hooks/usePollWhileVisible';
 
 // How often the "time left" countdowns re-render.
 const TICK_MS = POLL_MS.clockTick;
@@ -25,10 +26,37 @@ function bookingSpan(booking: MyBooking): string {
     : `${readableDay(booking.startsOn)} – ${readableDay(booking.endsOn)}`;
 }
 
+function isFinished(loan: Loan): boolean {
+  return loan.status !== 'negotiating' && loan.status !== 'adventuring';
+}
+
+// Newest first, the way the server sends them — ties broken by id.
+function newestFirst(a: Loan, b: Loan): number {
+  return b.createdAt.localeCompare(a.createdAt) || b.id - a.id;
+}
+
+// Adds loans to what's already known, a fresh copy replacing an older one.
+function mergeFinished(known: Loan[], incoming: Loan[]): Loan[] {
+  const byId = new Map(known.map((loan: Loan) => [loan.id, loan]));
+  for (const loan of incoming) byId.set(loan.id, loan);
+  return [...byId.values()].sort(newestFirst);
+}
+
 // Everything you're borrowing or lending in this collection. Each mini is
 // its own request, grouped by the person on the other side of the desk.
 export default function LoansPage(): React.ReactElement {
   const [loans, setLoans] = useState<Loan[]>([]);
+  // Finished loans, kept rather than replaced on each check: the checks bring
+  // only the latest page of them (GET /api/loans), and older pages come from
+  // "Show older" — a loan pushed off that latest page by a newer one mustn't
+  // vanish from the screen.
+  const [finishedLoans, setFinishedLoans] = useState<Loan[]>([]);
+  // Whether "Show older" has anything left to find: until it's been used, a
+  // full latest page says there may be; after, the last older page says.
+  const [latestPageFull, setLatestPageFull] = useState<boolean>(false);
+  const [olderLeft, setOlderLeft] = useState<boolean | null>(null);
+  const [loadingOlder, setLoadingOlder] = useState<boolean>(false);
+  const [olderError, setOlderError] = useState<string>('');
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string>('');
   const [now, setNow] = useState<Date>(new Date());
@@ -39,7 +67,11 @@ export default function LoansPage(): React.ReactElement {
 
   const loadLoans = useCallback(async (): Promise<void> => {
     try {
-      setLoans(await api<Loan[]>('/api/loans'));
+      const data = await api<Loan[]>('/api/loans');
+      const finished = data.filter(isFinished);
+      setLoans(data);
+      setFinishedLoans((known: Loan[]) => mergeFinished(known, finished));
+      setLatestPageFull(finished.length >= PAGE_SIZE.loanHistoryPage);
       setError('');
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Failed to load loans');
@@ -69,29 +101,42 @@ export default function LoansPage(): React.ReactElement {
     }
   }, []);
 
+  const reload = useCallback((): void => {
+    void loadLoans();
+    void loadHolds();
+    void loadBookings();
+  }, [loadLoans, loadHolds, loadBookings]);
+
   // The other person acts from their own screen, so keep up: reload when a
-  // notification is opened, when you come back to the tab, and every so often.
+  // notification is opened, when the window gets focus back, and every so
+  // often while the tab is showing (and at once when it's shown again).
   useEffect(() => {
-    const reload = (): void => {
-      void loadLoans();
-      void loadHolds();
-      void loadBookings();
-    };
-    const reloadIfVisible = (): void => {
-      if (document.visibilityState === 'visible') reload();
-    };
     reload();
     window.addEventListener(LOANS_CHANGED_EVENT, reload);
     window.addEventListener('focus', reload);
-    document.addEventListener('visibilitychange', reloadIfVisible);
-    const timer = setInterval(reloadIfVisible, REFRESH_MS);
     return () => {
       window.removeEventListener(LOANS_CHANGED_EVENT, reload);
       window.removeEventListener('focus', reload);
-      document.removeEventListener('visibilitychange', reloadIfVisible);
-      clearInterval(timer);
     };
-  }, [loadLoans, loadHolds, loadBookings]);
+  }, [reload]);
+  usePollWhileVisible(reload, REFRESH_MS);
+
+  // The next page of history, older than the oldest one shown.
+  async function loadOlder(): Promise<void> {
+    if (finishedLoans.length === 0) return;
+    const oldest = finishedLoans[finishedLoans.length - 1];
+    setLoadingOlder(true);
+    setOlderError('');
+    try {
+      const older = await api<Loan[]>(`/api/loans/history?before=${oldest.id}`);
+      setFinishedLoans((known: Loan[]) => mergeFinished(known, older));
+      setOlderLeft(older.length >= PAGE_SIZE.loanHistoryPage);
+    } catch (err: unknown) {
+      setOlderError(err instanceof Error ? err.message : 'Failed to load older loans');
+    } finally {
+      setLoadingOlder(false);
+    }
+  }
 
   async function holdAction(path: string): Promise<void> {
     setHoldError('');
@@ -118,10 +163,9 @@ export default function LoansPage(): React.ReactElement {
     return () => clearInterval(timer);
   }, []);
 
-  const active = loans.filter((l: Loan) => l.status === 'negotiating' || l.status === 'adventuring');
-  const history = loans.filter((l: Loan) =>
-    l.status === 'returned' || l.status === 'cancelled' || l.status === 'lost' || l.status === 'critically_wounded'
-  );
+  const active = loans.filter((l: Loan) => !isFinished(l));
+  const history = finishedLoans;
+  const canShowOlder = olderLeft ?? latestPageFull;
 
   // "Apply to all" copies terms between the same borrower and owner, so only
   // open requests in the same direction with the same person count.
@@ -283,6 +327,14 @@ export default function LoansPage(): React.ReactElement {
             <section aria-label="History">
               <h3 style={{ fontSize: '17px', color: '#8a7d6a', marginBottom: '12px' }}>History</h3>
               {history.map(renderCard)}
+              {olderError && <div className="error-msg" style={{ marginBottom: '12px' }}>{olderError}</div>}
+              {canShowOlder && (
+                <div style={{ textAlign: 'center' }}>
+                  <button type="button" className="btn-secondary" onClick={() => void loadOlder()} disabled={loadingOlder}>
+                    {loadingOlder ? 'Loading…' : 'Show older'}
+                  </button>
+                </div>
+              )}
             </section>
           )}
         </>

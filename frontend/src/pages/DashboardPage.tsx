@@ -1,10 +1,10 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import { api, Mini, MiniOwner, CartItem, CART_CHANGED_EVENT } from '../api/client';
 import { useAuth, useShowPrices } from '../App';
 import MiniDetailModal from '../components/MiniDetailModal';
 import MiniStatusBadge from '../components/MiniStatusBadge';
-import { LIMITS } from '../limits';
+import { LIMITS, PAGE_SIZE } from '../limits';
 
 // Long enough to swallow a burst of typing, short enough not to feel laggy.
 export const SEARCH_DEBOUNCE_MS = 250;
@@ -26,7 +26,13 @@ export default function DashboardPage(): React.ReactElement {
   const [sort, setSort]           = useState<SortOption>('newest');
   const [availableOnly, setAvailableOnly] = useState<boolean>(false);
   const [loading, setLoading]     = useState<boolean>(true);
+  const [hasMore, setHasMore]     = useState<boolean>(false); // the last page was a full one
+  const [loadingMore, setLoadingMore] = useState<boolean>(false);
   const [error, setError]         = useState<string>('');
+  // Bumped whenever the filters change, so a page that arrives for the old
+  // filters (slow phone connection, "Load more" still in flight) is dropped
+  // instead of mixed into the new list.
+  const listVersion = useRef<number>(0);
   const [selectedMini, setSelectedMini] = useState<Mini | null>(null);
 
   // Fetches minis from the API, passing any active search or tag filter as query params.
@@ -39,24 +45,61 @@ export default function DashboardPage(): React.ReactElement {
     return () => clearTimeout(timer);
   }, [search]);
 
+  // The search and filters as a query string; a later page adds after=<id>.
+  const browseQuery = useCallback((): URLSearchParams => {
+    const params = new URLSearchParams();
+    if (query)          params.set('q', query);
+    if (activeTag)      params.set('tag', activeTag);
+    if (ownerId)        params.set('owner', ownerId);
+    if (sort !== 'newest') params.set('sort', sort);
+    if (availableOnly) params.set('available', '1');
+    return params;
+  }, [query, activeTag, ownerId, sort, availableOnly]);
+
+  // The first page for the current search and filters.
   const fetchMinis = useCallback(async (): Promise<void> => {
+    const version = ++listVersion.current;
     setLoading(true);
     setError('');
     try {
-      const params = new URLSearchParams();
-      if (query)          params.set('q', query);
-      if (activeTag)      params.set('tag', activeTag);
-      if (ownerId)        params.set('owner', ownerId);
-      if (sort !== 'newest') params.set('sort', sort);
-      if (availableOnly) params.set('available', '1');
-      const data = await api<Mini[]>(`/api/minis?${params.toString()}`);
+      const data = await api<Mini[]>(`/api/minis?${browseQuery().toString()}`);
+      if (version !== listVersion.current) return;
       setMinis(data);
+      setHasMore(data.length >= PAGE_SIZE.browsePage);
     } catch (err: unknown) {
+      if (version !== listVersion.current) return;
       setError(err instanceof Error ? err.message : 'Failed to load minis');
     } finally {
-      setLoading(false);
+      if (version === listVersion.current) setLoading(false);
     }
-  }, [query, activeTag, ownerId, sort, availableOnly]);
+  }, [browseQuery]);
+
+  // The next page, carrying on after the last mini shown — the server works
+  // out where that is in the chosen order.
+  async function loadMore(): Promise<void> {
+    if (minis.length === 0) return;
+    const last = minis[minis.length - 1];
+    const version = listVersion.current;
+    setLoadingMore(true);
+    setError('');
+    try {
+      const params = browseQuery();
+      params.set('after', String(last.id));
+      const data = await api<Mini[]>(`/api/minis?${params.toString()}`);
+      if (version !== listVersion.current) return;
+      // A mini can move between pages (its price edited meanwhile); show it once.
+      setMinis((prev: Mini[]) => {
+        const shown = new Set(prev.map((m: Mini) => m.id));
+        return [...prev, ...data.filter((m: Mini) => !shown.has(m.id))];
+      });
+      setHasMore(data.length >= PAGE_SIZE.browsePage);
+    } catch (err: unknown) {
+      if (version !== listVersion.current) return;
+      setError(err instanceof Error ? err.message : 'Failed to load more minis');
+    } finally {
+      setLoadingMore(false);
+    }
+  }
 
   // Re-fetch whenever the search text or active tag changes
   useEffect(() => {
@@ -235,6 +278,14 @@ export default function DashboardPage(): React.ReactElement {
         </div>
       )}
 
+      {!loading && hasMore && (
+        <div style={{ textAlign: 'center', marginTop: '24px' }}>
+          <button type="button" className="btn-secondary" onClick={() => void loadMore()} disabled={loadingMore}>
+            {loadingMore ? 'Loading…' : 'Load more'}
+          </button>
+        </div>
+      )}
+
       {selectedMini && (
         <MiniDetailModal
           mini={selectedMini}
@@ -284,9 +335,17 @@ function MiniCard({ mini, onOpenDetail }: { mini: Mini; onOpenDetail: () => void
       <div style={{ height: '180px', background: '#1c1a17', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden', position: 'relative' }}>
         {mini.images.length > 0 ? (
           <>
+            {/* Lazy: a card below the fold doesn't fetch its photo until
+                it's scrolled near, and decoding off the main thread keeps
+                scrolling smooth. The size is the card's photo box, so
+                nothing jumps as photos arrive. */}
             <img
               src={mini.images[0]}
               alt={mini.name}
+              loading="lazy"
+              decoding="async"
+              width={220}
+              height={180}
               style={{ width: '100%', height: '100%', objectFit: 'cover' }}
             />
             {mini.images.length > 1 && (

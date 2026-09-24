@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../api/client';
 import ImageDropzone from '../components/ImageDropzone';
-import { photoProblem, ACCEPTED_PHOTO_TYPES } from '../utils/photoFiles';
+import { preparePhotos, ACCEPTED_PHOTO_TYPES } from '../utils/photoFiles';
 import { parseTable, draftsFromTable, nameFromFilename, DraftFields } from '../utils/bulkImport';
 import { looksBlank, normalizePrice, priceProblem, tagsProblem } from '../utils/validation';
 import { LIMITS } from '../limits';
@@ -97,7 +97,7 @@ export default function BulkAddPage(): React.ReactElement {
 
   async function addPhotos(files: File[]): Promise<void> {
     setResult(null);
-    const checked = await Promise.all(files.map(async file => ({ file, problem: await photoProblem(file) })));
+    const checked = await preparePhotos(files);
     const usable = checked.filter(c => c.problem === null).map(c => c.file);
     const { fits, notice } = roomFor(usable.length);
 
@@ -151,7 +151,7 @@ export default function BulkAddPage(): React.ReactElement {
   }
 
   async function addPhotosToRow(key: number, files: File[]): Promise<void> {
-    const checked = await Promise.all(files.map(async file => ({ file, problem: await photoProblem(file) })));
+    const checked = await preparePhotos(files);
     const row = rowsRef.current.find(r => r.key === key);
     if (!row) return;
     const usable = checked.filter(c => c.problem === null).map(c => c.file);

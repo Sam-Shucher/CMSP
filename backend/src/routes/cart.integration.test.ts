@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import request from 'supertest';
 import { createApp } from '../app';
+import { RowDataPacket } from 'mysql2/promise';
 import { pool } from '../db/connection';
 import {
   assertDatabaseReachable, resetDatabase, createCollection, createUser, joinCollection, createMini, TestUser,
@@ -87,6 +88,15 @@ describe('adding to the cart', () => {
     );
 
     expect((await addToCart(borrower, miniId)).status).toBe(409);
+  });
+
+  // An archived mini's owner has left the group; a browse tab opened before
+  // that still shows it, but it must not be possible to ask for it.
+  it('returns 404 for a mini archived when its owner left the group', async () => {
+    const miniId = await createMini(owner, 'Dire Wolf');
+    await pool.execute('UPDATE minis SET archived_at = NOW() WHERE id = ?', [miniId]);
+
+    expect((await addToCart(borrower, miniId)).status).toBe(404);
   });
 
   it('returns 404 for a mini in a collection you are not currently in', async () => {
@@ -203,6 +213,21 @@ describe('checkout', () => {
 
     const res = await checkout(borrower);
     expect(res.status).toBe(409);
+  });
+
+  // Archiving or flagging a mini clears it from carts, but a checkout already
+  // under way can still be holding it — the insert itself must refuse.
+  it.each([
+    ['archived', 'UPDATE minis SET archived_at = NOW() WHERE id = ?'],
+    ['marked lost', "UPDATE minis SET condition_flag = 'lost', condition_since = NOW() WHERE id = ?"],
+  ])('never turns a mini %s after it was carted into a request', async (_label, sql) => {
+    const wolf = await createMini(owner, 'Dire Wolf');
+    await addToCart(borrower, wolf);
+    await pool.execute(sql, [wolf]);
+
+    expect((await checkout(borrower)).status).toBe(409);
+    const [loans] = await pool.execute<RowDataPacket[]>('SELECT id FROM loans WHERE mini_id = ?', [wolf]);
+    expect(loans).toHaveLength(0);
   });
 
   it('returns 400 for an empty cart', async () => {

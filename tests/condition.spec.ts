@@ -37,7 +37,7 @@ test('both sides record how a mini looked at the handoff, with a photo only they
   const oliviaCard = loanWith(olivia, 'Bruno Borrower');
   await oliviaCard.getByRole('button', { name: 'Record how it looks' }).click();
   await expect(oliviaCard.getByLabel('Which end')).toHaveValue('handoff');
-  await oliviaCard.getByLabel('Note').fill('Spear straight, base scuffed on the left');
+  await oliviaCard.getByLabel('Note', { exact: true }).fill('Spear straight, base scuffed on the left');
   await oliviaCard.getByLabel(/Photos/).setInputFiles({ name: 'wolf.png', mimeType: 'image/png', buffer: TINY_PNG });
   await oliviaCard.getByRole('button', { name: 'Record' }).click();
 
@@ -57,7 +57,7 @@ test('both sides record how a mini looked at the handoff, with a photo only they
   await expect(brunoCard.getByRole('list', { name: 'Condition notes' })).toContainText('Spear straight, base scuffed on the left');
   await expectPhotoShown(bruno, 'At the handoff, by Olivia Owner');
 
-  await brunoCard.getByLabel('Note').fill('Spear looked a little bent to me');
+  await brunoCard.getByLabel('Note', { exact: true }).fill('Spear looked a little bent to me');
   await brunoCard.getByRole('button', { name: 'Record' }).click();
   await expect(brunoCard.getByRole('list', { name: 'Condition notes' })).toContainText('At the handoff · Bruno Borrower');
 
@@ -81,7 +81,7 @@ test('both sides record how a mini looked at the handoff, with a photo only they
   await expect(phase.locator('option')).toHaveCount(1);
   await expect(phase).toHaveValue('return');
 
-  await history.getByLabel('Note').fill('Came back with a chipped base');
+  await history.getByLabel('Note', { exact: true }).fill('Came back with a chipped base');
   await history.getByRole('button', { name: 'Record' }).click();
   await expect(history.getByRole('list', { name: 'Condition notes' })).toContainText('At the return · Olivia Owner');
   await expect(history.getByRole('list', { name: 'Condition notes' })).toContainText('Came back with a chipped base');

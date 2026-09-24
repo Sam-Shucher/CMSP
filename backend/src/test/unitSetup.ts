@@ -27,7 +27,7 @@ if (process.env.UPLOADS_DIR) fs.mkdirSync(process.env.UPLOADS_DIR, { recursive: 
 //     removeMember itself, overriding this for that file) → membership.integration.test.ts
 vi.mock('../db/sessions', () => ({
   createSession: vi.fn(async () => 'test-session-id'),
-  touchSession: vi.fn(async () => true),
+  touchSession: vi.fn(async () => ({ mustChangePassword: false })),
   revokeSession: vi.fn(async () => {}),
   revokeAllSessions: vi.fn(async () => {}),
   purgeEndedSessions: vi.fn(async () => 0),
@@ -54,6 +54,8 @@ vi.mock('../services/holds', () => ({
   promoteNextHold: vi.fn(async () => null),
   dropHoldsInCollection: vi.fn(async () => {}),
   announceMiniRemoved: vi.fn(async () => {}),
+  removalNotice: vi.fn(async () => null),
+  sendRemovalNotice: vi.fn(async () => {}),
   promoteStrandedHolds: vi.fn(async () => 0),
 }));
 

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Response } from 'express';
 import jwt from 'jsonwebtoken';
-import { requireAuth, AuthRequest } from './requireAuth';
+import { requireAuth, requireAuthAllowingTemporaryPassword, AuthRequest } from './requireAuth';
 import { jwtSecret } from '../config';
 import { touchSession } from '../db/sessions';
 
@@ -16,16 +16,16 @@ function mockRes() {
   return res as Response;
 }
 
-async function run(cookies: Record<string, string> | undefined) {
+async function run(cookies: Record<string, string> | undefined, middleware = requireAuth) {
   const req = { cookies } as unknown as AuthRequest;
   const res = mockRes();
   const next = vi.fn();
-  await requireAuth(req, res, next);
+  await middleware(req, res, next);
   return { req, res, next };
 }
 
 beforeEach(() => {
-  vi.mocked(touchSession).mockReset().mockResolvedValue(true);
+  vi.mocked(touchSession).mockReset().mockResolvedValue({ mustChangePassword: false });
 });
 
 describe('requireAuth', () => {
@@ -35,7 +35,34 @@ describe('requireAuth', () => {
     expect(next).toHaveBeenCalledWith();
     expect(req.user).toMatchObject(PAYLOAD);
     expect(res.status).not.toHaveBeenCalled();
-    expect(touchSession).toHaveBeenCalledWith('session-1', 1);
+    expect(touchSession).toHaveBeenCalledWith('session-1', 1, 5);
+  });
+
+  // One query answers "is this session live?" and "are they in the group the
+  // cookie names?" — requireCollectionMembership picks up the second answer.
+  it('keeps the membership read with the session, tagged with the group it is for', async () => {
+    vi.mocked(touchSession).mockResolvedValue({ mustChangePassword: false, membership: { role: 'admin', showPrices: false } });
+
+    const { req } = await run({ token: jwt.sign(PAYLOAD, JWT_SECRET) });
+
+    expect(req.groupAccess).toEqual({ collectionId: 5, membership: { role: 'admin', showPrices: false } });
+  });
+
+  it('keeps a "not a member there" answer too, for requireCollectionMembership to refuse', async () => {
+    vi.mocked(touchSession).mockResolvedValue({ mustChangePassword: false, membership: null });
+
+    const { req, next } = await run({ token: jwt.sign(PAYLOAD, JWT_SECRET) });
+
+    expect(next).toHaveBeenCalledWith(); // still signed in — the group check comes later
+    expect(req.groupAccess).toEqual({ collectionId: 5, membership: null });
+  });
+
+  it('asks about no group when the cookie names none yet', async () => {
+    const { sid, userId, username } = PAYLOAD;
+    const { req } = await run({ token: jwt.sign({ sid, userId, username }, JWT_SECRET) });
+
+    expect(touchSession).toHaveBeenCalledWith('session-1', 1, undefined);
+    expect(req.groupAccess).toBeUndefined();
   });
 
   it('rejects a request with no token with 401', async () => {
@@ -115,13 +142,44 @@ describe('requireAuth', () => {
   });
 
   it('rejects a validly signed token whose session was logged out, expired, or idle too long', async () => {
-    vi.mocked(touchSession).mockResolvedValue(false);
+    vi.mocked(touchSession).mockResolvedValue(null);
 
     const { res, next } = await run({ token: jwt.sign(PAYLOAD, JWT_SECRET) });
 
     expect(res.status).toHaveBeenCalledWith(401);
     expect(res.json).toHaveBeenCalledWith({ error: 'Your session has ended. Please sign in again.' });
     expect(res.clearCookie).toHaveBeenCalledWith('token');
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  // An admin reset their password; the app insists on a new one, and so must
+  // the API, or the temporary password works for anything via a direct call.
+  it('refuses a session still on a temporary password, saying why', async () => {
+    vi.mocked(touchSession).mockResolvedValue({ mustChangePassword: true });
+
+    const { res, next } = await run({ token: jwt.sign(PAYLOAD, JWT_SECRET) });
+
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ code: 'password_change_required' }));
+    expect(res.clearCookie).not.toHaveBeenCalled(); // still signed in — just not done yet
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it('lets that session through on the routes that let them change it', async () => {
+    vi.mocked(touchSession).mockResolvedValue({ mustChangePassword: true });
+
+    const { req, next } = await run({ token: jwt.sign(PAYLOAD, JWT_SECRET) }, requireAuthAllowingTemporaryPassword);
+
+    expect(next).toHaveBeenCalledWith();
+    expect(req.user).toMatchObject({ userId: 1 });
+  });
+
+  it('still refuses an ended session on those routes', async () => {
+    vi.mocked(touchSession).mockResolvedValue(null);
+
+    const { res, next } = await run({ token: jwt.sign(PAYLOAD, JWT_SECRET) }, requireAuthAllowingTemporaryPassword);
+
+    expect(res.status).toHaveBeenCalledWith(401);
     expect(next).not.toHaveBeenCalled();
   });
 

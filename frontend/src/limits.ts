@@ -6,6 +6,8 @@
 //   MAX_BOOKING_DAYS, MAX_BOOKING_AHEAD_DAYS → backend/src/utils/bookingRules.ts
 //   MAX_CONDITION_PHOTOS → backend/src/utils/conditionReports.ts
 //   HANDOFF_EARLIEST_MINUTES, HANDOFF_LATEST_MINUTES → backend/src/utils/loanRules.ts
+//   PAGE_SIZE.browsePage → BROWSE_PAGE_SIZE in backend/src/routes/minis.ts
+//   PAGE_SIZE.loanHistoryPage → LOAN_HISTORY_PAGE_SIZE in backend/src/routes/loans.ts
 export const LIMITS = {
   displayName: 100,
   neighborhood: 100,
@@ -37,4 +39,12 @@ export const POLL_MS = {
   cart: 60 * 1000,          // the count on the Cart link
   loans: 30 * 1000,         // the Loans page
   clockTick: 60 * 1000,     // re-render "5m ago" and "2d left" labels
+} as const;
+
+// How many minis (browse) and finished loans (Loans page history) the server
+// sends at a time. A full page means there may be more, so the page offers to
+// load the next one; a shorter page is the last.
+export const PAGE_SIZE = {
+  browsePage: 60,
+  loanHistoryPage: 20,
 } as const;

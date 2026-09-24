@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { api, NotificationItem, LOANS_CHANGED_EVENT, NOTIFICATIONS_CHANGED_EVENT } from '../api/client';
 import { timeAgo, timeUntil } from '../utils/timeAgo';
 import { POLL_MS } from '../limits';
+import { usePollWhileVisible } from '../hooks/usePollWhileVisible';
 
 export const POLL_INTERVAL_MS = POLL_MS.notifications;
 const TICK_MS = POLL_MS.clockTick;
@@ -20,7 +21,7 @@ const iconButtonStyle: React.CSSProperties = {
 type Inbox = { unread: number; items: NotificationItem[] };
 
 // The bell in the nav: unread count, and a dropdown of recent notifications
-// for the group you're in. Checks for new ones every minute.
+// for the group you're in. Checks for new ones every minute while the tab is showing.
 export default function NotificationBell({ collectionId }: { collectionId?: number }): React.ReactElement {
   const navigate = useNavigate();
   const [inbox, setInbox] = useState<Inbox>({ unread: 0, items: [] });
@@ -42,15 +43,15 @@ export default function NotificationBell({ collectionId }: { collectionId?: numb
 
   useEffect(() => {
     void load();
-    const timer = setInterval(() => void load(), POLL_INTERVAL_MS);
     // A phone notification just arrived (src/push.ts): no need to wait for the minute.
     const onPush = (): void => void load();
     window.addEventListener(NOTIFICATIONS_CHANGED_EVENT, onPush);
-    return () => {
-      clearInterval(timer);
-      window.removeEventListener(NOTIFICATIONS_CHANGED_EVENT, onPush);
-    };
+    return () => window.removeEventListener(NOTIFICATIONS_CHANGED_EVENT, onPush);
   }, [load, collectionId]);
+
+  // Every minute while the tab is showing; nothing while it's hidden, and a
+  // check the moment it's shown again.
+  usePollWhileVisible(load, POLL_INTERVAL_MS);
 
   useEffect(() => {
     const tick = setInterval(() => setNow(new Date()), TICK_MS);

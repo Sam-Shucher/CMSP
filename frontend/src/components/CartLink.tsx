@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api, CartItem, CART_CHANGED_EVENT } from '../api/client';
 import { POLL_MS } from '../limits';
+import { usePollWhileVisible } from '../hooks/usePollWhileVisible';
 
 export const POLL_INTERVAL_MS = POLL_MS.cart;
 
@@ -24,18 +25,17 @@ export default function CartLink({ collectionId }: { collectionId?: number }): R
     }
   }, []);
 
-  // Fresh on arrival, the moment a page says the cart changed, and once a
-  // minute in case it changed somewhere this tab can't see.
+  // Fresh on arrival and the moment a page says the cart changed...
   useEffect(() => {
     const reload = (): void => void load();
     reload();
     window.addEventListener(CART_CHANGED_EVENT, reload);
-    const timer = setInterval(reload, POLL_INTERVAL_MS);
-    return () => {
-      window.removeEventListener(CART_CHANGED_EVENT, reload);
-      clearInterval(timer);
-    };
+    return () => window.removeEventListener(CART_CHANGED_EVENT, reload);
   }, [load, collectionId]);
+
+  // ...and once a minute in case it changed somewhere this tab can't see —
+  // only while the tab is showing, and straight away when it's shown again.
+  usePollWhileVisible(load, POLL_INTERVAL_MS);
 
   return (
     <span className="cart-link">

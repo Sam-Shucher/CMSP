@@ -22,6 +22,10 @@ function watchForPageErrors(page: Page, problems: string[]): void {
     if (msg.type() !== 'error') return;
     const text = msg.text();
     if (text.startsWith('Failed to load resource')) return;
+    // Playwright's trace recorder (trace: 'retain-on-failure') reads blob:
+    // images — the photo previews — with fetch from inside the page, which
+    // connect-src blocks. The page itself only ever shows them as images.
+    if (/^Connecting to 'blob:[^']*' violates .*connect-src/.test(text)) return;
     problems.push(`Console error: ${text}`);
   });
 }

@@ -159,6 +159,59 @@ describe('requireCollectionMembership', () => {
     expect(next).toHaveBeenCalledWith();
   });
 
+  // requireAuth reads the membership in the same query as the session
+  // (db/sessions.ts); asking again here would double every request's queries.
+  describe('when requireAuth already read the membership', () => {
+    it('uses it, without a query of its own', async () => {
+      const req = {
+        headers: {},
+        user: { userId: 1, username: 'owner', collectionId: 5 },
+        groupAccess: { collectionId: 5, membership: { role: 'admin', showPrices: false } },
+      } as unknown as CollectionRequest;
+      const next = vi.fn();
+
+      await requireCollectionMembership(req, mockRes(), next);
+
+      expect(next).toHaveBeenCalledWith();
+      expect(req.collectionId).toBe(5);
+      expect(req.user!.role).toBe('admin');
+      expect(req.showPrices).toBe(false);
+      expect(execute).not.toHaveBeenCalled();
+    });
+
+    it('refuses with 403 when it says they are not in that group', async () => {
+      const req = {
+        headers: {},
+        user: { userId: 1, username: 'owner', role: 'admin', collectionId: 5 },
+        groupAccess: { collectionId: 5, membership: null },
+      } as unknown as CollectionRequest;
+      const res = mockRes();
+      const next = vi.fn();
+
+      await requireCollectionMembership(req, res, next);
+
+      expect(res.status).toHaveBeenCalledWith(403);
+      expect(next).not.toHaveBeenCalled();
+      expect(execute).not.toHaveBeenCalled();
+    });
+
+    // Belt and braces: an answer about one group never stands in for another.
+    it('ignores an answer about a different group and asks the database', async () => {
+      execute.mockResolvedValueOnce([[]]);
+      const req = {
+        headers: {},
+        user: { userId: 1, username: 'owner', collectionId: 5 },
+        groupAccess: { collectionId: 4, membership: { role: 'admin', showPrices: true } },
+      } as unknown as CollectionRequest;
+      const res = mockRes();
+
+      await requireCollectionMembership(req, res, vi.fn());
+
+      expect(execute).toHaveBeenCalledWith(expect.stringContaining('collection_memberships'), [1, 5]);
+      expect(res.status).toHaveBeenCalledWith(403);
+    });
+  });
+
   it('rejects with 400 when no collection has been selected yet', async () => {
     const req = { headers: {}, user: { userId: 1, username: 'owner', role: 'user' } } as unknown as CollectionRequest;
     const res = mockRes();

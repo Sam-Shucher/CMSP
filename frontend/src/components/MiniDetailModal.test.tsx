@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import MiniDetailModal from './MiniDetailModal';
 import { Mini } from '../api/client';
+import { urlOf } from '../test/apiMock';
 
 function makeMini(overrides: Partial<Mini> = {}): Mini {
   return {
@@ -345,7 +346,7 @@ describe('MiniDetailModal — hold line', () => {
 describe('MiniDetailModal — booking days', () => {
   beforeEach(() => {
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
-      const url = String(input);
+      const url = urlOf(input);
       const body = url.startsWith('/api/bookings/minis/')
         ? { max: 10, bookings: [{ id: 1, startsOn: '2026-10-14', endsOn: '2026-10-14', holderName: null, note: null, mine: false, started: false }] }
         : { max: 3, count: 0, position: null, watching: false };

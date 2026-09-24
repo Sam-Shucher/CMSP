@@ -6,6 +6,7 @@ import SetsPage from './SetsPage';
 import { AuthContext } from '../App';
 import { Mini, MiniSet, CART_CHANGED_EVENT } from '../api/client';
 import { jsonResponse, urlOf, jsonBodyOf } from '../test/apiMock';
+import { PAGE_SIZE } from '../limits';
 
 const OWNER = { userId: 1, username: 'olivia', role: 'user' as const };
 const OTHER = { userId: 2, username: 'bruno', role: 'user' as const };
@@ -39,7 +40,12 @@ function mockApi(sets: MiniSet[], minis: Mini[] = [], extra: Handler = () => und
     const custom = extra(url, method, jsonBodyOf(init));
     if (custom) return custom;
     if (url === '/api/sets' && method === 'GET') return jsonResponse(sets);
-    if (url === '/api/minis' || url === '/api/minis?') return jsonResponse(minis);
+    if (url.startsWith('/api/minis?')) {
+      // The browse list, as the server does it: filtered by owner, one page here.
+      const params = new URL(url, 'http://x').searchParams;
+      const owner = params.get('owner');
+      return jsonResponse(params.get('after') ? [] : minis.filter((m: Mini) => !owner || m.owner_id === Number(owner)));
+    }
     return jsonResponse({ error: `unexpected ${method} ${url}` }, { ok: false });
   });
 }
@@ -294,5 +300,28 @@ describe('SetsPage — managing your own set', () => {
 
     expect(screen.getByLabelText(/rename/i)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /delete set/i })).toBeInTheDocument();
+  });
+});
+
+// The browse list comes a page at a time; the set builder needs all of your
+// own minis, and none of anyone else's.
+describe('SetsPage — your minis to choose from', () => {
+  beforeEach(() => {
+    vi.stubGlobal('fetch', vi.fn());
+  });
+
+  it('asks for only your own minis, page after page until the last', async () => {
+    const PAGE = PAGE_SIZE.browsePage;
+    const yours = Array.from({ length: PAGE + 2 }, (_, i) => mini({ id: i + 1, name: `Yours ${i + 1}` }));
+    mockApi([], [], (url: string) => {
+      if (!url.startsWith('/api/minis?')) return undefined;
+      const after = new URL(url, 'http://x').searchParams.get('after');
+      return jsonResponse(after === null ? yours.slice(0, PAGE) : after === String(PAGE) ? yours.slice(PAGE) : []);
+    });
+    renderSets(OWNER);
+
+    expect(await screen.findByText(`Yours ${PAGE + 2}`)).toBeInTheDocument();
+    const minisUrls = vi.mocked(fetch).mock.calls.map(([u]) => urlOf(u)).filter(u => u.startsWith('/api/minis'));
+    expect(minisUrls).toEqual([`/api/minis?owner=${OWNER.userId}`, `/api/minis?owner=${OWNER.userId}&after=${PAGE}`]);
   });
 });

@@ -1,6 +1,5 @@
 import { PoolConnection } from 'mysql2/promise';
-import { pool } from '../db/connection';
-import { rows, firstRow, firstValue, change, insert } from '../db/query';
+import { rows, firstRow, firstValue, change, insert, inTransaction, Db } from '../db/query';
 import { notify } from '../db/notifications';
 import { messages } from '../utils/notificationMessages';
 import { miniStatusFrom, MiniStatus } from '../utils/miniStatus';
@@ -28,6 +27,7 @@ interface LockedMini {
   active_loan_status: string | null;
   active_borrower_id: number | null;
   condition_flag: string | null;
+  archived_at: Date | null;
 }
 
 interface LineEntry {
@@ -37,24 +37,9 @@ interface LineEntry {
 
 const NOT_FOUND: HoldFailure = { ok: false, status: 404, error: 'Mini not found' };
 
-async function inTransaction<T>(work: (conn: PoolConnection) => Promise<T>): Promise<T> {
-  const conn = await pool.getConnection();
-  try {
-    await conn.beginTransaction();
-    const result = await work(conn);
-    await conn.commit();
-    return result;
-  } catch (err) {
-    await conn.rollback();
-    throw err;
-  } finally {
-    conn.release();
-  }
-}
-
 async function lockMini(conn: PoolConnection, miniId: number, collectionId: number | null): Promise<LockedMini | null> {
   return firstRow<LockedMini>(
-    `SELECT m.id, m.name, m.owner_id, m.collection_id, m.on_quest_since, m.condition_flag,
+    `SELECT m.id, m.name, m.owner_id, m.collection_id, m.on_quest_since, m.condition_flag, m.archived_at,
             (SELECT l.status FROM loans l WHERE l.mini_id = m.id AND l.status IN ('negotiating', 'adventuring') LIMIT 1) AS active_loan_status,
             (SELECT l.borrower_id FROM loans l WHERE l.mini_id = m.id AND l.status IN ('negotiating', 'adventuring') LIMIT 1) AS active_borrower_id
      FROM minis m
@@ -73,8 +58,8 @@ async function lockLine(conn: PoolConnection, miniId: number): Promise<LineEntry
   );
 }
 
-async function currentLine(miniId: number): Promise<number[]> {
-  const line = await rows<{ user_id: number }>('SELECT user_id FROM holds WHERE mini_id = ? ORDER BY id', [miniId]);
+async function currentLine(miniId: number, db?: Db): Promise<number[]> {
+  const line = await rows<{ user_id: number }>('SELECT user_id FROM holds WHERE mini_id = ? ORDER BY id', [miniId], db);
   return line.map(entry => entry.user_id);
 }
 
@@ -82,8 +67,8 @@ async function displayName(userId: number): Promise<string> {
   return (await firstValue<string>('SELECT display_name FROM users WHERE id = ?', [userId])) ?? 'Someone';
 }
 
-async function watcherIds(miniId: number): Promise<number[]> {
-  const watchers = await rows<{ user_id: number }>('SELECT user_id FROM hold_watchers WHERE mini_id = ?', [miniId]);
+async function watcherIds(miniId: number, db?: Db): Promise<number[]> {
+  const watchers = await rows<{ user_id: number }>('SELECT user_id FROM hold_watchers WHERE mini_id = ?', [miniId], db);
   return watchers.map(watcher => watcher.user_id);
 }
 
@@ -115,7 +100,7 @@ type PlaceOutcome = { failure: HoldFailure } | { mini: LockedMini; position: num
 export async function placeHold(miniId: number, userId: number, collectionId: number): Promise<{ ok: true; position: number } | HoldFailure> {
   const outcome = await inTransaction<PlaceOutcome>(async conn => {
     const mini = await lockMini(conn, miniId, collectionId);
-    if (!mini) return { failure: NOT_FOUND };
+    if (!mini || mini.archived_at) return { failure: NOT_FOUND };
     if (mini.owner_id === userId) return { failure: { ok: false, status: 400, error: 'That\'s your own mini' } };
 
     const status = miniStatusFrom(mini.active_loan_status, mini.on_quest_since, mini.condition_flag);
@@ -304,7 +289,7 @@ export async function promoteNextHold(miniId: number): Promise<number | null> {
   try {
     const outcome = await inTransaction<PromotionOutcome>(async conn => {
       const mini = await lockMini(conn, miniId, null);
-      if (!mini || mini.active_loan_status || mini.on_quest_since || mini.condition_flag) return null;
+      if (!mini || mini.archived_at || mini.active_loan_status || mini.on_quest_since || mini.condition_flag) return null;
 
       const line = await lockLine(conn, miniId);
       if (line.length === 0) return null;
@@ -372,18 +357,45 @@ export async function dropHoldsInCollection(userId: number, collectionId: number
 // line, people on the notify list, and anyone who had booked days on it,
 // since all three vanish with the mini and nothing else would tell them.
 export async function announceMiniRemoved(miniId: number): Promise<void> {
+  await sendRemovalNotice(await removalNotice(miniId), miniId);
+}
+
+// The same announcement in two halves, for a delete that runs in a
+// transaction holding the mini's lock (routes/minis.ts): who to tell is read
+// on that transaction, and the notices go out once it has committed. Sending
+// them inside would wait on that very lock — a notification's mini_id
+// references the mini — until the database gave up.
+export interface RemovalNotice {
+  collectionId: number;
+  name: string;
+  recipients: number[];
+}
+
+export async function removalNotice(miniId: number, db?: Db): Promise<RemovalNotice | null> {
   const mini = await firstRow<{ name: string; collection_id: number }>(
     'SELECT name, collection_id FROM minis WHERE id = ?',
-    [miniId]
+    [miniId],
+    db
   );
-  if (!mini) return;
+  if (!mini) return null;
   const booked = await rows<{ user_id: number }>(
     'SELECT DISTINCT user_id FROM bookings WHERE mini_id = ? AND ends_on >= ?',
-    [miniId, todayInApp()]
+    [miniId, todayInApp()],
+    db
   );
-  const waiting = [...await currentLine(miniId), ...await watcherIds(miniId), ...booked.map(b => b.user_id)];
-  await notify(waiting, {
-    collectionId: mini.collection_id, type: 'mini_removed', message: messages.miniRemoved(mini.name), miniId,
+  return {
+    collectionId: mini.collection_id,
+    name: mini.name,
+    recipients: [...await currentLine(miniId, db), ...await watcherIds(miniId, db), ...booked.map(b => b.user_id)],
+  };
+}
+
+// miniId only while the mini still exists: once it's deleted there's nothing
+// to link to (and the notice's mini_id would be cleared anyway).
+export async function sendRemovalNotice(notice: RemovalNotice | null, miniId?: number): Promise<void> {
+  if (!notice) return;
+  await notify(notice.recipients, {
+    collectionId: notice.collectionId, type: 'mini_removed', message: messages.miniRemoved(notice.name), miniId,
   });
 }
 
